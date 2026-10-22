@@ -80,6 +80,8 @@ def test_brandywine_from_environment():
     assert 'Variationen für 4 Flöten' in doc.findtext('./credit[credit-type="subtitle"]/credit-words')
     assert report['notes']==1592
     assert report['measures']==102
+    assert report['variation_numbers']==[str(x) for x in range(1,12)]
+    assert len(doc.xpath('./part[1]/measure/direction/direction-type/words'))==11
     assert len(report['parts'])==4
     assert len(doc.findall('part'))==4
     assert len(doc.findall('.//note'))==1721  # chords + rests
@@ -260,3 +262,48 @@ def test_multi_part_native_barline_span_expansion(tmp_path):
         doc=ET.fromstring(archive.read('grouped.mscx'))
         staves=doc.findall('./Score/Part/Staff')
         assert [x.findtext('barLineSpan') for x in staves]==['1','1','1',None]
+
+
+def test_title_frame_credits_are_in_reading_order(tmp_path):
+    from app.engraving import prepare_print_ready
+    path=tmp_path/'credits.mscz'
+    data=(
+        '<museScore version="3.02"><Score><Staff id="1">'
+        '<VBox><height>9.7</height>'
+        '<Text><style>Title</style><text>Old title</text></Text>'
+        '<Text><style>Subtitle</style><text>Old composer</text></Text>'
+        '<Text><style>Subtitle</style><text>Old subtitle</text></Text>'
+        '</VBox></Staff></Score></museScore>'
+    )
+    with zipfile.ZipFile(path,'w') as archive:archive.writestr('score.mscx',data)
+    prepare_print_ready(path,{'title':'Brandywine','subtitle':'Four flutes',
+                              'composer':'Rene Brielmann'})
+    with zipfile.ZipFile(path) as archive:
+        doc=ET.fromstring(archive.read('score.mscx'))
+    texts=doc.findall('./Score/Staff/VBox/Text')
+    assert [el.findtext('text') for el in texts]==[
+        'Brandywine','Four flutes','Rene Brielmann']
+    assert float(doc.findtext('./Score/Staff/VBox/height'))>=14
+
+
+def test_original_mode_avoids_pathological_pagination(tmp_path, monkeypatch):
+    from app import main
+    def fake_convert(source,target):
+        target=Path(target)
+        if target.suffix=='.mscz':
+            with zipfile.ZipFile(target,'w') as archive:
+                archive.writestr('score.mscx','<museScore version="3.02"><Score>'
+                                 '<Staff id="1"><VBox><height>10</height></VBox>'
+                                 '</Staff></Score></museScore>')
+        elif target.suffix=='.pdf':
+            target.write_bytes(b'%PDF-1.4\n%%EOF\n')
+    monkeypatch.setattr(main,'convert',fake_convert)
+    monkeypatch.setattr(main,'create_preview',
+                        lambda pdf,png:Path(png).write_bytes(b'PNG'))
+    monkeypatch.setattr(main,'pdf_page_count',lambda path:40)
+    data=capx(MINIMAL)
+    work=tmp_path/'one';work.mkdir()
+    info=main.process_score('Test.capx','.capx',data,work,'original')
+    assert info['layout']=='balanced-fallback'
+    assert any('used a balanced print layout' in warning for warning in info['warnings'])
+    assert (work/'Test.mscz').exists()
