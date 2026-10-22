@@ -283,6 +283,7 @@ def test_title_frame_credits_are_in_reading_order(tmp_path):
     texts=doc.findall('./Score/Staff/VBox/Text')
     assert [el.findtext('text') for el in texts]==[
         'Brandywine','Four flutes','Rene Brielmann']
+    assert [el.findtext('style') for el in texts]==['Title','Subtitle','Composer']
     assert float(doc.findtext('./Score/Staff/VBox/height'))>=14
 
 
