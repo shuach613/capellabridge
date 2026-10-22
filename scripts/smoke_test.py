@@ -32,10 +32,10 @@ def main():
     </noteObjects></voice></voices></staff></staves></system></systems></score>'''
 
 
-    def make_upload():
+    def make_upload(xml_bytes=xml):
         score=io.BytesIO()
         with zipfile.ZipFile(score,'w') as z:
-            z.writestr('score.xml', xml)
+            z.writestr('score.xml', xml_bytes)
         boundary='CAPELLABRIDGE_SMOKE_BOUNDARY'
         body=(f'--{boundary}\r\nContent-Disposition: form-data; name="files"; filename="Smoke.capx"\r\n'
               'Content-Type: application/octet-stream\r\n\r\n').encode()+score.getvalue()+f'\r\n--{boundary}--\r\n'.encode()
@@ -77,6 +77,37 @@ def main():
         with zipfile.ZipFile(io.BytesIO(get(result['batch_url']))) as z:
             assert any(name.endswith('.mscz') for name in z.namelist())
         print(f'{layout}: MuseScore MSCZ, PDF, PNG, MusicXML and ZIP verified')
+    # Diagnostic: MuseScore's handling of four grouped independent parts.
+    staff_xml = ''.join(
+        f'<staff layout="Piccolo {n}"><voices><voice><noteObjects>'
+        '<timeSign time="2/4"/>'
+        '<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>'
+        '</noteObjects></voice></voices></staff>'
+        for n in range(1, 5)
+    )
+    score_xml = (
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves>'
+        + ''.join(f'<staffLayout description="Piccolo {n}"/>' for n in range(1, 5))
+        + '</staves><brackets><bracket from="0" to="3"/></brackets></layout>'
+        '<systems><system><staves>' + staff_xml + '</staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(score_xml)
+    result=json.loads(get('/api/convert?layout=balanced', body, ctype))
+    assert result['results'][0]['ok'], result
+    mscz=get(result['results'][0]['downloads']['mscz'])
+    with zipfile.ZipFile(io.BytesIO(mscz)) as z:
+        from xml.etree import ElementTree as ET
+        root=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+        part_info=[]
+        for p in root.findall('./Score/Part'):
+            part_info.append([ET.tostring(ch,encoding='unicode')[:450] for ch in p.findall('./Staff')])
+        print('DEBUG_NATIVE_PART_STAVES',str(part_info)[:3500],flush=True)
+        print('DEBUG_NATIVE_INITIAL_STAVES',
+              [ET.tostring(x,encoding='unicode')[:250] for x in root.findall('./Score/Staff')[:4]],flush=True)
+    print('Four-staff group conversion diagnostic passed',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
