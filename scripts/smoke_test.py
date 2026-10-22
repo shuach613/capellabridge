@@ -78,14 +78,29 @@ def main():
             assert any(name.endswith('.mscz') for name in z.namelist())
         print(f'{layout}: MuseScore MSCZ, PDF, PNG, MusicXML and ZIP verified')
     # Diagnostic: MuseScore's handling of four grouped independent parts.
-    staff_xml = ''.join(
-        f'<staff layout="Piccolo {n}"><voices><voice><noteObjects>'
-        '<timeSign time="2/4"/>'
-        '<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>'
-        '<chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>'
-        '</noteObjects></voice></voices></staff>'
-        for n in range(1, 5)
-    )
+    staff_xml = ''
+    for n in range(1, 5):
+        decorations = ''
+        if n == 1:
+            decorations = (
+                '<drawObjects>'
+                '<drawObj><text x="0" y="-25"><font face="Lato" height="37"/>'
+                '<content>Concert Example</content></text></drawObj>'
+                '<drawObj><text x="0" y="-17"><font face="Lato" height="17"/>'
+                '<content>Four flutes&#10;von Example Composer</content></text></drawObj>'
+                '<drawObj><text x="-3" y="-5"><font face="Lato" height="17"/>'
+                '<content>1</content></text></drawObj>'
+                '</drawObjects>'
+            )
+        staff_xml += (
+            f'<staff layout="Piccolo {n}"><voices><voice><noteObjects>'
+            '<timeSign time="2/4"/>'
+            '<chord><duration base="1/4"/>'
+            + decorations +
+            '<heads><head pitch="C5"/></heads></chord>'
+            '<chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>'
+            '</noteObjects></voice></voices></staff>'
+        )
     score_xml = (
         '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">'
         '<layout><staves>'
@@ -96,6 +111,12 @@ def main():
     body,ctype=make_upload(score_xml)
     result=json.loads(get('/api/convert?layout=balanced', body, ctype))
     assert result['results'][0]['ok'], result
+    from xml.etree import ElementTree as ET
+    music_xml=ET.fromstring(get(result['results'][0]['downloads']['musicxml']))
+    assert music_xml.findtext('./movement-title') == 'Concert Example'
+    assert music_xml.findtext('./identification/creator') == 'Example Composer'
+    words=music_xml.findall('./part/measure/direction/direction-type/words')
+    assert [x.text for x in words] == ['1'], [(x.text,x.attrib) for x in words]
     mscz=get(result['results'][0]['downloads']['mscz'])
     with zipfile.ZipFile(io.BytesIO(mscz)) as z:
         from xml.etree import ElementTree as ET
@@ -104,6 +125,12 @@ def main():
         for p in root.findall('./Score/Part'):
             part_info.append([ET.tostring(ch,encoding='unicode')[:450] for ch in p.findall('./Staff')])
         print('DEBUG_NATIVE_PART_STAVES',str(part_info)[:3500],flush=True)
+        spans=[p.findtext('./Staff/barLineSpan') for p in root.findall('./Score/Part')]
+        assert spans == ['1','1','1',None], spans
+        first_vbox=root.find('./Score/Staff/VBox')
+        if first_vbox is not None:
+            print('DEBUG_TITLE_VBOX',ET.tostring(first_vbox,encoding='unicode')[:3000],flush=True)
+        assert len(root.findall('./Score/Staff'))==4
         print('DEBUG_NATIVE_INITIAL_STAVES',
               [ET.tostring(x,encoding='unicode')[:250] for x in root.findall('./Score/Staff')[:4]],flush=True)
     print('Four-staff group conversion diagnostic passed',flush=True)
