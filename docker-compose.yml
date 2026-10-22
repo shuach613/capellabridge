@@ -7,7 +7,7 @@ services:
     pull_policy: always
     init: true
     ports:
-      - "8765:8080"
+      - "9595:8080"
     volumes:
       - capellabridge_data:/data
     security_opt:
@@ -16,7 +16,6 @@ services:
       - ALL
     pids_limit: 160
     mem_limit: 2g
-    cpus: 2.0
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=256m,mode=1777
 
