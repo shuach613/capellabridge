@@ -42,6 +42,34 @@ def prepare_print_ready(mscz_path: Path) -> None:
                 if node is None:
                     node = ET.SubElement(style, key)
                 node.text = value
+            # MusicXML imports a group of four independent parts as a single
+            # barLineSpan=4 on the first staff. MuseScore 3 treats staff
+            # spanning as a per-adjacent-staff flag, making bars appear joined
+            # between only the first two parts. Expand the span into an
+            # explicit connection on EACH adjacent upper staff.
+            staves = [staff for part in score.findall('Part')
+                      for staff in part.findall('Staff')]
+            for index, staff in enumerate(staves):
+                existing = staff.find('barLineSpan')
+                if existing is None:
+                    continue
+                try:
+                    span = int(existing.text or '0')
+                except ValueError:
+                    continue
+                if span <= 1:
+                    continue
+                if index + span > len(staves):
+                    raise ValueError('Imported MuseScore barline group exceeds score staves')
+                for next_staff in staves[index:index + span - 1]:
+                    node = next_staff.find('barLineSpan')
+                    if node is None:
+                        node = ET.SubElement(next_staff, 'barLineSpan')
+                    node.text = '1'
+                last = staves[index + span - 1]
+                tail = last.find('barLineSpan')
+                if tail is not None:
+                    last.remove(tail)
             modified = ET.tostring(root, encoding='utf-8', xml_declaration=True)
             with tempfile.NamedTemporaryFile(prefix='.print-', suffix='.mscz', dir=mscz_path.parent, delete=False) as fd:
                 temp = Path(fd.name)
