@@ -16,9 +16,9 @@ CapellaBridge converts `.capx` and legacy `.cap` music notation into editable Mu
 
 - **Native CapXML 2.0 parser** for `.capx`, preserving multiple staves, voices, musical pitches, rhythms, many slurs, articulations and repeat structures.
 - **Legacy `.cap` support (best effort)** using MuseScore's legacy importer; accuracy depends on MuseScore support.
-- **Editability-first engraving** with Balanced (recommended), Compact and Original Systems modes. Page layout may change, though spacing and staff structure are considered.
+- **First-page credits** preserve prominent title, subtitle and composer as separate editable MusicXML credits when supplied in Capella.\n- **Editability-first engraving** with Balanced (recommended), Compact and Original Systems modes. Page layout may change, though spacing and staff structure are considered.
 - **Multiple exports:** editable `.mscz`, `.musicxml`, `.pdf`, PNG preview, a JSON report, or all batch outputs in a ZIP.
-- **Batch imports**, conversion warnings and downloadable reports.
+- **Batch imports**, an upload progress percentage, a conversion activity indicator, warnings and downloadable reports.
 - **Private processing**: no external API; source uploads deleted after conversion; results expire after 24 hours by default.
 - **No application login:** Open the page and upload scores immediately; no users, passwords, or account settings.
 - **GitHub Actions** tests, builds, smoke-tests the real converter inside Docker, and publishes to GitHub Container Registry (GHCR).
@@ -151,3 +151,9 @@ CI also builds the actual Docker image and runs a real score conversion through 
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Feature branch: first-page credits and conversion progress
+
+The web interface shows upload percentage and an animated activity indicator once the upload finishes. The conversion stage deliberately has **no fake percentage**, because the MuseScore CLI does not provide per-measure progress. First-page score credits are extracted from Capella text and exported as MusicXML title, subtitle and composer credits.
+
+Finale's proprietary `.mus` and `.musx` files are not accepted directly; export MusicXML from Finale first. A future version can offer direct MusicXML and compressed `.mxl` imports.

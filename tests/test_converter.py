@@ -36,6 +36,27 @@ def test_single_staff_and_octave():
     assert notes[1].findtext('./accidental')=='natural'
 
 
+
+def test_first_page_credits_and_multiline_composer():
+    decorated=MINIMAL.replace(
+        b'<clefSign clef="treble"/>',
+        b'''<clefSign clef="treble"/><chord><duration base="1/4"/>
+        <drawObjects>
+          <drawObj><text y="-24"><font face="Lato" height="37"/><content>Brandywine</content></text></drawObj>
+          <drawObj><text y="-17"><font face="Lato" height="17"/><content>Variationen fuer vier Floeten
+von Rene Brielmann</content></text></drawObj>
+        </drawObjects><heads><head pitch="D5"/></heads></chord>'''
+    )
+    xml,report=converter.serialize_musicxml(capx(decorated))
+    doc=ET.fromstring(xml)
+    assert doc.findtext('./movement-title')=='Brandywine'
+    assert doc.findtext('./identification/creator')=='Rene Brielmann'
+    credits={credit.findtext('credit-type'):credit.findtext('credit-words')
+             for credit in doc.findall('credit')}
+    assert credits['title']=='Brandywine'
+    assert credits['subtitle']=='Variationen fuer vier Floeten'
+    assert credits['composer']=='Rene Brielmann'
+
 def test_capx_rejects_bad_input():
     with pytest.raises(converter.CapellaError):converter.read_capx(b'not zip')
     with pytest.raises(converter.CapellaError):converter.read_capx(capx(b'<!DOCTYPE score [<!ENTITY x "a">]><score/>'))
@@ -54,6 +75,9 @@ def test_brandywine_from_environment():
     xml,report=converter.serialize_musicxml(Path(path).read_bytes())
     doc=ET.fromstring(xml)
     assert report['title']=='Brandywine'
+    assert doc.findtext('./identification/creator')=='René Brielmann'
+    assert doc.findtext('./credit[credit-type="title"]/credit-words')=='Brandywine'
+    assert 'Variationen für 4 Flöten' in doc.findtext('./credit[credit-type="subtitle"]/credit-words')
     assert report['notes']==1592
     assert report['measures']==102
     assert len(report['parts'])==4

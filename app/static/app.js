@@ -9,5 +9,62 @@ const node=(tag,text,cls)=>{const el=document.createElement(tag);if(text!==undef
 function link(label,url,other=false){const a=node('a','↓ '+label,'download'+(other?' other':''));a.href=url;a.download='';return a;}
 function display(r){const card=node('article',undefined,'result-item');const top=node('div',undefined,'result-title');top.append(node('strong',r.source_filename),node('span',r.ok?`${r.measures??'—'} measures · ${(r.parts||[]).length||'—'} parts`:'Conversion failed'));card.append(top);
 if(!r.ok){card.append(node('p',r.error,'error'));return card;}const body=node('div',undefined,'result-body');const img=node('img');img.className='thumbnail';img.src=r.downloads.preview;img.alt='First page preview';body.append(img);const side=node('div');const links=node('div',undefined,'links');links.append(link('MuseScore',r.downloads.mscz),link('MusicXML',r.downloads.musicxml,true),link('PDF',r.downloads.pdf,true),link('Report',r.downloads.report,true));side.append(links);if(r.warnings?.length){const title=node('p','Review notes:');title.style.marginBottom='4px';side.append(title);const ul=node('ul',undefined,'warnings');for(const w of r.warnings)ul.append(node('li',w));side.append(ul);}body.append(side);card.append(body);return card;}
-document.getElementById('form').addEventListener('submit',async ev=>{ev.preventDefault();if(!files.length)return;button.disabled=true;button.querySelector('span').textContent='Converting…';results.hidden=false;resultsList.replaceChildren(node('p','Processing your scores on the NAS…'));batch.hidden=true;const data=new FormData();for(const f of files)data.append('files',f);try{const layout=document.querySelector('input[name=layout]:checked').value;const res=await fetch('/api/convert?layout='+encodeURIComponent(layout),{method:'POST',body:data});const json=await res.json();if(!res.ok)throw Error(typeof json.detail==='string'?json.detail:'Conversion request failed');resultsList.replaceChildren();for(const r of json.results)resultsList.append(display(r));if(json.batch_url){batch.href=json.batch_url;batch.hidden=false;batch.download='CapellaBridge-batch.zip';}results.scrollIntoView({behavior:'smooth',block:'start'});}catch(e){resultsList.replaceChildren(node('p',String(e.message),'error'));}finally{button.querySelector('span').textContent='Convert to MuseScore';button.disabled=false;}});
+const progressPanel=document.getElementById('conversion-progress');
+const progressLabel=document.getElementById('progress-label');
+const progressFill=document.getElementById('progress-fill');
+const progressValue=document.getElementById('progress-value');
+const progressDetail=document.getElementById('progress-detail');
+function progress(stage,value,detail){
+  progressPanel.hidden=false;
+  progressPanel.classList.toggle('working',stage==='converting');
+  progressPanel.classList.toggle('failed',stage==='error');
+  progressLabel.textContent=stage==='upload'?'Uploading scores…':stage==='converting'?'Converting music & preparing previews…':stage==='done'?'Conversion complete': 'Conversion failed';
+  progressValue.textContent=stage==='upload'&&value!==null?value+'%':stage==='done'?'100%':'';
+  progressFill.style.width=stage==='upload'&&value!==null?value+'%':stage==='done'?'100%':'42%';
+  progressDetail.textContent=detail;
+  const track=progressPanel.querySelector('[role=progressbar]');
+  if(stage==='upload'&&value!==null){track.setAttribute('aria-valuenow',String(value));track.setAttribute('aria-valuemin','0');track.setAttribute('aria-valuemax','100');}
+  else{track.removeAttribute('aria-valuenow');track.removeAttribute('aria-valuemin');track.removeAttribute('aria-valuemax');}
+}
+document.getElementById('form').addEventListener('submit',async ev=>{
+  ev.preventDefault();if(!files.length)return;
+  button.disabled=true;button.querySelector('span').textContent='Converting…';
+  results.hidden=false;resultsList.replaceChildren(node('p','Uploading your scores…'));
+  batch.hidden=true;
+  const data=new FormData();for(const f of files)data.append('files',f);
+  const layout=document.querySelector('input[name=layout]:checked').value;
+  progress('upload',0,'Sending '+files.length+' score'+(files.length===1?'':'s')+' to your NAS.');
+  try{
+    const response=await new Promise((resolve,reject)=>{
+      const xhr=new XMLHttpRequest();
+      xhr.open('POST','/api/convert?layout='+encodeURIComponent(layout));
+      xhr.timeout=600000;
+      xhr.upload.onprogress=event=>{
+        if(event.lengthComputable)progress('upload',Math.min(100,Math.round(event.loaded/event.total*100)),'Uploading '+files.length+' score'+(files.length===1?'':'s')+'…');
+      };
+      xhr.upload.onload=()=>{
+        progress('converting',null,'Upload complete. MuseScore is engraving and exporting the score. This stage can take longer for large files.');
+        resultsList.replaceChildren(node('p','Creating MuseScore files and PDF previews…'));
+      };
+      xhr.onload=()=>resolve(xhr);
+      xhr.onerror=()=>reject(new Error('Network connection lost during conversion.'));
+      xhr.ontimeout=()=>reject(new Error('Conversion timed out. Try a smaller batch.'));
+      xhr.send(data);
+    });
+    let json;
+    try{json=JSON.parse(response.responseText)}catch{throw Error('Server returned an unexpected response');}
+    if(response.status<200||response.status>=300)throw Error(typeof json.detail==='string'?json.detail:'Conversion request failed');
+    resultsList.replaceChildren();
+    for(const r of json.results)resultsList.append(display(r));
+    if(json.batch_url){batch.href=json.batch_url;batch.hidden=false;batch.download='CapellaBridge-batch.zip';}
+    progress('done',100,'Your converted files are ready below.');
+    results.scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(error){
+    progress('error',null,String(error.message));
+    resultsList.replaceChildren(node('p',String(error.message),'error'));
+  }finally{
+    button.querySelector('span').textContent='Convert to MuseScore';
+    button.disabled=!files.length;
+  }
+});
 fetch('/api/info').then(r=>r.json()).then(j=>{max=j.max_batch;document.getElementById('size-limit').textContent=j.max_upload_mb;document.getElementById('engine').textContent=j.engine_available?'MuseScore CLI ready':'Renderer unavailable';}).catch(()=>{document.getElementById('engine').textContent='Unavailable';});
