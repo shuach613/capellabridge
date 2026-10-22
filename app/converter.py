@@ -200,7 +200,7 @@ def extract_metadata(root):
         for line in lines:
             if line == title or (len(line) <= 3 and line.isdigit()):
                 continue
-            match = re.match(r'^(?:von|by|composed by|composer:)\\s+(.+)$', line, re.I)
+            match = re.match(r'^(?:von|by|composed by|composer:)\s+(.+)$', line, re.I)
             if match:
                 composer = match.group(1).strip()
             elif height >= 10 and len(line) > 3 and line not in subtitle_lines:
