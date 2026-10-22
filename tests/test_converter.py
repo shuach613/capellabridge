@@ -162,3 +162,42 @@ def test_print_ready_mscz_preserves_score_and_styles(tmp_path):
         for key,value in STYLE_VALUES.items():
             assert doc.findtext('./Score/Style/'+key)==value
         assert len(doc.findall('./Score/Staff'))==1
+
+
+def test_all_three_layouts_have_clean_system_numbering():
+    """Original breaks at source system starts, not every later measure."""
+    systems=[]
+    for si in range(3):
+        staff_parts=[]
+        for name in ('First','Second'):
+            objects='<timeSign time="2/4"/>' if si == 0 else ''
+            objects += (
+                '<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>'
+                '<chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>'
+            )
+            staff_parts.append(
+                f'<staff layout="{name}"><voices><voice><noteObjects>{objects}'
+                '</noteObjects></voice></voices></staff>'
+            )
+        systems.append('<system><staves>'+''.join(staff_parts)+'</staves></system>')
+    source=capx((
+        '<score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves><staffLayout description="First"/>'
+        '<staffLayout description="Second"/></staves></layout>'
+        '<systems>'+''.join(systems)+'</systems></score>'
+    ).encode())
+    for layout in ('balanced','compact','original'):
+        xml,report=converter.serialize_musicxml(source,layout)
+        doc=ET.fromstring(xml)
+        assert report['measures']==3
+        parts=doc.findall('./part')
+        assert len(parts)==2
+        assert [len(p.findall('./measure')) for p in parts]==[3,3]
+        assert parts[0].findtext('./measure/print/measure-numbering')=='system'
+        assert parts[1].find('./measure/print') is None
+        forced=parts[0].xpath('./measure/print[@new-system="yes"]')
+        if layout == 'original':
+            assert len(forced)==2
+            assert [node.getparent().get('number') for node in forced]==['2','3']
+        else:
+            assert forced==[]
