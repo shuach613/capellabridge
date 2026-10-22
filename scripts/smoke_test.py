@@ -55,22 +55,29 @@ def main():
     else:
         raise SystemExit('The container did not become healthy')
 
-    body,ctype=make_upload()
-    result=json.loads(get('/api/convert?layout=balanced', body, ctype))
-    assert result['results'], result
-    one=result['results'][0]
-    assert one['ok'], one
-    assert one['measures']==2, one
-    assert len(one['parts'])==1, one
-    mscz=get(one['downloads']['mscz'])
-    with zipfile.ZipFile(io.BytesIO(mscz)) as z:
-        assert any(n.endswith('.mscx') for n in z.namelist()), z.namelist()
-    assert get(one['downloads']['pdf']).startswith(b'%PDF-')
-    assert get(one['downloads']['preview']).startswith(b'\x89PNG\r\n\x1a\n')
-    assert get(one['downloads']['musicxml']).startswith(b'<?xml')
-    with zipfile.ZipFile(io.BytesIO(get(result['batch_url']))) as z:
-        assert any(name.endswith('.mscz') for name in z.namelist())
-    print('Smoke test passed: live MuseScore CAPX -> MSCZ, MusicXML, PDF, PNG and ZIP')
+    for layout in ('balanced', 'compact', 'original'):
+        body,ctype=make_upload()
+        result=json.loads(get('/api/convert?layout='+layout, body, ctype))
+        assert result['results'], (layout,result)
+        one=result['results'][0]
+        assert one['ok'], (layout,one)
+        assert one['measures']==2, (layout,one)
+        assert len(one['parts'])==1, (layout,one)
+        mscz=get(one['downloads']['mscz'])
+        with zipfile.ZipFile(io.BytesIO(mscz)) as z:
+            assert any(n.endswith('.mscx') for n in z.namelist()), z.namelist()
+            from xml.etree import ElementTree as ET
+            score=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+            assert score.findtext('./Score/Style/showMeasureNumber')=='1'
+            assert score.findtext('./Score/Style/measureNumberSystem')=='1'
+            assert score.findtext('./Score/Style/measureNumberAllStaffs')=='0'
+        assert get(one['downloads']['pdf']).startswith(b'%PDF-')
+        assert get(one['downloads']['preview']).startswith(b'\x89PNG\r\n\x1a\n')
+        assert get(one['downloads']['musicxml']).startswith(b'<?xml')
+        with zipfile.ZipFile(io.BytesIO(get(result['batch_url']))) as z:
+            assert any(name.endswith('.mscz') for name in z.namelist())
+        print(f'{layout}: MuseScore MSCZ, PDF, PNG, MusicXML and ZIP verified')
+    print('All three layout modes passed the live Docker conversion test')
 
 
 if __name__ == "__main__":

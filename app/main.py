@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from .converter import CapellaError, serialize_musicxml
 from .musescore import ConversionFailure, convert, create_preview, musescore_path
+from .engraving import prepare_print_ready
 
 VERSION='1.1.0'
 BASE=Path(os.environ.get('CAPELLABRIDGE_DATA','/data')).resolve()
@@ -119,6 +120,7 @@ def process_score(name,ext,raw,work,layout):
         warnings.append('Legacy .cap uses MuseScore’s import engine, not the CAPX native parser. Review layout and voices.')
     mscz=work/(prefix+'.mscz')
     convert(xml_path,mscz)
+    prepare_print_ready(mscz)
     pdf=work/(prefix+'.pdf')
     convert(mscz,pdf)
     png=work/(prefix+'-preview.png')
