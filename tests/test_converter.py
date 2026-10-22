@@ -97,7 +97,7 @@ def test_web_upload_without_login(monkeypatch,tmp_path):
     def fake_convert(source,target):
         out=Path(target)
         if out.suffix=='.mscz':
-            with zipfile.ZipFile(out,'w') as z:z.writestr('score.mscx','<museScore/>')
+            with zipfile.ZipFile(out,'w') as z:z.writestr('score.mscx','<museScore version="3.02"><Score><Staff/></Score></museScore>')
         else:out.write_bytes(b'%PDF-1.4\n%test' if out.suffix=='.pdf' else b'<score-partwise/>')
     def fake_preview(pdf,png):Path(png).write_bytes(b'\x89PNG\r\n\x1a\n')
     monkeypatch.setattr(main,'convert',fake_convert)
