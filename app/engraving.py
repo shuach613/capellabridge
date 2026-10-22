@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import textwrap
 import zipfile
 from pathlib import Path
 from lxml import etree as ET
@@ -49,11 +50,17 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
             if metadata:
                 frame = score.find('./Staff/VBox')
                 if frame is not None:
-                    credits = [
-                        ('Title', metadata.get('title', '')),
-                        ('Subtitle', metadata.get('subtitle', '')),
-                        ('Composer', metadata.get('composer', '')),
-                    ]
+                    # Capella paragraphs may contain several separate lines;
+                    # flattening them into a long " — " subtitle runs off the
+                    # right-hand page margin. Use native MuseScore text items
+                    # so the title frame grows vertically, not horizontally.
+                    credits = [('Title', metadata.get('title', ''))]
+                    for paragraph in metadata.get('subtitle', '').splitlines():
+                        for line in textwrap.wrap(paragraph.strip(), width=62,
+                                                  break_long_words=False):
+                            credits.append(('Subtitle',line))
+                    if metadata.get('composer'):
+                        credits.append(('Composer',metadata['composer']))
                     old_credits = [element for element in frame.findall('Text')
                                    if element.findtext('style') in ('Title','Subtitle','Composer')]
                     if old_credits and any(value for _, value in credits):
@@ -71,7 +78,8 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                             insertion_index += 1
                         height = frame.find('height')
                         if height is not None:
-                            height.text = str(max(14.0, float(height.text or '0')))
+                            height.text = str(max(14.0, 8.0 + 3.0 * len(credits),
+                                                  float(height.text or '0')))
             # MusicXML imports a group of four independent parts as a single
             # barLineSpan=4 on the first staff. MuseScore 3 treats staff
             # spanning as a per-adjacent-staff flag, making bars appear joined

@@ -170,3 +170,10 @@ The Original systems mode only forces real source-system boundaries; if renderin
 In Balanced and Compact, MuseScore flows measures according to the selected spacing; in Original systems, line breaks are placed at genuine Capella source-system starts, not on every measure. Full-score measure numbers are shown at the beginning of each system, on the top staff only. First/second ending brackets are emitted only on the top staff, while repeat barline events remain available in each part for playback. The MSCZ has MuseScore 3 native print-style settings applied before PDF and preview rendering. MusicXML uses a top-staff \u003cmeasure-numbering\u003e instruction.
 
 Native import can still reflow the music relative to the Capella PDF. Inspect complex repeats and page breaks in MuseScore before publication.
+
+## Rhythmic correctness in CapellaBridge 1.5.0
+
+CAPX conversion now derives measures from **time-signature changes and explicit source barlines**, rather than applying only the opening time signature throughout the score. The converter treats CapXML integer rest durations as **whole measures**, handles *noDuration* notes as grace notes, and uses exact time ratios for tuplets (for example three eighths in the time of two). It also preserves combined repeat-end-and-start barlines and prominent score labels such as **No 1–No 7**. Long, multi-line score subtitles are preserved and line-wrapped in the native MuseScore title frame.
+
+The automated tests exercise mixed 2/4 and 6/8, whole-measure rests, tuplets, grace notes, and both repeat directions, across all three layout choices; the Docker smoke test renders a mixed-meter score with MuseScore. The converter's report still identifies unsupported ornaments and source-format features—do not assume that any notation converter can guarantee exact facsimile rendering of arbitrary CAPX files.
+

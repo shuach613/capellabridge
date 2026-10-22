@@ -44,12 +44,28 @@ def sub(parent, name, text=None, **attrs):
     return el
 
 
-def duration_of(node):
+def duration_of(node, meter=None):
+    """Read CapXML time values as sounding fractions of a whole note.
+
+    Integer rest bases count *whole measures*, not whole notes.
+    A noDuration grace note occupies no rhythmic space.
+    """
     d = child(node, 'duration')
-    if d is None: return Fraction(0)
-    base = Fraction(d.get('base', '1/4'))
+    if d is None or d.get('noDuration') == 'true':
+        return Fraction(0)
+    base_value = d.get('base', '1/4')
+    if tag(node) == 'rest' and meter is not None and re.fullmatch(r'[1-9]\d*', base_value):
+        return meter * int(base_value)
+    base = Fraction(base_value)
     dots = min(int(d.get('dots', '0')), 4)
-    return base * sum((Fraction(1, 2**k) for k in range(dots + 1)), Fraction(0))
+    duration = base * sum((Fraction(1, 2**k) for k in range(dots + 1)), Fraction(0))
+    tuplet = child(d, 'tuplet')
+    if tuplet is not None:
+        actual = int(tuplet.get('count', '3'))
+        if actual < 2 or actual > 32:
+            raise CapellaError(f'Unsupported tuplet ratio: {actual}')
+        duration *= Fraction(2 ** (actual.bit_length() - 1), actual)
+    return duration
 
 
 def to_div(f):
@@ -129,23 +145,34 @@ def parse_score(root):
         trans = int(sound.get('transpose', '0')) if sound is not None else 0
         parts.append(Part(name=name or f'Part {i+1}', layout=name, midi_program=max(1, min(128, program)), transpose=trans))
     clock = Fraction(0)
+    current_meter = Fraction(1, 1)
     for si, sys in enumerate(systems):
         staves = children(child(sys, 'staves'), 'staff')
         if len(staves) != len(parts):
             raise CapellaError(f'System {si+1} has {len(staves)} staves; first system has {len(parts)}. Variable staff count requires a later importer.')
         durations = []
+        next_meter = current_meter
         for pi, staff in enumerate(staves):
             voices = children(child(staff, 'voices'), 'voice')
             if not voices: continue
             voice_lengths = []
             for vi, voice in enumerate(voices):
                 t = clock
+                local_meter = current_meter
                 for ob in list(child(voice, 'noteObjects')) if child(voice, 'noteObjects') is not None else []:
                     kind = tag(ob)
                     if kind not in ('chord','rest','barline','clefSign','keySign','timeSign'):
                         warnings.append(f'Unrecognized Capella element {kind}; may not be preserved.')
                         continue
-                    dur = duration_of(ob) if kind in ('chord','rest') else Fraction(0)
+                    if kind == 'timeSign':
+                        try:
+                            local_meter = Fraction(ob.get('time', '4/4'))
+                            if local_meter <= 0: raise ValueError()
+                        except (ValueError, ZeroDivisionError):
+                            raise CapellaError(f'Invalid time signature in system {si+1}')
+                        if pi == 0 and vi == 0:
+                            next_meter = local_meter
+                    dur = duration_of(ob, local_meter) if kind in ('chord','rest') else Fraction(0)
                     parts[pi].events.append(Event(t, kind, ob, si, vi+1, dur))
                     t += dur
                 voice_lengths.append(t-clock)
@@ -155,6 +182,7 @@ def parse_score(root):
         if len(set(durations)) > 1:
             warnings.append(f'Uneven staff durations in system {si+1}; original may have independent timing.')
         clock += max(durations) if durations else Fraction(0)
+        current_meter = next_meter
     return parts, clock, sorted(set(warnings))
 
 
@@ -198,14 +226,18 @@ def extract_metadata(root):
             # Some Capella documents combine title and byline in one box.
             lines = lines[1:]
         for line in lines:
-            if line == title or (len(line) <= 3 and line.isdigit()):
+            # Section labels belong above their measures, not inside the
+            # first-page title frame.
+            if line == title or re.fullmatch(
+                r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?', line
+            ):
                 continue
             match = re.match(r'^(?:von|by|composed by|composer:)\s+(.+)$', line, re.I)
             if match:
                 composer = match.group(1).strip()
             elif height >= 10 and len(line) > 3 and line not in subtitle_lines:
                 subtitle_lines.append(line)
-    return title, ' — '.join(subtitle_lines), composer
+    return title, '\n'.join(subtitle_lines), composer
 
 
 def extract_variation_numbers(parts):
@@ -225,7 +257,9 @@ def extract_variation_numbers(parts):
             if font is None or content is None:
                 continue
             label = ' '.join(''.join(content.itertext()).split())
-            if not re.fullmatch(r'[1-9][0-9]?', label):
+            if not re.fullmatch(
+                r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?', label
+            ):
                 continue
             if font.get('face', '').casefold() in ('capella', 'capella3'):
                 continue
@@ -249,26 +283,40 @@ def add_variation_heading(measure, label):
 
 
 def compute_boundaries(parts, end):
-    """Pick explicit barlines and meter-based measures. First system may contain a pickup."""
-    first = [e for e in parts[0].events if e.voice == 1]
-    first.sort(key=lambda e:(e.time, 0 if e.kind not in ('chord','rest') else 1))
-    meter = Fraction(1, 1)
-    for e in first:
-        if e.kind == 'timeSign':
-            try: meter = Fraction(e.node.get('time','4/4'))
-            except ValueError: pass
-            break
-    bars = {Fraction(0), end}
-    explicit = {e.time for e in first if e.kind == 'barline'}
-    pickup = min((x for x in explicit if 0 < x < meter), default=None)
-    offset = pickup or Fraction(0)
-    bars.add(offset)
-    t = offset
-    while t < end:
-        t += meter
-        if t < end: bars.add(t)
-    bars.update(t for t in explicit if 0 <= t <= end)
-    return sorted(bars), meter
+    """Use each meter region and explicit source barline as rhythmic anchors.
+
+    Keeping the opening meter for the entire score creates phantom measures
+    after a 2/4 -> 6/8 change and places notes across those phantom barlines.
+    """
+    first = sorted((e for e in parts[0].events if e.voice == 1), key=lambda e:e.time)
+    signatures = []
+    for event in first:
+        if event.kind == 'timeSign':
+            try:
+                meter = Fraction(event.node.get('time', '4/4'))
+                if meter <= 0: raise ValueError()
+            except (ValueError, ZeroDivisionError):
+                raise CapellaError('Invalid time signature in source score')
+            signatures.append((event.time,meter))
+    if not signatures:
+        signatures = [(Fraction(0),Fraction(1, 1))]
+    opening = signatures[0][1]
+    anchors = {Fraction(0),end}
+    anchors.update(e.time for e in first if e.kind=='barline' and 0 <= e.time <= end)
+    anchors.update(t for t,_ in signatures if 0 <= t <= end)
+    points = sorted(anchors)
+    bars = set(points)
+    active_meter = opening
+    sig_index = 0
+    for start,stop in zip(points,points[1:]):
+        while sig_index < len(signatures) and signatures[sig_index][0] <= start:
+            active_meter = signatures[sig_index][1]
+            sig_index += 1
+        next_bar = start + active_meter
+        while next_bar < stop:
+            bars.add(next_bar)
+            next_bar += active_meter
+    return sorted(bars),opening
 
 
 def add_attributes(measure, key=None, time=None, clef=None, transpose=0, initial=False):
@@ -297,12 +345,17 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends):
     heads = children(child(ob,'heads'),'head') if event.kind=='chord' else [None]
     dnode=child(ob,'duration')
     marks=children(ob,'articulation')
+    is_grace = dnode is not None and dnode.get('noDuration') == 'true'
+    is_full_measure_rest = (event.kind == 'rest' and dnode is not None
+        and re.fullmatch(r'[1-9]\d*',dnode.get('base','')) is not None)
+    tuplet = child(dnode, 'tuplet')
     for hi,head in enumerate(heads):
         note=sub(meas,'note')
+        if is_grace:sub(note,'grace',slash='yes')
         if hi>0:sub(note,'chord')
         accidental=None; shape=None; ties=[]
         if head is None:
-            sub(note,'rest')
+            sub(note,'rest', **({'measure':'yes'} if is_full_measure_rest else {}))
         else:
             raw=head.get('pitch','C5')
             match=re.fullmatch(r'([A-G])([0-9])',raw)
@@ -324,13 +377,18 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends):
             if ti is not None:
                 if ti.get('end')=='true':ties.append('stop')
                 if ti.get('begin')=='true':ties.append('start')
-        sub(note,'duration',to_div(event.dur))
+        if not is_grace:sub(note,'duration',to_div(event.dur))
         for tp in ties:sub(note,'tie',type=tp)
         sub(note,'voice',voice)
-        if dnode is not None:
+        if dnode is not None and not is_full_measure_rest:
             sub(note,'type',note_type(dnode))
             for _ in range(int(dnode.get('dots','0'))):sub(note,'dot')
         if accidental:sub(note,'accidental',accidental)
+        if tuplet is not None and not is_grace:
+            actual=int(tuplet.get('count','3'))
+            modified=sub(note,'time-modification')
+            sub(modified,'actual-notes',actual)
+            sub(modified,'normal-notes',2**(actual.bit_length()-1))
         stem=child(ob,'stem')
         if stem is not None:
             direction=stem.get('dir')
@@ -482,7 +540,7 @@ def serialize_musicxml(raw, layout='balanced'):
                         nnotes+=make_note(measure,e,voice,state,slur_starts,slur_ends)
                         if e.time+e.dur>stop:
                             warnings.append(f'A note crosses a barline in {p.name} at measure {mi+1}.')
-            left_repeat=primary_barlines.get(start)=='repBegin'
+            left_repeat=primary_barlines.get(start) in ('repBegin','repEndBegin')
             if left_repeat or (pi==0 and start in ending_starts):
                 bl=sub(measure,'barline',location='left')
                 if pi==0 and start in ending_starts:
@@ -490,13 +548,13 @@ def serialize_musicxml(raw, layout='balanced'):
                     sub(bl,'ending',f'{num}.',number=num,type='start')
                 if left_repeat:sub(bl,'repeat',direction='forward')
             right_type=primary_barlines.get(stop)
-            if right_type in ('repEnd','double','end') or (pi==0 and start in ending_starts):
+            if right_type in ('repEnd','repEndBegin','double','end') or (pi==0 and start in ending_starts):
                 bl=sub(measure,'barline',location='right')
                 if right_type in ('double','end'):
                     sub(bl,'bar-style','light-light' if right_type=='double' else 'light-heavy')
                 if pi==0 and start in ending_starts:
                     sub(bl,'ending',number=ending_starts[start],type='stop' if ending_starts[start]=='1' else 'discontinue')
-                if right_type=='repEnd':sub(bl,'repeat',direction='backward')
+                if right_type in ('repEnd','repEndBegin'):sub(bl,'repeat',direction='backward')
             if mi==0 and start==0 and stop<meter:
                 measure.set('implicit','yes')
     # Notation-level warnings: emphasize these instead of silently promising fidelity.
