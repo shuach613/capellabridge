@@ -1,40 +1,169 @@
-# CapellaBridge
+# CapellaBridge 🎼
 
-Convert Capella scores (`.capx`, best-effort legacy `.cap`) into editable MuseScore files (`.mscz`) in a private self-hosted Docker web interface. Also export MusicXML, PDF, PNG previews, and batch ZIPs.
+**From Capella to MuseScore Studio — privately, on your own server.**
 
-![CapellaBridge interface](capellabridge-1.0%202/docs/screenshot.png)
+CapellaBridge converts `.capx` and legacy `.cap` music notation into editable MuseScore (`.mscz`) scores. It also exports MusicXML, PDF, a first-page PNG preview, and a conversion report. Designed to run on a Synology NAS as one Docker container with a browser interface.
 
-## Quick deployment on Synology
+![CapellaBridge desktop interface](docs/screenshot.png)
 
-The root [docker-compose.yml](docker-compose.yml) is ready for Synology Container Manager → Project. No `.env` file required. The first-run administrator credentials are generated automatically; obtain them in the container logs and change the password in Account Settings.
+<details><summary>Mobile interface</summary>
 
-Once the [Docker publishing workflow](.github/workflows/docker-publish.yml) has succeeded and the GHCR package is public, run:
+![CapellaBridge mobile interface](docs/mobile.png)
+
+</details>
+
+## Features
+
+- **Native CapXML 2.0 parser** for `.capx`, preserving multiple staves, voices, musical pitches, rhythms, many slurs, articulations and repeat structures.
+- **Legacy `.cap` support (best effort)** using MuseScore's legacy importer; accuracy depends on MuseScore support.
+- **Editability-first engraving** with Balanced (recommended), Compact and Original Systems modes. Page layout may change, though spacing and staff structure are considered.
+- **Multiple exports:** editable `.mscz`, `.musicxml`, `.pdf`, PNG preview, a JSON report, or all batch outputs in a ZIP.
+- **Batch imports**, conversion warnings and downloadable reports.
+- **Private processing**: no external API; source uploads deleted after conversion; results expire after 24 hours by default.
+- **Automatic first-run administrator account** with generated password. No `.env`, secrets file, database or external setup wizard.
+- **Built-in password management** in Account Settings. Password is stored as a salted PBKDF2-SHA256 hash in a Docker-managed persistent volume.
+- **GitHub Actions** tests, builds, smoke-tests the real converter inside Docker, and publishes to GitHub Container Registry (GHCR).
+
+> This is an independent community tool, not affiliated with capella-software or MuseScore. MusicXML and MuseScore may reflow pages or not represent unusual Capella-specific drawn objects. Review the conversion report and final score.
+
+## Quick start — pull an image on Synology
+
+### 1. Publish the repository on GitHub
+
+The project files live at the repository root, including the `.github/workflows/` directory. Push changes to `main` to build and publish automatically. GitHub Actions runs automatically when you push to `main`. A successful workflow publishes `ghcr.io/shuach613/capellabridge:latest`.
+
+GitHub repository settings: **Actions → General → Workflow permissions** should allow the workflow's configured `packages: write` permission. `GITHUB_TOKEN` is supplied automatically; no manual Docker registry secret is needed. Under **Packages**, make the published package **Public** to allow your NAS to pull it without registry login. Private GHCR packages require `docker login` on the NAS.
+
+### 2. Set up a minimal Compose stack on the NAS
+
+Copy `docker-compose.yml` to `/volume1/docker/capellabridge/docker-compose.yml`, or paste it in Synology Container Manager → Project. The included Compose file already contains the correct image address. No environment file or other configuration is required.
+
+```yaml
+services:
+  capellabridge:
+    image: ghcr.io/shuach613/capellabridge:latest
+    platform: linux/amd64
+    pull_policy: always
+    container_name: capellabridge
+    restart: unless-stopped
+    init: true
+    ports:
+      - "8765:8080"
+    volumes:
+      - capellabridge_data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 2g
+
+volumes:
+  capellabridge_data:
+```
+
+From Synology SSH:
 
 ```bash
+cd /volume1/docker/capellabridge
 docker compose pull
 docker compose up -d
+```
+
+Visit `http://NAS-IP:8765` from your network. Your browser shows a username/password prompt.
+
+### 3. First login (automatically generated)
+
+On first start **the container creates its own credentials**. Retrieve your unique initial login from the container logs:
+
+```bash
 docker logs capellabridge
 ```
 
-The service uses port **8765**. Store the Docker Compose project in `/volume1/docker/capellabridge` if using SSH for updates. Keep the named Docker volume: it holds the administrator account and temporary results.
+The login appears under **CAPELLABRIDGE FIRST START**:
 
-## Automatic image builds
+- Username: `admin`
+- Password: generated random password (printed once on initial startup)
 
-Each push to **main** triggers unit tests, an image build, an actual converter smoke test, and—if every step succeeds—publication of:
+Use **Account settings** in the app to change the password. Login data survives image updates thanks to the `capellabridge_data` volume. **Do not delete the volume** unless you intentionally want to reset the account. Initial credentials only appear in the first-start logs; save the password after changing it. Restarting the container will not generate a new password.
 
-`ghcr.io/shuach613/capellabridge:latest`
+**Security:** Container logs include the initial password; only trusted NAS administrators should have access to those logs. For remote access, place the service behind **HTTPS and authenticated access** through your reverse proxy or VPN. Avoid exposing port 8765 directly to the public internet: HTTP Basic credentials should never travel over plain HTTP outside a trusted LAN. For stronger security use VPN or an identity-aware proxy in front of the service.
 
-See [GitHub Actions](https://github.com/shuach613/capellabridge/actions). The NAS does not automatically redeploy when the registry image changes: run `docker compose pull && docker compose up -d` to update.
+### 4. Update the NAS after a GitHub push
 
-## Features and limitations
+```bash
+cd /volume1/docker/capellabridge
+docker compose pull
+docker compose up -d
+```
 
-- Four main outputs: MuseScore MSCZ, MusicXML, PDF, and PNG
-- Multi-file upload, bulk download, conversion reports
-- Original score layout is interpreted, but clean editability is prioritized
-- Temporary conversion outputs expire after approximately 24 hours; source uploads are removed after processing
-- Access should be protected by HTTPS reverse proxy or VPN when used remotely
-- Not affiliated with capella-software or MuseScore
+This **pulls** the GitHub-built image instead of compiling MuseScore on the NAS. To automate updates, configure a Synology DSM Task Scheduler task to run the same commands periodically. The included `scripts/nas-update.sh` provides an example.
 
-**Source code:** The current active app and Dockerfile are in [capellabridge-1.0 2](capellabridge-1.0%202/). This folder name is retained temporarily to match the previously uploaded project. Edit this directory to trigger updated builds. The other `capellabridge-1.0` folder is an older duplicate and is **not** built by the workflow.
+## Push the code to GitHub from your computer
 
-![Mobile interface](capellabridge-1.0%202/docs/mobile.png)
+For an existing clone of this repository, run:
+
+```bash
+git add .
+git commit -m "Update CapellaBridge"
+git push origin main
+```
+
+Authenticate when Git asks (GitHub uses a credential manager or personal access token, not your account password). Or upload files in the GitHub web interface, ensuring `.github/workflows/` is included. Watch **Actions → Build and publish CapellaBridge**. The image only publishes after successful tests.
+
+Optionally tag a release:
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+## How conversion works
+
+1. The browser uploads `.capx` or `.cap` to the container.
+2. The CAPX parser reads score XML and maps musical structures to MusicXML; the legacy `.cap` path uses the MuseScore importer.
+3. MuseScore runs **headlessly in the container**, saving an editable `.mscz` and PDF.
+4. Poppler produces a PNG preview; the service generates a report listing warnings.
+5. Results remain available for 24 hours, and then an automatic cleanup task removes them.
+
+A single-process conversion queue reduces CPU spikes on smaller NAS devices. The container image currently targets **Linux x86-64 (`linux/amd64`)**. The web UI is responsive across desktop and mobile browsers.
+
+## Operations and troubleshooting
+
+| Task | Command |
+| --- | --- |
+| Check logs / first-run password | `docker logs capellabridge` |
+| Check container status | `docker ps --filter name=capellabridge` |
+| Check health | `curl http://127.0.0.1:8765/health` |
+| Restart | `docker restart capellabridge` |
+| Pull & redeploy | `docker compose pull && docker compose up -d` |
+| Stop | `docker compose down` (preserves the volume) |
+
+If image pulling fails, check the GHCR package visibility and exact lowercase image name. If the renderer is unavailable, inspect Docker logs and the `/health` endpoint. The `docs/screenshot.png` image is committed to this repository and displays directly on GitHub without an external image host.
+
+## Project layout
+
+```text
+.github/workflows/       Unit tests, Docker build, smoke test, GHCR publication
+app/main.py              API, authentication, cleanup, uploads, downloads
+app/converter.py         CAPX → MusicXML converter
+app/musescore.py         Headless MuseScore and previews
+app/static/              Web interface
+scripts/                 Smoke test and NAS updater
+tests/                   Automated parser and API tests
+docs/                    GitHub README screenshots
+Dockerfile               Single-image build
+docker-compose.yml       Ready-to-pull Synology stack
+```
+
+## Development
+
+```bash
+python -m pip install -r requirements.txt pytest httpx
+python -m pytest -q
+```
+
+CI also builds the actual Docker image and runs a real score conversion through its HTTP API before publishing. Passing local unit tests does not establish that the headless MuseScore renderer works on every device. The workflow is the release gate.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -51,7 +51,7 @@ def main():
             if health.get('status')=='ok':
                 assert health.get('engine_available'), health
                 break
-        except (urllib.error.URLError, TimeoutError):
+        except (OSError, TimeoutError, urllib.error.URLError):
             pass
         time.sleep(2)
     else:

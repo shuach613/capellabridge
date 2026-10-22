@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="CapellaBridge">
-<defs><linearGradient id="g" x1="0" y1="1" x2="1" y2="0"><stop stop-color="#2378b6"/><stop offset="1" stop-color="#5bbdeb"/></linearGradient></defs>
-<rect width="64" height="64" rx="16" fill="#252d3a"/>
-<path d="M8 25H56M8 31H56M8 37H56M8 43H56" stroke="#a3b7c7" opacity=".34" stroke-width="1.4"/>
-<path d="M25 34V13M43 28V10" stroke="url(#g)" stroke-width="4.4" stroke-linecap="round"/>
-<ellipse cx="19" cy="36" rx="8.5" ry="5.5" transform="rotate(-20 19 36)" fill="#38b3e7"/>
-<ellipse cx="37" cy="30" rx="8.5" ry="5.5" transform="rotate(-20 37 30)" fill="#86d6f4"/>
-<path d="M25 17C31 9 36 7 42 12" fill="none" stroke="#eeb76b" stroke-linecap="round" stroke-width="3"/>
-</svg>

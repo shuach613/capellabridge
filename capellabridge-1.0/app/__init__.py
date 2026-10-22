@@ -1,1 +1,0 @@
-"""CapellaBridge application."""
