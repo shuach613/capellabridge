@@ -72,7 +72,7 @@ def main():
             assert score.findtext('./Score/Style/measureNumberSystem')=='1'
             assert score.findtext('./Score/Style/measureNumberAllStaffs')=='0'
         assert get(one['downloads']['pdf']).startswith(b'%PDF-')
-        assert get(one['downloads']['preview']).startswith(b'\\x89PNG\\r\\n\\x1a\\n')
+        assert get(one['downloads']['preview']).startswith(b'\x89PNG\r\n\x1a\n')
         assert get(one['downloads']['musicxml']).startswith(b'<?xml')
         with zipfile.ZipFile(io.BytesIO(get(result['batch_url']))) as z:
             assert any(name.endswith('.mscz') for name in z.namelist())
