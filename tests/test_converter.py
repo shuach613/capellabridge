@@ -308,3 +308,88 @@ def test_original_mode_avoids_pathological_pagination(tmp_path, monkeypatch):
     assert info['layout']=='balanced-fallback'
     assert any('used a balanced print layout' in warning for warning in info['warnings'])
     assert (work/'Test.mscz').exists()
+
+
+def test_meter_changes_tuplets_grace_and_full_bar_rests_in_all_layouts():
+    """Generic regression: multi-meter CAPX must have no phantom barlines."""
+    first = (
+        '<timeSign time="2/4"/>'
+        '<chord><duration base="1/8"/>'
+        '<drawObjects><drawObj><text y="-6"><font face="Lato" height="16"/>'
+        '<content>No 1</content></text></drawObj></drawObjects>'
+        '<heads><head pitch="C5"/></heads></chord>'
+        '<chord><duration base="1/8"/><heads><head pitch="D5"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="E5"/></heads></chord>'
+    )
+    graces = ''.join(
+        '<chord><duration base="1/32" noDuration="true"/>'
+        '<heads><head pitch="F5"/></heads></chord>' for _ in range(3)
+    )
+    tuplets = ''.join(
+        '<chord><duration base="1/8"><tuplet count="3"/></duration>'
+        + ('<drawObjects><drawObj><text y="-6">'
+           '<font face="Lato" height="16"/><content>No 2</content>'
+           '</text></drawObj></drawObjects>' if i==0 else '') +
+        '<heads><head pitch="G5"/></heads></chord>' for i in range(3)
+    )
+    second = (
+        '<timeSign time="6/8"/><barline type="repEndBegin"/>'
+        +graces+tuplets+
+        '<chord><duration base="1/2"/><heads><head pitch="A5"/></heads></chord>'
+    )
+    def staff(name,objects):
+        return ('<staff layout="'+name+'"><voices><voice><noteObjects>'
+                +objects+'</noteObjects></voice></voices></staff>')
+    source = capx((
+        '<score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves><staffLayout description="Upper"/>'
+        '<staffLayout description="Lower"/></staves></layout>'
+        '<systems><system><staves>'
+        + staff('Upper',first)
+        + staff('Lower','<timeSign time="2/4"/><rest><duration base="1"/>'
+                          '<display churchStyle="true"/></rest>')
+        + '</staves></system><system><staves>'
+        + staff('Upper',second)
+        + staff('Lower','<timeSign time="6/8"/><barline type="repEndBegin"/>'
+                          '<rest><duration base="1"/><display churchStyle="true"/>'
+                          '</rest>')
+        + '</staves></system></systems></score>'
+    ).encode())
+    for layout in ('balanced','compact','original'):
+        xml,report=converter.serialize_musicxml(source,layout)
+        doc=ET.fromstring(xml)
+        assert report['measures']==2, (layout,report)
+        assert report['warnings']==[], (layout,report['warnings'])
+        assert report['variation_numbers']==['No 1','No 2']
+        upper,lower=doc.findall('./part')
+        assert len(upper.findall('./measure'))==2
+        assert len(lower.findall('./measure'))==2
+        assert upper.findtext('./measure[2]/attributes/time/beats')=='6'
+        assert upper.findtext('./measure[2]/attributes/time/beat-type')=='8'
+        assert len(upper.findall('./measure[2]/note/grace'))==3
+        assert not any(n.find('duration') is not None
+                       for n in upper.findall('./measure[2]/note[grace]'))
+        assert len(upper.findall('./measure[2]/note/time-modification'))==3
+        assert [r.findtext('duration') for r in lower.findall('./measure/note')]==[
+            '5040','7560']
+        assert len(lower.findall('./measure/note/rest[@measure="yes"]'))==2
+        assert len(upper.findall('./measure[1]/barline/repeat[@direction="backward"]'))==1
+        assert len(upper.findall('./measure[2]/barline/repeat[@direction="forward"]'))==1
+        assert [n.text for n in upper.findall(
+            './measure/direction/direction-type/words')]==['No 1','No 2']
+
+
+def test_three_to_two_tuplets_reduce_sounding_time():
+    from fractions import Fraction
+    root=ET.fromstring(
+        '<chord xmlns="http://www.capella.de/CapXML/2.0">'
+        '<duration base="1/8"><tuplet count="3"/></duration>'
+        '<heads><head pitch="C5"/></heads></chord>'
+    )
+    assert converter.duration_of(root)==Fraction(1,12)
+    source=ET.fromstring(
+        '<chord xmlns="http://www.capella.de/CapXML/2.0">'
+        '<duration base="1/32" noDuration="true"/>'
+        '<heads><head pitch="C5"/></heads></chord>'
+    )
+    assert converter.duration_of(source)==0
