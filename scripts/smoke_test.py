@@ -133,6 +133,22 @@ def main():
         assert len(root.findall('./Score/Staff'))==4
         print('DEBUG_NATIVE_INITIAL_STAVES',
               [ET.tostring(x,encoding='unicode')[:250] for x in root.findall('./Score/Staff')[:4]],flush=True)
+    import fitz
+    rendered=get(result['results'][0]['downloads']['pdf'])
+    with fitz.open(stream=rendered,filetype='pdf') as doc:
+        page=doc[0]
+        heads={name:page.search_for(name) for name in (
+            'Concert Example','Four flutes','Example Composer')}
+        print('DEBUG_RENDERED_TITLES',
+              {key:[tuple(round(v,1) for v in r) for r in rects]
+               for key,rects in heads.items()},flush=True)
+        assert all(heads.values()), heads
+        spans=[span for block in page.get_text('dict')['blocks'] if 'lines' in block
+               for line in block['lines'] for span in line['spans']]
+        numbers=[(span['text'],hex(span['color'])) for span in spans
+                 if span['text'].strip()=='1']
+        print('DEBUG_RENDERED_NUMBERS',numbers[:20],flush=True)
+        assert numbers, 'Source variation number absent from final PDF'
     print('Four-staff group conversion diagnostic passed',flush=True)
 
     print('All three layout modes passed the live Docker conversion test')
