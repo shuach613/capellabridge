@@ -108,55 +108,56 @@ def main():
         + '</staves><brackets><bracket from="0" to="3"/></brackets></layout>'
         '<systems><system><staves>' + staff_xml + '</staves></system></systems></score>'
     ).encode()
-    body,ctype=make_upload(score_xml)
-    result=json.loads(get('/api/convert?layout=balanced', body, ctype))
-    assert result['results'][0]['ok'], result
-    from xml.etree import ElementTree as ET
-    music_xml=ET.fromstring(get(result['results'][0]['downloads']['musicxml']))
-    assert music_xml.findtext('./movement-title') == 'Concert Example'
-    assert music_xml.findtext('./identification/creator') == 'Example Composer'
-    words=music_xml.findall('./part/measure/direction/direction-type/words')
-    assert [x.text for x in words] == ['1'], [(x.text,x.attrib) for x in words]
-    mscz=get(result['results'][0]['downloads']['mscz'])
-    with zipfile.ZipFile(io.BytesIO(mscz)) as z:
+    for ensemble_layout in ('balanced', 'compact', 'original'):
+        body,ctype=make_upload(score_xml)
+        result=json.loads(get('/api/convert?layout='+ensemble_layout, body, ctype))
+        assert result['results'][0]['ok'], result
         from xml.etree import ElementTree as ET
-        root=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
-        part_info=[]
-        for p in root.findall('./Score/Part'):
-            part_info.append([ET.tostring(ch,encoding='unicode')[:450] for ch in p.findall('./Staff')])
-        print('DEBUG_NATIVE_PART_STAVES',str(part_info)[:3500],flush=True)
-        spans=[p.findtext('./Staff/barLineSpan') for p in root.findall('./Score/Part')]
-        assert spans == ['1','1','1',None], spans
-        first_vbox=root.find('./Score/Staff/VBox')
-        if first_vbox is not None:
-            print('DEBUG_TITLE_VBOX',ET.tostring(first_vbox,encoding='unicode')[:3000],flush=True)
-        assert len(root.findall('./Score/Staff'))==4
-        print('DEBUG_NATIVE_INITIAL_STAVES',
-              [ET.tostring(x,encoding='unicode')[:250] for x in root.findall('./Score/Staff')[:4]],flush=True)
-    import fitz
-    rendered=get(result['results'][0]['downloads']['pdf'])
-    with fitz.open(stream=rendered,filetype='pdf') as doc:
-        page=doc[0]
-        import unicodedata
-        spans=[span for block in page.get_text('dict')['blocks'] if 'lines' in block
-               for line in block['lines'] for span in line['spans']]
-        heads={
-            name:[fitz.Rect(span['bbox']) for span in spans
-                  if name in unicodedata.normalize('NFKC',span['text'])]
-            for name in ('Concert Example','Four flutes','Example Composer')
-        }
-        print('DEBUG_RENDERED_TITLES',
-              {key:[tuple(round(v,1) for v in r) for r in rects]
-               for key,rects in heads.items()},flush=True)
-        print('DEBUG_FIRST_PAGE_TEXT',repr(page.get_text()[:800]),flush=True)
-        assert all(heads.values()), heads
-        assert heads['Concert Example'][0].y1 <= heads['Four flutes'][0].y0+1
-        assert heads['Four flutes'][0].y1 <= heads['Example Composer'][0].y0+1
-        numbers=[(span['text'],hex(span['color'])) for span in spans
-                 if span['text'].strip()=='1']
-        print('DEBUG_RENDERED_NUMBERS',numbers[:20],flush=True)
-        assert numbers, 'Source variation number absent from final PDF'
-    print('Four-staff group conversion diagnostic passed',flush=True)
+        music_xml=ET.fromstring(get(result['results'][0]['downloads']['musicxml']))
+        assert music_xml.findtext('./movement-title') == 'Concert Example'
+        assert music_xml.findtext('./identification/creator') == 'Example Composer'
+        words=music_xml.findall('./part/measure/direction/direction-type/words')
+        assert [x.text for x in words] == ['1'], [(x.text,x.attrib) for x in words]
+        mscz=get(result['results'][0]['downloads']['mscz'])
+        with zipfile.ZipFile(io.BytesIO(mscz)) as z:
+            from xml.etree import ElementTree as ET
+            root=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+            part_info=[]
+            for p in root.findall('./Score/Part'):
+                part_info.append([ET.tostring(ch,encoding='unicode')[:450] for ch in p.findall('./Staff')])
+            print('DEBUG_NATIVE_PART_STAVES',str(part_info)[:3500],flush=True)
+            spans=[p.findtext('./Staff/barLineSpan') for p in root.findall('./Score/Part')]
+            assert spans == ['1','1','1',None], spans
+            first_vbox=root.find('./Score/Staff/VBox')
+            if first_vbox is not None:
+                print('DEBUG_TITLE_VBOX',ET.tostring(first_vbox,encoding='unicode')[:3000],flush=True)
+            assert len(root.findall('./Score/Staff'))==4
+            print('DEBUG_NATIVE_INITIAL_STAVES',
+                  [ET.tostring(x,encoding='unicode')[:250] for x in root.findall('./Score/Staff')[:4]],flush=True)
+        import fitz
+        rendered=get(result['results'][0]['downloads']['pdf'])
+        with fitz.open(stream=rendered,filetype='pdf') as doc:
+            page=doc[0]
+            import unicodedata
+            spans=[span for block in page.get_text('dict')['blocks'] if 'lines' in block
+                   for line in block['lines'] for span in line['spans']]
+            heads={
+                name:[fitz.Rect(span['bbox']) for span in spans
+                      if name in unicodedata.normalize('NFKC',span['text'])]
+                for name in ('Concert Example','Four flutes','Example Composer')
+            }
+            print('DEBUG_RENDERED_TITLES',
+                  {key:[tuple(round(v,1) for v in r) for r in rects]
+                   for key,rects in heads.items()},flush=True)
+            print('DEBUG_FIRST_PAGE_TEXT',repr(page.get_text()[:800]),flush=True)
+            assert all(heads.values()), heads
+            assert heads['Concert Example'][0].y1 <= heads['Four flutes'][0].y0+1
+            assert heads['Four flutes'][0].y1 <= heads['Example Composer'][0].y0+1
+            numbers=[(span['text'],hex(span['color'])) for span in spans
+                     if span['text'].strip()=='1']
+            print('DEBUG_RENDERED_NUMBERS',numbers[:20],flush=True)
+            assert numbers, 'Source variation number absent from final PDF'
+        print(f'Four-staff {ensemble_layout}: PDF credits, variation number, and barlines verified',flush=True)
 
     print('All three layout modes passed the live Docker conversion test')
 
