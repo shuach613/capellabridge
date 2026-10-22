@@ -1,0 +1,33 @@
+# GHCR deployment: builds happen in GitHub Actions, never on the Synology.
+# Set CAPELLABRIDGE_IMAGE in .env to ghcr.io/<github-user>/<repository>:latest
+services:
+  capellabridge:
+    image: ${CAPELLABRIDGE_IMAGE:?Set CAPELLABRIDGE_IMAGE in .env (ghcr.io/owner/repo:latest)}
+    pull_policy: always
+    platform: linux/amd64
+    container_name: capellabridge
+    restart: unless-stopped
+    init: true
+    environment:
+      CAPELLABRIDGE_USER: ${CAPELLABRIDGE_USER:-admin}
+      CAPELLABRIDGE_PASSWORD: ${CAPELLABRIDGE_PASSWORD:?Set a strong password in .env}
+      CAPELLABRIDGE_DATA: /data
+      CAPELLABRIDGE_TTL_HOURS: ${CAPELLABRIDGE_TTL_HOURS:-24}
+      CAPELLABRIDGE_MAX_UPLOAD_MB: ${CAPELLABRIDGE_MAX_UPLOAD_MB:-15}
+      CAPELLABRIDGE_MAX_BATCH: ${CAPELLABRIDGE_MAX_BATCH:-12}
+    ports:
+      - "${CAPELLABRIDGE_BIND_IP:-127.0.0.1}:${CAPELLABRIDGE_PORT:-8765}:8080"
+    volumes:
+      - capellabridge_data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 160
+    mem_limit: 1400m
+    cpus: 2.0
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+
+volumes:
+  capellabridge_data:
