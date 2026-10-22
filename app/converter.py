@@ -387,6 +387,17 @@ def serialize_musicxml(raw, layout='balanced'):
                 ending_starts[event.time]=volta.get('firstNumber')
 
     measure_count=len(boundaries)-1
+    # Record each source system's actual *first event*. Looking for any
+    # event from a noninitial system marks every later bar as a line break.
+    # Capella's graphical systems can occasionally start mid-measure; only
+    # request a break when the start aligns with an exported measure.
+    source_system_starts = {
+        min(e.time for e in parts[0].events if e.system == index)
+        for index in {e.system for e in parts[0].events if e.system > 0}
+    }
+    valid_system_starts = source_system_starts.intersection(boundaries[1:-1])
+    if layout == 'original' and len(valid_system_starts) != len(source_system_starts):
+        warnings.append('Some Capella system breaks fell inside measures and were omitted to keep notation valid.')
     for pi,p in enumerate(parts):
         pr=sub(score,'part',id=f'P{pi+1}')
         events=sorted(p.events,key=lambda x:(x.time,x.voice))
@@ -396,12 +407,12 @@ def serialize_musicxml(raw, layout='balanced'):
         for mi in range(measure_count):
             start,stop=boundaries[mi],boundaries[mi+1]
             measure=sub(pr,'measure',number=mi+1)
-            if mi==0 and pi==0:
-                number_print=sub(measure,'print')
-                sub(number_print,'measure-numbering','system')
-            if mi>0 and layout=='original':
-                sys_start=any(e.time==start and e.system!=0 for e in events)
-                if sys_start:sub(measure,'print',new_system='yes')
+            # Score-wide system breaks and bar numbers belong only to the
+            # leading part. One print instruction per affected measure.
+            if pi == 0 and (mi == 0 or (layout == 'original' and start in valid_system_starts)):
+                layout_print = sub(measure, 'print', **({'new_system':'yes'} if mi > 0 else {}))
+                if mi == 0:
+                    sub(layout_print, 'measure-numbering', 'system')
             if mi==0:
                 add_attributes(measure, key=0, time=str(meter.numerator)+'/'+str(meter.denominator),clef='treble',transpose=p.transpose,initial=True)
             state['accidentals']={}
