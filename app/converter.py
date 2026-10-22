@@ -226,14 +226,18 @@ def extract_metadata(root):
             # Some Capella documents combine title and byline in one box.
             lines = lines[1:]
         for line in lines:
-            if line == title or (len(line) <= 3 and line.isdigit()):
+            # Section labels belong above their measures, not inside the
+            # first-page title frame.
+            if line == title or re.fullmatch(
+                r'(?i)(?:(?:no|nr|variation|vers)\\.?\\s*)?[1-9]\\d?', line
+            ):
                 continue
             match = re.match(r'^(?:von|by|composed by|composer:)\s+(.+)$', line, re.I)
             if match:
                 composer = match.group(1).strip()
             elif height >= 10 and len(line) > 3 and line not in subtitle_lines:
                 subtitle_lines.append(line)
-    return title, ' — '.join(subtitle_lines), composer
+    return title, '\n'.join(subtitle_lines), composer
 
 
 def extract_variation_numbers(parts):
@@ -253,7 +257,9 @@ def extract_variation_numbers(parts):
             if font is None or content is None:
                 continue
             label = ' '.join(''.join(content.itertext()).split())
-            if not re.fullmatch(r'[1-9][0-9]?', label):
+            if not re.fullmatch(
+                r'(?i)(?:(?:no|nr|variation|vers)\\.?\\s*)?[1-9]\\d?', label
+            ):
                 continue
             if font.get('face', '').casefold() in ('capella', 'capella3'):
                 continue
