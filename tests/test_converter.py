@@ -201,3 +201,62 @@ def test_all_three_layouts_have_clean_system_numbering():
             assert [node.getparent().get('number') for node in forced]==['2','3']
         else:
             assert forced==[]
+
+
+def test_capella_graphic_variation_headings_all_modes():
+    """Prominent source-system numbers survive, tiny tuplet labels do not."""
+    systems=[]
+    for index in range(3):
+        staffs=[]
+        for staff_no in range(1,5):
+            marks=(
+                '<drawObjects><drawObj><text y="-5">'
+                '<font face="Lato" height="17" weight="700"/>'
+                f'<content>{index+1}</content></text></drawObj>'
+                '<drawObj><text y="-7"><font face="Times New Roman" height="8"/>'
+                '<content>3</content></text></drawObj></drawObjects>'
+            ) if staff_no==1 else ''
+            staffs.append(
+                f'<staff layout="P{staff_no}"><voices><voice><noteObjects>'
+                + ('<timeSign time="2/4"/>' if index==0 else '') +
+                '<chord><duration base="1/4"/>'
+                + marks +
+                '<heads><head pitch="C5"/></heads></chord>'
+                '<chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>'
+                '</noteObjects></voice></voices></staff>'
+            )
+        systems.append('<system><staves>'+''.join(staffs)+'</staves></system>')
+    source=capx((
+        '<score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves>'+''.join(f'<staffLayout description="P{i}"/>' for i in range(1,5))+
+        '</staves><brackets><bracket from="0" to="3"/></brackets></layout>'
+        '<systems>'+''.join(systems)+'</systems></score>'
+    ).encode())
+    for layout in ('balanced','compact','original'):
+        result,report=converter.serialize_musicxml(source,layout)
+        score=ET.fromstring(result)
+        headings=score.xpath('./part[1]/measure/direction/direction-type/words/text()')
+        assert headings==['1','2','3'],(layout,headings)
+        assert len(score.xpath('./part[position()>1]//direction'))==0
+        assert report['variation_numbers']==['1','2','3']
+        assert report['source_systems']==3
+        assert score.xpath('./part-list/part-group[group-barline="yes"]')
+
+
+def test_multi_part_native_barline_span_expansion(tmp_path):
+    from app.engraving import prepare_print_ready
+    output=tmp_path/'grouped.mscz'
+    score='<museScore version="3.02"><Score>'
+    score+=''.join(
+        '<Part><Staff id="%s">%s</Staff></Part>'%(i,'<barLineSpan>4</barLineSpan>' if i==1 else '')
+        for i in range(1,5)
+    )
+    score+='</Score></museScore>'
+    with zipfile.ZipFile(output,'w') as archive:
+        archive.writestr('grouped.mscx',score)
+    prepare_print_ready(output)
+    prepare_print_ready(output)  # patch is idempotent
+    with zipfile.ZipFile(output) as archive:
+        doc=ET.fromstring(archive.read('grouped.mscx'))
+        staves=doc.findall('./Score/Part/Staff')
+        assert [x.findtext('barLineSpan') for x in staves]==['1','1','1',None]
