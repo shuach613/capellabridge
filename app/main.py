@@ -20,7 +20,7 @@ from .converter import CapellaError, serialize_musicxml
 from .musescore import ConversionFailure, convert, create_preview, musescore_path
 from .engraving import prepare_print_ready
 
-VERSION='1.4.0'
+VERSION='1.5.0'
 BASE=Path(os.environ.get('CAPELLABRIDGE_DATA','/data')).resolve()
 JOBS=BASE/'jobs'
 STATIC=Path(__file__).parent/'static'
