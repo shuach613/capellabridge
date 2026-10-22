@@ -137,15 +137,21 @@ def main():
     rendered=get(result['results'][0]['downloads']['pdf'])
     with fitz.open(stream=rendered,filetype='pdf') as doc:
         page=doc[0]
-        heads={name:page.search_for(name) for name in (
-            'Concert Example','Four flutes','Example Composer')}
+        import unicodedata
+        spans=[span for block in page.get_text('dict')['blocks'] if 'lines' in block
+               for line in block['lines'] for span in line['spans']]
+        heads={
+            name:[fitz.Rect(span['bbox']) for span in spans
+                  if name in unicodedata.normalize('NFKC',span['text'])]
+            for name in ('Concert Example','Four flutes','Example Composer')
+        }
         print('DEBUG_RENDERED_TITLES',
               {key:[tuple(round(v,1) for v in r) for r in rects]
                for key,rects in heads.items()},flush=True)
         print('DEBUG_FIRST_PAGE_TEXT',repr(page.get_text()[:800]),flush=True)
         assert all(heads.values()), heads
-        spans=[span for block in page.get_text('dict')['blocks'] if 'lines' in block
-               for line in block['lines'] for span in line['spans']]
+        assert heads['Concert Example'][0].y1 <= heads['Four flutes'][0].y0+1
+        assert heads['Four flutes'][0].y1 <= heads['Example Composer'][0].y0+1
         numbers=[(span['text'],hex(span['color'])) for span in spans
                  if span['text'].strip()=='1']
         print('DEBUG_RENDERED_NUMBERS',numbers[:20],flush=True)
