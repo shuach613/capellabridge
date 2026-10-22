@@ -229,7 +229,7 @@ def extract_metadata(root):
             # Section labels belong above their measures, not inside the
             # first-page title frame.
             if line == title or re.fullmatch(
-                r'(?i)(?:(?:no|nr|variation|vers)\\.?\\s*)?[1-9]\\d?', line
+                r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?', line
             ):
                 continue
             match = re.match(r'^(?:von|by|composed by|composer:)\s+(.+)$', line, re.I)
@@ -258,7 +258,7 @@ def extract_variation_numbers(parts):
                 continue
             label = ' '.join(''.join(content.itertext()).split())
             if not re.fullmatch(
-                r'(?i)(?:(?:no|nr|variation|vers)\\.?\\s*)?[1-9]\\d?', label
+                r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?', label
             ):
                 continue
             if font.get('face', '').casefold() in ('capella', 'capella3'):
