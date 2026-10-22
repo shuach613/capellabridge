@@ -1,0 +1,24 @@
+services:
+  capellabridge:
+    image: ghcr.io/shuach613/capellabridge:latest
+    platform: linux/amd64
+    container_name: capellabridge
+    restart: unless-stopped
+    pull_policy: always
+    init: true
+    ports:
+      - "8765:8080"
+    volumes:
+      - capellabridge_data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 160
+    mem_limit: 2g
+    cpus: 2.0
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+
+volumes:
+  capellabridge_data:
