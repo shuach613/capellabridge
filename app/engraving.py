@@ -52,7 +52,7 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                     credits = [
                         ('Title', metadata.get('title', '')),
                         ('Subtitle', metadata.get('subtitle', '')),
-                        ('Subtitle', metadata.get('composer', '')),
+                        ('Composer', metadata.get('composer', '')),
                     ]
                     old_credits = [element for element in frame.findall('Text')
                                    if element.findtext('style') in ('Title','Subtitle','Composer')]
