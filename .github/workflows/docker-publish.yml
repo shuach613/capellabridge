@@ -40,7 +40,7 @@ jobs:
           tags: capellabridge:ci
       - name: Run container
         run: |
-          docker run -d --name capellabridge-smoke --memory=2g -e CAPELLABRIDGE_USER=smoketest -e CAPELLABRIDGE_PASSWORD=smoke-password-for-ci -p 127.0.0.1:18765:8080 capellabridge:ci
+          docker run -d --name capellabridge-smoke --memory=2g -p 127.0.0.1:18765:8080 capellabridge:ci
       - name: Test conversion and outputs
         run: python scripts/smoke_test.py http://127.0.0.1:18765
       - name: Show logs on failure

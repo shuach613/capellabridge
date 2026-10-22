@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """End-to-end smoke test against a built Docker image with real MuseScore CLI."""
 from __future__ import annotations
-import base64
 import io
 import json
 import sys
@@ -12,11 +11,10 @@ import zipfile
 
 def main():
     BASE = sys.argv[1].rstrip('/') if len(sys.argv) > 1 else 'http://127.0.0.1:18765'
-    CREDS = base64.b64encode(b'smoketest:smoke-password-for-ci').decode('ascii')
 
 
     def get(path, data=None, content_type=None):
-        headers={'Authorization': f'Basic {CREDS}'}
+        headers={}
         if content_type: headers['Content-Type']=content_type
         req=urllib.request.Request(BASE+path, data=data, headers=headers, method='POST' if data else 'GET')
         with urllib.request.urlopen(req,timeout=165) as response:

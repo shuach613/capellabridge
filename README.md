@@ -20,8 +20,7 @@ CapellaBridge converts `.capx` and legacy `.cap` music notation into editable Mu
 - **Multiple exports:** editable `.mscz`, `.musicxml`, `.pdf`, PNG preview, a JSON report, or all batch outputs in a ZIP.
 - **Batch imports**, conversion warnings and downloadable reports.
 - **Private processing**: no external API; source uploads deleted after conversion; results expire after 24 hours by default.
-- **Automatic first-run administrator account** with generated password. No `.env`, secrets file, database or external setup wizard.
-- **Built-in password management** in Account Settings. Password is stored as a salted PBKDF2-SHA256 hash in a Docker-managed persistent volume.
+- **No application login:** Open the page and upload scores immediately; no users, passwords, or account settings.
 - **GitHub Actions** tests, builds, smoke-tests the real converter inside Docker, and publishes to GitHub Container Registry (GHCR).
 
 > This is an independent community tool, not affiliated with capella-software or MuseScore. MusicXML and MuseScore may reflow pages or not represent unusual Capella-specific drawn objects. Review the conversion report and final score.
@@ -48,7 +47,7 @@ services:
     restart: unless-stopped
     init: true
     ports:
-      - "8765:8080"
+      - "9595:8080"
     volumes:
       - capellabridge_data:/data
     security_opt:
@@ -69,26 +68,11 @@ docker compose pull
 docker compose up -d
 ```
 
-Visit `http://NAS-IP:8765` from your network. Your browser shows a username/password prompt.
+Visit `http://NAS-IP:9595` from your network. No application login is required.
 
-### 3. First login (automatically generated)
+**Security:** Anyone who can reach this website can upload conversion jobs and use download links. Do not expose it publicly without access controls at your reverse proxy, or use a VPN for remote access. Upload limits are not a substitute for authentication.
 
-On first start **the container creates its own credentials**. Retrieve your unique initial login from the container logs:
-
-```bash
-docker logs capellabridge
-```
-
-The login appears under **CAPELLABRIDGE FIRST START**:
-
-- Username: `admin`
-- Password: generated random password (printed once on initial startup)
-
-Use **Account settings** in the app to change the password. Login data survives image updates thanks to the `capellabridge_data` volume. **Do not delete the volume** unless you intentionally want to reset the account. Initial credentials only appear in the first-start logs; save the password after changing it. Restarting the container will not generate a new password.
-
-**Security:** Container logs include the initial password; only trusted NAS administrators should have access to those logs. For remote access, place the service behind **HTTPS and authenticated access** through your reverse proxy or VPN. Avoid exposing port 8765 directly to the public internet: HTTP Basic credentials should never travel over plain HTTP outside a trusted LAN. For stronger security use VPN or an identity-aware proxy in front of the service.
-
-### 4. Update the NAS after a GitHub push
+### 3. Update the NAS after a GitHub push
 
 ```bash
 cd /volume1/docker/capellabridge
@@ -113,8 +97,8 @@ Authenticate when Git asks (GitHub uses a credential manager or personal access 
 Optionally tag a release:
 
 ```bash
-git tag v1.0.1
-git push origin v1.0.1
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
 ## How conversion works
@@ -131,9 +115,9 @@ A single-process conversion queue reduces CPU spikes on smaller NAS devices. The
 
 | Task | Command |
 | --- | --- |
-| Check logs / first-run password | `docker logs capellabridge` |
+| Check application logs | `docker logs capellabridge` |
 | Check container status | `docker ps --filter name=capellabridge` |
-| Check health | `curl http://127.0.0.1:8765/health` |
+| Check health | `curl http://127.0.0.1:9595/health` |
 | Restart | `docker restart capellabridge` |
 | Pull & redeploy | `docker compose pull && docker compose up -d` |
 | Stop | `docker compose down` (preserves the volume) |
@@ -144,7 +128,7 @@ If image pulling fails, check the GHCR package visibility and exact lowercase im
 
 ```text
 .github/workflows/       Unit tests, Docker build, smoke test, GHCR publication
-app/main.py              API, authentication, cleanup, uploads, downloads
+app/main.py              API, cleanup, uploads, downloads
 app/converter.py         CAPX → MusicXML converter
 app/musescore.py         Headless MuseScore and previews
 app/static/              Web interface

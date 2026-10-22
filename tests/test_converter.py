@@ -67,11 +67,9 @@ def test_brandywine_from_environment():
         assert len(part.findall('measure'))==102
 
 
-def test_web_upload_and_auth(monkeypatch,tmp_path):
+def test_web_upload_without_login(monkeypatch,tmp_path):
     from app import main
     monkeypatch.setattr(main,'JOBS',tmp_path/'jobs')
-    monkeypatch.setattr(main,'PASSWORD','secret123')
-    monkeypatch.setattr(main,'USERNAME','tester')
     def fake_convert(source,target):
         out=Path(target)
         if out.suffix=='.mscz':
@@ -81,14 +79,16 @@ def test_web_upload_and_auth(monkeypatch,tmp_path):
     monkeypatch.setattr(main,'convert',fake_convert)
     monkeypatch.setattr(main,'create_preview',fake_preview)
     client=TestClient(main.app)
-    assert client.get('/').status_code==401
+    assert client.get('/').status_code==200
+    assert client.get('/api/info').status_code==200
+    assert client.get('/static/app.js').status_code==200
     with client:
-        response=client.post('/api/convert?layout=balanced',auth=('tester','secret123'),
-                             files=[('files',('Tiny.capx',capx(MINIMAL),'application/octet-stream'))])
+        response=client.post('/api/convert?layout=balanced',files=[('files',('Tiny.capx',capx(MINIMAL),'application/octet-stream'))])
     assert response.status_code==200,response.text
     payload=response.json()
     assert payload['results'][0]['ok'] is True
     files=payload['results'][0]['downloads']
-    assert client.get(files['mscz'],auth=('tester','secret123')).status_code==200
-    assert client.get(payload['batch_url'],auth=('tester','secret123')).status_code==200
-    assert client.get(files['mscz']).status_code==401
+    assert client.get(files['mscz']).status_code==200
+    assert client.get(payload['batch_url']).status_code==200
+    assert client.get(files['mscz']).status_code==200
+    assert client.post('/api/account/password',json={'current_password':'x','new_password':'abcdefghijkl'}).status_code==404
