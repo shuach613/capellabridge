@@ -142,6 +142,7 @@ def main():
         print('DEBUG_RENDERED_TITLES',
               {key:[tuple(round(v,1) for v in r) for r in rects]
                for key,rects in heads.items()},flush=True)
+        print('DEBUG_FIRST_PAGE_TEXT',repr(page.get_text()[:800]),flush=True)
         assert all(heads.values()), heads
         spans=[span for block in page.get_text('dict')['blocks'] if 'lines' in block
                for line in block['lines'] for span in line['spans']]
