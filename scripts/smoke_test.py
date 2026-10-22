@@ -159,6 +159,51 @@ def main():
             assert numbers, 'Source variation number absent from final PDF'
         print(f'Four-staff {ensemble_layout}: PDF credits, variation number, and barlines verified',flush=True)
 
+    # Exercise actual MuseScore CLI with changing meters, triplets, grace
+    # notes, and integer whole-measure rests rather than just a simple tune.
+    def one_staff(name, music):
+        return (f'<staff layout="{name}"><voices><voice><noteObjects>'
+                +music+'</noteObjects></voice></voices></staff>')
+    first = ('<timeSign time="2/4"/>'
+             '<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>'
+             '<chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>')
+    second = ('<timeSign time="6/8"/>'
+              '<chord><duration base="1/32" noDuration="true"/>'
+              '<heads><head pitch="G5"/></heads></chord>'
+              + ''.join('<chord><duration base="1/8"><tuplet count="3"/></duration>'
+                        '<heads><head pitch="C5"/></heads></chord>' for _ in range(3))
+              + '<chord><duration base="1/2"/><heads><head pitch="D5"/></heads></chord>')
+    mixed_xml = (
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves><staffLayout description="Upper"/>'
+        '<staffLayout description="Lower"/></staves></layout><systems>'
+        '<system><staves>'+one_staff('Upper',first)
+        +one_staff('Lower','<timeSign time="2/4"/>'
+                   '<rest><duration base="1"/></rest>')+'</staves></system>'
+        '<system><staves>'+one_staff('Upper',second)
+        +one_staff('Lower','<timeSign time="6/8"/>'
+                   '<rest><duration base="1"/></rest>')+'</staves></system>'
+        '</systems></score>'
+    ).encode()
+    body,ctype=make_upload(mixed_xml)
+    res=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert res['results'][0]['ok'],res
+    item=res['results'][0]
+    assert item['measures']==2,item
+    assert not any('crosses a barline' in w for w in item['warnings']),item
+    from xml.etree import ElementTree as ET
+    musicxml=ET.fromstring(get(item['downloads']['musicxml']))
+    assert len(musicxml.findall('./part'))==2
+    assert len(musicxml.findall('./part/measure[2]/note/grace'))==1
+    assert len(musicxml.findall('./part/measure[2]/note/time-modification'))==3
+    assert get(item['downloads']['pdf']).startswith(b'%PDF-')
+    packed=get(item['downloads']['mscz'])
+    with zipfile.ZipFile(io.BytesIO(packed)) as archive:
+        native=ET.fromstring(archive.read(next(
+            name for name in archive.namelist() if name.endswith('.mscx'))))
+        assert len(native.findall('./Score/Staff'))==2
+    print('Multi-meter, tuplets, grace notes and measure rests rendered by MuseScore',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
