@@ -1,12 +1,79 @@
-name: Docker image
+name: Build and publish CapellaBridge
+
 on:
   push:
     branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   build:
     runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: "capellabridge-1.0 2"
     steps:
-      - uses: actions/checkout@v4
-      - name: Build image
-        run: docker build -t capellabridge:latest './capellabridge-1.0 2'
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install tests
+        run: python -m pip install -r requirements.txt pytest httpx
+      - name: Run unit tests
+        run: python -m pytest -q
+      - name: Validate Compose
+        run: docker compose -f docker-compose.yml config --quiet
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build test image
+        uses: docker/build-push-action@v6
+        with:
+          context: "./capellabridge-1.0 2"
+          file: "./capellabridge-1.0 2/Dockerfile"
+          platforms: linux/amd64
+          load: true
+          tags: capellabridge:ci
+      - name: Run container
+        run: |
+          docker run -d --name capellabridge-smoke --memory=2g -e CAPELLABRIDGE_USER=smoketest -e CAPELLABRIDGE_PASSWORD=smoke-password-for-ci -p 127.0.0.1:18765:8080 capellabridge:ci
+      - name: Test conversion and outputs
+        run: python scripts/smoke_test.py http://127.0.0.1:18765
+      - name: Show logs on failure
+        if: failure()
+        run: docker logs capellabridge-smoke || true
+      - name: Clean up test container
+        if: always()
+        run: docker rm -f capellabridge-smoke || true
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish latest image
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: "./capellabridge-1.0 2"
+          file: "./capellabridge-1.0 2/Dockerfile"
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/shuach613/capellabridge:latest
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/build-push-action@v6
+        with:
+          context: "./capellabridge-1.0 2"
+          file: "./capellabridge-1.0 2/Dockerfile"
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/shuach613/capellabridge:${{ github.ref_name }}
