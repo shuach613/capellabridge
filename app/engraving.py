@@ -19,7 +19,7 @@ STYLE_VALUES = {
     'measureNumberAllStaffs': '0',
 }
 
-def prepare_print_ready(mscz_path: Path) -> None:
+def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
     """Update score-wide MuseScore styles, preserving every ZIP member."""
     mscz_path = Path(mscz_path)
     temp = None
@@ -42,6 +42,36 @@ def prepare_print_ready(mscz_path: Path) -> None:
                 if node is None:
                     node = ET.SubElement(style, key)
                 node.text = value
+            # MuseScore's MusicXML importer can add subtitle and composer in
+            # the wrong order, causing the two text blocks to overlap.
+            # Rebuild the three known credits as normal sequential VBox texts.
+            # Keep unrelated imported frame elements (e.g. copyright).
+            if metadata:
+                frame = score.find('./Staff/VBox')
+                if frame is not None:
+                    credits = [
+                        ('Title', metadata.get('title', '')),
+                        ('Subtitle', metadata.get('subtitle', '')),
+                        ('Subtitle', metadata.get('composer', '')),
+                    ]
+                    old_credits = [element for element in frame.findall('Text')
+                                   if element.findtext('style') in ('Title','Subtitle','Composer')]
+                    if old_credits and any(value for _, value in credits):
+                        children_in_order = list(frame)
+                        insertion_index = children_in_order.index(old_credits[0])
+                        for element in old_credits:
+                            frame.remove(element)
+                        for kind, value in credits:
+                            if not value or (kind == 'Title' and value == 'Converted score'):
+                                continue
+                            text = ET.Element('Text')
+                            ET.SubElement(text, 'style').text = kind
+                            ET.SubElement(text, 'text').text = value
+                            frame.insert(insertion_index, text)
+                            insertion_index += 1
+                        height = frame.find('height')
+                        if height is not None:
+                            height.text = str(max(14.0, float(height.text or '0')))
             # MusicXML imports a group of four independent parts as a single
             # barLineSpan=4 on the first staff. MuseScore 3 treats staff
             # spanning as a per-adjacent-staff flag, making bars appear joined
