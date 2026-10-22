@@ -159,28 +159,53 @@ def parse_score(root):
 
 
 def extract_metadata(root):
-    texts = []
-    for item in root.xpath('//c:systems/c:system[1]//c:drawObj/c:text', namespaces=N):
-        content = child(item, 'content')
-        if content is None: continue
-        s = ' '.join(''.join(content.itertext()).split())
-        ft = child(item, 'font')
-        if s and ft is not None and ft.get('face', '').lower() not in ('capella3','capella') and len(s) > 3:
-            texts.append((s, int(ft.get('height','0')), float(item.get('y','0'))))
-    # Largest document text is usually the score title.
-    texts.sort(key=lambda x: (-x[1], x[2]))
-    title = texts[0][0] if texts else 'Converted score'
-    subtitle = next((t[0] for t in texts[1:] if ('variationen' in t[0].lower() or len(t[0]) > 25)), '')
-    composer = next((t[0] for t in texts if t[0].lower().startswith(('von ', 'by '))), '')
-    # Capella frequently stores multiple centered credit lines in one text box.
-    found = re.search(r'(?:^|\s)(?:von|by)\s+([^\n]+)$', subtitle, re.I)
-    if found:
-        composer = found.group(1).strip()
-        subtitle = subtitle[:found.start()].strip(' ,')
-    elif composer.lower().startswith(('von ','by ')):
-        composer = composer.split(' ',1)[1]
-    return title, subtitle, composer
+    """Extract title, subtitle and author from first-system Capella text.
 
+    Capella often combines subtitle and composer in one multiline text box.
+    Preserve those line breaks before selecting the prominent heading.
+    """
+    text_boxes = []
+    for item in root.xpath('//c:systems/c:system[1]//c:drawObj/c:text', namespaces=N):
+        font = child(item, 'font')
+        content = child(item, 'content')
+        if font is None or content is None:
+            continue
+        face = font.get('face', '').casefold()
+        if face in ('capella', 'capella3'):
+            continue  # music glyphs, never score credits
+        lines = [' '.join(line.split()) for line in ''.join(content.itertext()).splitlines()]
+        lines = [line for line in lines if line]
+        if not lines:
+            continue
+        try:
+            height = int(font.get('height', '0'))
+            y = float(item.get('y', '0'))
+        except ValueError:
+            continue
+        text_boxes.append((height, y, lines))
+
+    if not text_boxes:
+        return 'Converted score', '', ''
+
+    # Prefer the largest visible heading, ignoring small bar numbers.
+    headings = [box for box in text_boxes if len(box[2][0]) > 3]
+    title_box = sorted(headings or text_boxes, key=lambda box: (-box[0], box[1]))[0]
+    title = title_box[2][0]
+    subtitle_lines = []
+    composer = ''
+    for height, y, lines in sorted(text_boxes, key=lambda box: box[1]):
+        if (height, y, lines) == title_box:
+            # Some Capella documents combine title and byline in one box.
+            lines = lines[1:]
+        for line in lines:
+            if line == title or (len(line) <= 3 and line.isdigit()):
+                continue
+            match = re.match(r'^(?:von|by|composed by|composer:)\\s+(.+)$', line, re.I)
+            if match:
+                composer = match.group(1).strip()
+            elif height >= 10 and len(line) > 3 and line not in subtitle_lines:
+                subtitle_lines.append(line)
+    return title, ' — '.join(subtitle_lines), composer
 
 def compute_boundaries(parts, end):
     """Pick explicit barlines and meter-based measures. First system may contain a pickup."""
@@ -322,8 +347,20 @@ def serialize_musicxml(raw, layout='balanced'):
     defaults=sub(score,'defaults');scaling=sub(defaults,'scaling');sub(scaling,'millimeters','6.2' if layout=='compact' else '7');sub(scaling,'tenths','40')
     page=sub(defaults,'page-layout');sub(page,'page-height','1683.78');sub(page,'page-width','1190.55')
     margins=sub(page,'page-margins',type='both');sub(margins,'left-margin','64');sub(margins,'right-margin','64');sub(margins,'top-margin','64');sub(margins,'bottom-margin','64')
-    if subtitle:
-        credit=sub(score,'credit',page='1');word=sub(credit,'credit-words',subtitle,default_x='595',default_y='1500',justify='center',valign='top',font_size='11')
+    # Explicit page-one credits render on the score itself. Document metadata
+    # alone does not reliably create visible MuseScore title frames on import.
+    for kind, value, y, size, weight in (
+        ('title', title, 1580, 23, 'bold'),
+        ('subtitle', subtitle, 1540, 12, 'normal'),
+        ('composer', composer, 1508, 11, 'normal'),
+    ):
+        if not value or (kind == 'title' and value == 'Converted score'):
+            continue
+        credit = sub(score, 'credit', page='1')
+        sub(credit, 'credit-type', kind)
+        sub(credit, 'credit-words', value, default_x='595',
+            default_y=y, justify='center', valign='top',
+            font_size=size, font_weight=weight)
     plist=sub(score,'part-list')
     # Respect Capella's multi-staff brace/bracket grouping. This is structural,
     # and avoids MuseScore displaying four unrelated solo parts.

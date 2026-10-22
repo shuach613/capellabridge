@@ -10,3 +10,17 @@
 @media(max-width:760px){.topbar{height:70px;padding:0 20px}.topbar-shortcut{display:none}.topbar-right{font-size:9px}.workspace{padding:0 17px}.introduction{grid-template-columns:1fr;min-height:0;padding:43px 0 30px}.introduction h1{font-size:44px}.paper-illustration{display:none}.editor-grid{grid-template-columns:1fr}.editor-aside{border-left:0;border-top:1px solid #e7ebf0}.editor-main{padding:28px 20px}.editor-aside{padding:25px 20px}.editor-aside h3{font-size:25px}.exports{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:17px}.export-line{flex-direction:column;align-items:start}.export-line .tick{display:none}.engraving-heading>span{display:none}.result-body{grid-template-columns:1fr}.thumbnail{width:170px}.results-heading{align-items:start;flex-direction:column}footer{flex-direction:column;gap:9px}}
 @media(max-width:520px){.brand-name{font-size:17px}.brand-name small{font-size:7px}.brand{flex-basis:auto}.topbar-right>span:nth-child(2){display:none}.introduction h1{font-size:38px;letter-spacing:-1.7px}.benefits{gap:6px 13px}.editor-topline{padding:0 14px}.editor-mode,.tab-muted{display:none}.panel-heading{align-items:start;gap:8px}.panel-heading h2{font-size:23px}.queue-count{font-size:9px}.dropzone{min-height:205px;padding:14px 8px}.option{gap:9px;padding:11px 9px}.option-badge{font-size:7px;letter-spacing:0}.exports{grid-template-columns:1fr}.export-line{flex-direction:row}.export-line .tick{display:block}.section-kicker{letter-spacing:1px}.engraving-heading h3{font-size:19px}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important}}
+
+/* Accessible upload percentage and honest indeterminate conversion activity. */
+.progress-panel{margin:18px 0 8px;padding:15px 17px;background:#eaf5fc;border:1px solid #b5dbef;border-radius:12px;color:#20435f}
+.progress-panel[hidden]{display:none}
+.progress-header{display:flex;justify-content:space-between;gap:12px;font-size:13px}
+.progress-header span{font-variant-numeric:tabular-nums;font-weight:700}
+.progress-track{height:8px;border-radius:20px;background:#c4deec;margin-top:11px;overflow:hidden}
+.progress-fill{height:100%;width:0;background:linear-gradient(90deg,#087db5,#45b8e3);border-radius:20px;transition:width .2s ease}
+.progress-panel.working .progress-fill{width:42%;animation:conversion-pulse 1.8s ease-in-out infinite}
+.progress-panel.failed{background:#fff3f2;border-color:#f0c1bc;color:#8e3028}
+.progress-panel.failed .progress-fill{background:#c74c4c}
+.progress-panel p{margin:9px 0 0;font-size:12px;line-height:1.5;color:inherit}
+@keyframes conversion-pulse{0%,100%{transform:translateX(-95%);opacity:.55}50%{transform:translateX(95%);opacity:1}}
+@media(prefers-reduced-motion:reduce){.progress-panel.working .progress-fill{animation:none}}
