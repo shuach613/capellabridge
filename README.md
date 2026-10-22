@@ -157,3 +157,9 @@ MIT. See [LICENSE](LICENSE).
 The web interface shows upload percentage and an animated activity indicator once the upload finishes. The conversion stage deliberately has **no fake percentage**, because the MuseScore CLI does not provide per-measure progress. First-page score credits are extracted from Capella text and exported as MusicXML title, subtitle and composer credits.
 
 Finale's proprietary `.mus` and `.musx` files are not accepted directly; export MusicXML from Finale first. A future version can offer direct MusicXML and compressed `.mxl` imports.
+
+## Print-ready engraving (feature branch)
+
+Full-score measure numbers are shown at the beginning of each system, on the top staff only. First/second ending brackets are emitted only on the top staff, while repeat barline events remain available in each part for playback. The MSCZ has MuseScore 3 native print-style settings applied before PDF and preview rendering. MusicXML uses a top-staff \u003cmeasure-numbering\u003e instruction.
+
+Native import can still reflow the music relative to the Capella PDF. Inspect complex repeats and page breaks in MuseScore before publication.

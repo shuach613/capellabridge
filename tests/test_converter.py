@@ -116,3 +116,49 @@ def test_web_upload_without_login(monkeypatch,tmp_path):
     assert client.get(payload['batch_url']).status_code==200
     assert client.get(files['mscz']).status_code==200
     assert client.post('/api/account/password',json={'current_password':'x','new_password':'abcdefghijkl'}).status_code==404
+
+
+def test_only_top_staff_has_ending_brackets_and_measure_numbers():
+    from app import converter
+    xml = b'''<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">
+    <layout><staves><staffLayout description="First"/><staffLayout description="Second"/></staves></layout>
+    <systems><system><staves>
+    <staff layout="First"><voices><voice><noteObjects>
+    <timeSign time="2/4"/>
+    <chord><duration base="1/4"/><heads><head pitch="C5"/></heads>
+    <drawObjects><drawObj><volta firstNumber="1"/></drawObj></drawObjects></chord>
+    <chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>
+    <barline type="repEnd"/>
+    </noteObjects></voice></voices></staff>
+    <staff layout="Second"><voices><voice><noteObjects>
+    <timeSign time="2/4"/>
+    <chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>
+    <chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>
+    <barline type="repEnd"/>
+    </noteObjects></voice></voices></staff>
+    </staves></system></systems></score>'''
+    result,_=converter.serialize_musicxml(capx(xml))
+    score=ET.fromstring(result)
+    top,bottom=score.findall('./part')
+    assert top.xpath('count(.//barline/ending)')==2
+    assert bottom.xpath('count(.//barline/ending)')==0
+    assert top.findtext('./measure/print/measure-numbering')=='system'
+    assert bottom.find('./measure/print/measure-numbering') is None
+    assert top.xpath('count(.//barline/repeat)')==1
+    assert bottom.xpath('count(.//barline/repeat)')==1
+
+
+def test_print_ready_mscz_preserves_score_and_styles(tmp_path):
+    from app.engraving import prepare_print_ready, STYLE_VALUES
+    import zipfile
+    output=tmp_path/'print.mscz'
+    with zipfile.ZipFile(output,'w') as f:
+        f.writestr('META-INF/container.xml','<container/>')
+        f.writestr('score.mscx', '<museScore version="3.02"><Score><Style><showMeasureNumber>0</showMeasureNumber></Style><Staff/></Score></museScore>')
+    prepare_print_ready(output)
+    with zipfile.ZipFile(output) as f:
+        assert f.read('META-INF/container.xml')==b'<container/>'
+        doc=ET.fromstring(f.read('score.mscx'))
+        for key,value in STYLE_VALUES.items():
+            assert doc.findtext('./Score/Style/'+key)==value
+        assert len(doc.findall('./Score/Staff'))==1

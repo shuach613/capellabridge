@@ -396,6 +396,9 @@ def serialize_musicxml(raw, layout='balanced'):
         for mi in range(measure_count):
             start,stop=boundaries[mi],boundaries[mi+1]
             measure=sub(pr,'measure',number=mi+1)
+            if mi==0 and pi==0:
+                number_print=sub(measure,'print')
+                sub(number_print,'measure-numbering','system')
             if mi>0 and layout=='original':
                 sys_start=any(e.time==start and e.system!=0 for e in events)
                 if sys_start:sub(measure,'print',new_system='yes')
@@ -425,18 +428,18 @@ def serialize_musicxml(raw, layout='balanced'):
                         if e.time+e.dur>stop:
                             warnings.append(f'A note crosses a barline in {p.name} at measure {mi+1}.')
             left_repeat=primary_barlines.get(start)=='repBegin'
-            if left_repeat or start in ending_starts:
+            if left_repeat or (pi==0 and start in ending_starts):
                 bl=sub(measure,'barline',location='left')
-                if start in ending_starts:
+                if pi==0 and start in ending_starts:
                     num=ending_starts[start]
                     sub(bl,'ending',f'{num}.',number=num,type='start')
                 if left_repeat:sub(bl,'repeat',direction='forward')
             right_type=primary_barlines.get(stop)
-            if right_type in ('repEnd','double','end') or start in ending_starts:
+            if right_type in ('repEnd','double','end') or (pi==0 and start in ending_starts):
                 bl=sub(measure,'barline',location='right')
                 if right_type in ('double','end'):
                     sub(bl,'bar-style','light-light' if right_type=='double' else 'light-heavy')
-                if start in ending_starts:
+                if pi==0 and start in ending_starts:
                     sub(bl,'ending',number=ending_starts[start],type='stop' if ending_starts[start]=='1' else 'discontinue')
                 if right_type=='repEnd':sub(bl,'repeat',direction='backward')
             if mi==0 and start==0 and stop<meter:

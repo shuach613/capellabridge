@@ -65,6 +65,11 @@ def main():
     mscz=get(one['downloads']['mscz'])
     with zipfile.ZipFile(io.BytesIO(mscz)) as z:
         assert any(n.endswith('.mscx') for n in z.namelist()), z.namelist()
+        from xml.etree import ElementTree as ET
+        score=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+        assert score.findtext('./Score/Style/showMeasureNumber')=='1'
+        assert score.findtext('./Score/Style/measureNumberSystem')=='1'
+        assert score.findtext('./Score/Style/measureNumberAllStaffs')=='0'
     assert get(one['downloads']['pdf']).startswith(b'%PDF-')
     assert get(one['downloads']['preview']).startswith(b'\x89PNG\r\n\x1a\n')
     assert get(one['downloads']['musicxml']).startswith(b'<?xml')
