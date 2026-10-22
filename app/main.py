@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import time
 import uuid
 import zipfile
@@ -19,7 +20,7 @@ from .converter import CapellaError, serialize_musicxml
 from .musescore import ConversionFailure, convert, create_preview, musescore_path
 from .engraving import prepare_print_ready
 
-VERSION='1.3.0'
+VERSION='1.4.0'
 BASE=Path(os.environ.get('CAPELLABRIDGE_DATA','/data')).resolve()
 JOBS=BASE/'jobs'
 STATIC=Path(__file__).parent/'static'
@@ -101,6 +102,17 @@ async def receive(upload:UploadFile):
     return name,ext,raw
 
 
+def pdf_page_count(path: Path) -> int | None:
+    """Read printed page count from Poppler without extra Python packages."""
+    try:
+        result = subprocess.run(['pdfinfo', str(path)], capture_output=True,
+                                text=True, timeout=12, check=True)
+        match = re.search(r'^Pages:\s*(\d+)$', result.stdout, re.M)
+        return int(match.group(1)) if match else None
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+
+
 def process_score(name,ext,raw,work,layout):
     stem=Path(name).stem
     prefix=safe_filename(stem)
@@ -120,9 +132,26 @@ def process_score(name,ext,raw,work,layout):
         warnings.append('Legacy .cap uses MuseScore’s import engine, not the CAPX native parser. Review layout and voices.')
     mscz=work/(prefix+'.mscz')
     convert(xml_path,mscz)
-    prepare_print_ready(mscz)
+    prepare_print_ready(mscz,report if ext=='.capx' else None)
     pdf=work/(prefix+'.pdf')
     convert(mscz,pdf)
+    # Restore a readable layout if an exact Capella system arrangement
+    # expands into far more pages than the source's system count warrants.
+    if ext=='.capx' and layout=='original':
+        source_systems=report.get('source_systems',0)
+        pages=pdf_page_count(pdf)
+        reasonable_pages=max(4,(source_systems+1)//2+1)
+        if pages is not None and pages>reasonable_pages:
+            xml,balanced_report=serialize_musicxml(raw,'balanced')
+            xml_path.write_bytes(xml)
+            convert(xml_path,mscz)
+            prepare_print_ready(mscz,balanced_report)
+            convert(mscz,pdf)
+            report['layout']='balanced-fallback'
+            warnings.append(
+                f'Original system breaks would produce {pages} pages; '
+                f'used a balanced print layout instead.'
+            )
     png=work/(prefix+'-preview.png')
     create_preview(pdf,png)
     # Verify the resulting MSCZ ZIP contains a genuine MuseScore score.

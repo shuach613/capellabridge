@@ -16,7 +16,8 @@ CapellaBridge converts `.capx` and legacy `.cap` music notation into editable Mu
 
 - **Native CapXML 2.0 parser** for `.capx`, preserving multiple staves, voices, musical pitches, rhythms, many slurs, articulations and repeat structures.
 - **Legacy `.cap` support (best effort)** using MuseScore's legacy importer; accuracy depends on MuseScore support.
-- **First-page credits** preserve prominent title, subtitle and composer as separate editable MusicXML credits when supplied in Capella.\n- **Editability-first engraving** with Balanced (recommended), Compact and Original Systems modes. Page layout may change, though spacing and staff structure are considered.
+- **First-page credits** preserve prominent title, subtitle and composer as separate editable MusicXML credits when supplied in Capella.
+- **Editability-first engraving** with Balanced (recommended), Compact and Original Systems modes. Page layout may change, though spacing and staff structure are considered.
 - **Multiple exports:** editable `.mscz`, `.musicxml`, `.pdf`, PNG preview, a JSON report, or all batch outputs in a ZIP.
 - **Batch imports**, an upload progress percentage, a conversion activity indicator, warnings and downloadable reports.
 - **Private processing**: no external API; source uploads deleted after conversion; results expire after 24 hours by default.
@@ -157,6 +158,12 @@ MIT. See [LICENSE](LICENSE).
 The web interface shows upload percentage and an animated activity indicator once the upload finishes. The conversion stage deliberately has **no fake percentage**, because the MuseScore CLI does not provide per-measure progress. First-page score credits are extracted from Capella text and exported as MusicXML title, subtitle and composer credits.
 
 Finale's proprietary `.mus` and `.musx` files are not accepted directly; export MusicXML from Finale first. A future version can offer direct MusicXML and compressed `.mxl` imports.
+
+## Ensemble engraving and variation markers (v1.4.0)
+
+Capella variation headings stored as prominent graphical numbers (for example, 1 through 11 in Brandywine) become editable top-staff markings in MuseScore and appear in PDF exports. Consecutive barlines are explicitly joined across all staves of imported multi-part groups rather than merely across the first pair. The first-page title, subtitle and composer are ordered as separate native title-frame blocks, avoiding collisions. The export is re-rendered from the corrected MSCZ, ensuring the PDF matches the editable score.
+
+The Original systems mode only forces real source-system boundaries; if rendering would create an excessive number of pages, the service switches to a balanced layout and reports the fallback. This prevents pathological outputs while keeping a usable, editable score. As with any score-format conversion, complex layout details still merit reviewing in MuseScore before commercial printing.
 
 ## Print-ready engraving
 

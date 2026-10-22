@@ -207,6 +207,47 @@ def extract_metadata(root):
                 subtitle_lines.append(line)
     return title, ' — '.join(subtitle_lines), composer
 
+
+def extract_variation_numbers(parts):
+    """Capella stores section/variation headings as graphical text on chords.
+
+    Keep only prominent, negative-Y numbered annotations in the leading staff,
+    not tiny tuplet digits or unrelated score metadata.
+    """
+    markers = {}
+    for event in parts[0].events:
+        if event.kind != 'chord' or event.voice != 1:
+            continue
+        for draw in children(child(event.node, 'drawObjects'), 'drawObj'):
+            element = child(draw, 'text')
+            font = child(element, 'font')
+            content = child(element, 'content')
+            if font is None or content is None:
+                continue
+            label = ' '.join(''.join(content.itertext()).split())
+            if not re.fullmatch(r'[1-9][0-9]?', label):
+                continue
+            if font.get('face', '').casefold() in ('capella', 'capella3'):
+                continue
+            try:
+                height = int(font.get('height', 0))
+                y = float(element.get('y', '0'))
+            except ValueError:
+                continue
+            if height >= 13 and y < 0:
+                markers.setdefault(event.time, label)
+    return markers
+
+
+def add_variation_heading(measure, label):
+    """Place a readable, printable Capella variation number on the top staff."""
+    direction = sub(measure, 'direction', placement='above')
+    direction_type = sub(direction, 'direction-type')
+    sub(direction_type, 'words', label, font_size='14',
+        font_weight='bold', color='#193B87', default_y='46',
+        relative_y='6', justify='left')
+
+
 def compute_boundaries(parts, end):
     """Pick explicit barlines and meter-based measures. First system may contain a pickup."""
     first = [e for e in parts[0].events if e.voice == 1]
@@ -339,12 +380,13 @@ def serialize_musicxml(raw, layout='balanced'):
     boundaries,meter=compute_boundaries(parts,end)
     if len(boundaries)<2: raise CapellaError('Could not determine measures')
     title,subtitle,composer=extract_metadata(root)
+    variation_numbers=extract_variation_numbers(parts)
     score=ET.Element('score-partwise',version='4.0')
     work=sub(score,'work');sub(work,'work-title',title)
     sub(score,'movement-title',title)
     identification=sub(score,'identification')
     if composer:sub(identification,'creator',composer,type='composer')
-    defaults=sub(score,'defaults');scaling=sub(defaults,'scaling');sub(scaling,'millimeters','6.2' if layout=='compact' else '7');sub(scaling,'tenths','40')
+    defaults=sub(score,'defaults');scaling=sub(defaults,'scaling');sub(scaling,'millimeters',{'balanced':'6.4','compact':'5.8','original':'6.0'}[layout]);sub(scaling,'tenths','40')
     page=sub(defaults,'page-layout');sub(page,'page-height','1683.78');sub(page,'page-width','1190.55')
     margins=sub(page,'page-margins',type='both');sub(margins,'left-margin','64');sub(margins,'right-margin','64');sub(margins,'top-margin','64');sub(margins,'bottom-margin','64')
     # Explicit page-one credits render on the score itself. Document metadata
@@ -413,6 +455,8 @@ def serialize_musicxml(raw, layout='balanced'):
                 layout_print = sub(measure, 'print', **({'new_system':'yes'} if mi > 0 else {}))
                 if mi == 0:
                     sub(layout_print, 'measure-numbering', 'system')
+            if pi==0 and start in variation_numbers:
+                add_variation_heading(measure,variation_numbers[start])
             if mi==0:
                 add_attributes(measure, key=0, time=str(meter.numerator)+'/'+str(meter.denominator),clef='treble',transpose=p.transpose,initial=True)
             state['accidentals']={}
@@ -465,5 +509,7 @@ def serialize_musicxml(raw, layout='balanced'):
     data=ET.tostring(score,encoding='utf-8',xml_declaration=True,pretty_print=True,doctype='<!DOCTYPE score-partwise  PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">')
     report={'title':title,'subtitle':subtitle,'composer':composer,'parts':[p.name for p in parts],
             'measures':measure_count,'notes':sum(1 for p in parts for e in p.events if e.kind=='chord'),
-            'warnings':sorted(set(warnings)),'layout':layout,'source_format':'capx'}
+            'warnings':sorted(set(warnings)),'layout':layout,'source_format':'capx',
+            'source_systems':len(children(child(root, 'systems'), 'system')),
+            'variation_numbers':list(variation_numbers.values())}
     return data,report

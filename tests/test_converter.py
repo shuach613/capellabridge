@@ -80,6 +80,8 @@ def test_brandywine_from_environment():
     assert 'Variationen für 4 Flöten' in doc.findtext('./credit[credit-type="subtitle"]/credit-words')
     assert report['notes']==1592
     assert report['measures']==102
+    assert report['variation_numbers']==[str(x) for x in range(1,12)]
+    assert len(doc.xpath('./part[1]/measure/direction/direction-type/words'))==11
     assert len(report['parts'])==4
     assert len(doc.findall('part'))==4
     assert len(doc.findall('.//note'))==1721  # chords + rests
@@ -201,3 +203,108 @@ def test_all_three_layouts_have_clean_system_numbering():
             assert [node.getparent().get('number') for node in forced]==['2','3']
         else:
             assert forced==[]
+
+
+def test_capella_graphic_variation_headings_all_modes():
+    """Prominent source-system numbers survive, tiny tuplet labels do not."""
+    systems=[]
+    for index in range(3):
+        staffs=[]
+        for staff_no in range(1,5):
+            marks=(
+                '<drawObjects><drawObj><text y="-5">'
+                '<font face="Lato" height="17" weight="700"/>'
+                f'<content>{index+1}</content></text></drawObj>'
+                '<drawObj><text y="-7"><font face="Times New Roman" height="8"/>'
+                '<content>3</content></text></drawObj></drawObjects>'
+            ) if staff_no==1 else ''
+            staffs.append(
+                f'<staff layout="P{staff_no}"><voices><voice><noteObjects>'
+                + ('<timeSign time="2/4"/>' if index==0 else '') +
+                '<chord><duration base="1/4"/>'
+                + marks +
+                '<heads><head pitch="C5"/></heads></chord>'
+                '<chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>'
+                '</noteObjects></voice></voices></staff>'
+            )
+        systems.append('<system><staves>'+''.join(staffs)+'</staves></system>')
+    source=capx((
+        '<score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves>'+''.join(f'<staffLayout description="P{i}"/>' for i in range(1,5))+
+        '</staves><brackets><bracket from="0" to="3"/></brackets></layout>'
+        '<systems>'+''.join(systems)+'</systems></score>'
+    ).encode())
+    for layout in ('balanced','compact','original'):
+        result,report=converter.serialize_musicxml(source,layout)
+        score=ET.fromstring(result)
+        headings=score.xpath('./part[1]/measure/direction/direction-type/words/text()')
+        assert headings==['1','2','3'],(layout,headings)
+        assert len(score.xpath('./part[position()>1]//direction'))==0
+        assert report['variation_numbers']==['1','2','3']
+        assert report['source_systems']==3
+        assert score.xpath('./part-list/part-group[group-barline="yes"]')
+
+
+def test_multi_part_native_barline_span_expansion(tmp_path):
+    from app.engraving import prepare_print_ready
+    output=tmp_path/'grouped.mscz'
+    score='<museScore version="3.02"><Score>'
+    score+=''.join(
+        '<Part><Staff id="%s">%s</Staff></Part>'%(i,'<barLineSpan>4</barLineSpan>' if i==1 else '')
+        for i in range(1,5)
+    )
+    score+='</Score></museScore>'
+    with zipfile.ZipFile(output,'w') as archive:
+        archive.writestr('grouped.mscx',score)
+    prepare_print_ready(output)
+    prepare_print_ready(output)  # patch is idempotent
+    with zipfile.ZipFile(output) as archive:
+        doc=ET.fromstring(archive.read('grouped.mscx'))
+        staves=doc.findall('./Score/Part/Staff')
+        assert [x.findtext('barLineSpan') for x in staves]==['1','1','1',None]
+
+
+def test_title_frame_credits_are_in_reading_order(tmp_path):
+    from app.engraving import prepare_print_ready
+    path=tmp_path/'credits.mscz'
+    data=(
+        '<museScore version="3.02"><Score><Staff id="1">'
+        '<VBox><height>9.7</height>'
+        '<Text><style>Title</style><text>Old title</text></Text>'
+        '<Text><style>Subtitle</style><text>Old composer</text></Text>'
+        '<Text><style>Subtitle</style><text>Old subtitle</text></Text>'
+        '</VBox></Staff></Score></museScore>'
+    )
+    with zipfile.ZipFile(path,'w') as archive:archive.writestr('score.mscx',data)
+    prepare_print_ready(path,{'title':'Brandywine','subtitle':'Four flutes',
+                              'composer':'Rene Brielmann'})
+    with zipfile.ZipFile(path) as archive:
+        doc=ET.fromstring(archive.read('score.mscx'))
+    texts=doc.findall('./Score/Staff/VBox/Text')
+    assert [el.findtext('text') for el in texts]==[
+        'Brandywine','Four flutes','Rene Brielmann']
+    assert [el.findtext('style') for el in texts]==['Title','Subtitle','Composer']
+    assert float(doc.findtext('./Score/Staff/VBox/height'))>=14
+
+
+def test_original_mode_avoids_pathological_pagination(tmp_path, monkeypatch):
+    from app import main
+    def fake_convert(source,target):
+        target=Path(target)
+        if target.suffix=='.mscz':
+            with zipfile.ZipFile(target,'w') as archive:
+                archive.writestr('score.mscx','<museScore version="3.02"><Score>'
+                                 '<Staff id="1"><VBox><height>10</height></VBox>'
+                                 '</Staff></Score></museScore>')
+        elif target.suffix=='.pdf':
+            target.write_bytes(b'%PDF-1.4\n%%EOF\n')
+    monkeypatch.setattr(main,'convert',fake_convert)
+    monkeypatch.setattr(main,'create_preview',
+                        lambda pdf,png:Path(png).write_bytes(b'PNG'))
+    monkeypatch.setattr(main,'pdf_page_count',lambda path:40)
+    data=capx(MINIMAL)
+    work=tmp_path/'one';work.mkdir()
+    info=main.process_score('Test.capx','.capx',data,work,'original')
+    assert info['layout']=='balanced-fallback'
+    assert any('used a balanced print layout' in warning for warning in info['warnings'])
+    assert (work/'Test.mscz').exists()
