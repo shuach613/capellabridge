@@ -371,7 +371,7 @@ def test_meter_changes_tuplets_grace_and_full_bar_rests_in_all_layouts():
                        for n in upper.findall('./measure[2]/note[grace]'))
         assert len(upper.findall('./measure[2]/note/time-modification'))==3
         assert [r.findtext('duration') for r in lower.findall('./measure/note')]==[
-            '5040','7560']
+            '20160','30240']
         assert len(lower.findall('./measure/note/rest[@measure="yes"]'))==2
         assert len(upper.findall('./measure[1]/barline/repeat[@direction="backward"]'))==1
         assert len(upper.findall('./measure[2]/barline/repeat[@direction="forward"]'))==1
