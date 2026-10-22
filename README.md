@@ -158,8 +158,8 @@ The web interface shows upload percentage and an animated activity indicator onc
 
 Finale's proprietary `.mus` and `.musx` files are not accepted directly; export MusicXML from Finale first. A future version can offer direct MusicXML and compressed `.mxl` imports.
 
-## Print-ready engraving (feature branch)
+## Print-ready engraving
 
-Full-score measure numbers are shown at the beginning of each system, on the top staff only. First/second ending brackets are emitted only on the top staff, while repeat barline events remain available in each part for playback. The MSCZ has MuseScore 3 native print-style settings applied before PDF and preview rendering. MusicXML uses a top-staff \u003cmeasure-numbering\u003e instruction.
+In Balanced and Compact, MuseScore flows measures according to the selected spacing; in Original systems, line breaks are placed at genuine Capella source-system starts, not on every measure. Full-score measure numbers are shown at the beginning of each system, on the top staff only. First/second ending brackets are emitted only on the top staff, while repeat barline events remain available in each part for playback. The MSCZ has MuseScore 3 native print-style settings applied before PDF and preview rendering. MusicXML uses a top-staff \u003cmeasure-numbering\u003e instruction.
 
 Native import can still reflow the music relative to the Capella PDF. Inspect complex repeats and page breaks in MuseScore before publication.
