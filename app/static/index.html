@@ -13,7 +13,7 @@
 <div class="app-frame">
   <header class="topbar">
     <a class="brand" href="/" aria-label="CapellaBridge home"><img width="37" height="37" src="/static/mark.svg" alt=""><span class="brand-name">capella<span>bridge</span><small>NOTATION CONVERTER</small></span></a>
-    <div class="topbar-center"><span class="workspace-active"></span> Score conversion studio <span class="topbar-beta">1.0.1</span></div>
+    <div class="topbar-center"><span class="workspace-active"></span> Score conversion studio <span class="topbar-beta">1.1.0</span></div>
     <div class="topbar-right"><span class="status-led"></span><span>SELF-HOSTED · PRIVATE</span><span class="topbar-shortcut">CAPX <b>↗</b> MSCZ</span></div>
   </header>
 
@@ -22,7 +22,6 @@
       <span class="rail-caption">WORKSPACE</span>
       <a class="rail-item active" href="#convert-workspace"><span class="rail-icon">♬</span><span>Convert scores</span></a>
       <a class="rail-item" href="#results"><span class="rail-icon">▤</span><span>My exports</span></a>
-      <a class="rail-item" href="#account" id="account-toggle"><span class="rail-icon">⚙</span><span>Account settings</span></a>
       <div class="rail-divider"></div>
       <span class="rail-caption">YOUR WORKFLOW</span>
       <div class="workflow-step"><span>01</span><div>Import<small>.capx or .cap</small></div></div>
@@ -72,18 +71,8 @@
         </div>
       </section>
 
-      <section id="account" class="account-panel" hidden>
-        <span class="section-kicker">SECURE YOUR STUDIO</span><h2>Change administrator password</h2>
-        <p>Credentials live in the container’s persistent data volume. No configuration files needed.</p>
-        <form id="password-form" autocomplete="off">
-          <label>Current password<input type="password" id="old-password" autocomplete="current-password" required></label>
-          <label>New password (12+ characters)<input type="password" id="new-password" minlength="12" autocomplete="new-password" required></label>
-          <button type="submit" class="primary-action"><span>Save new password</span></button>
-          <p id="account-notice" role="status" aria-live="polite"></p>
-        </form>
-      </section>
       <section id="results" class="results" hidden aria-live="polite"><div class="results-heading"><div><span class="section-kicker">04 <i></i> YOUR CONVERTED SCORES</span><h2>Ready for the next movement.</h2></div><a id="batch" class="batch-link" hidden>↓ Download all · ZIP</a></div><div id="result-list"></div></section>
-      <footer><span>CAPELLABRIDGE 1.0.1 · BUILT FOR SELF-HOSTING</span><span>Independent project. Not affiliated with capella-software AG or MuseScore.</span></footer>
+      <footer><span>CAPELLABRIDGE 1.1.0 · BUILT FOR SELF-HOSTING</span><span>Independent project. Not affiliated with capella-software AG or MuseScore.</span></footer>
     </main>
   </div>
 </div>

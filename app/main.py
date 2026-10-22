@@ -1,81 +1,27 @@
 """CapellaBridge 1.0: private self-hosted CAP/CAPX to MuseScore web service."""
 from __future__ import annotations
 import asyncio
-import hashlib
-import hmac
-import logging
-import threading
 from contextlib import asynccontextmanager
 import io
 import json
 import os
 import re
-import secrets
 import shutil
-import tempfile
 import time
 import uuid
 import zipfile
 from pathlib import Path
 from typing import Annotated
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 from .converter import CapellaError, serialize_musicxml
 from .musescore import ConversionFailure, convert, create_preview, musescore_path
 
-VERSION='1.0.1'
+VERSION='1.1.0'
 BASE=Path(os.environ.get('CAPELLABRIDGE_DATA','/data')).resolve()
 JOBS=BASE/'jobs'
 STATIC=Path(__file__).parent/'static'
-PASSWORD=os.environ.get('CAPELLABRIDGE_PASSWORD','') # Optional CI / backwards-compat override
-USERNAME=os.environ.get('CAPELLABRIDGE_USER','admin')
-IDENTITY=BASE/'admin.json'
-LOG=logging.getLogger('uvicorn.error')
-_identity_lock=threading.Lock()
-
-def _derive(password: str, salt: bytes) -> str:
-    return hashlib.pbkdf2_hmac('sha256',password.encode('utf-8'),salt,310_000).hex()
-
-def _save_identity(username: str, password: str):
-    BASE.mkdir(parents=True,exist_ok=True)
-    salt=secrets.token_bytes(32)
-    state={'username':username,'salt':salt.hex(),'password_hash':_derive(password,salt)}
-    temp=BASE/('admin-'+secrets.token_hex(8)+'.tmp')
-    try:
-        with temp.open('x',encoding='utf-8') as fp:
-            json.dump(state,fp)
-        os.chmod(temp,0o600)
-        os.replace(temp,IDENTITY)
-    finally:
-        temp.unlink(missing_ok=True)
-
-def initialize_identity():
-    if PASSWORD or IDENTITY.is_file():return
-    with _identity_lock:
-        if IDENTITY.is_file():return
-        initial=secrets.token_urlsafe(20)
-        _save_identity('admin',initial)
-        LOG.warning('=====================================================')
-        LOG.warning('CAPELLABRIDGE FIRST START: admin login generated')
-        LOG.warning('Username: admin')
-        LOG.warning('Password: %s',initial)
-        LOG.warning('Save this password or change it in the web UI.')
-        LOG.warning('Find it using: docker logs capellabridge')
-        LOG.warning('=====================================================')
-
-def _valid_credentials(user: str, password: str) -> bool:
-    if PASSWORD:
-        return secrets.compare_digest(user,USERNAME) and secrets.compare_digest(password,PASSWORD)
-    try:
-        state=json.loads(IDENTITY.read_text(encoding='utf-8'))
-        derived=_derive(password,bytes.fromhex(state['salt']))
-        return hmac.compare_digest(user,state['username']) and hmac.compare_digest(derived,state['password_hash'])
-    except (OSError,KeyError,ValueError,TypeError,json.JSONDecodeError):
-        return False
-
 TTL=int(os.environ.get('CAPELLABRIDGE_TTL_HOURS','24'))*3600
 MAX_FILE=int(os.environ.get('CAPELLABRIDGE_MAX_UPLOAD_MB','15'))*1024*1024
 MAX_BATCH=max(1,min(30,int(os.environ.get('CAPELLABRIDGE_MAX_BATCH','12'))))
@@ -87,7 +33,6 @@ async def expire_loop():
 
 @asynccontextmanager
 async def lifespan(app):
-    initialize_identity()
     task=asyncio.create_task(expire_loop())
     try:
         yield
@@ -98,31 +43,7 @@ async def lifespan(app):
 
 
 app=FastAPI(title='CapellaBridge',version=VERSION,docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
-security=HTTPBasic(auto_error=False)
 semaphore=asyncio.Semaphore(1)
-
-
-def auth(cred: Annotated[HTTPBasicCredentials|None,Depends(security)]):
-    if not cred or not _valid_credentials(cred.username,cred.password):
-        raise HTTPException(status_code=401,detail='Authentication required',headers={'WWW-Authenticate':'Basic realm="CapellaBridge"'})
-    return cred.username
-
-class PasswordChange(BaseModel):
-    current_password: str
-    new_password: str
-
-@app.post('/api/account/password',dependencies=[Depends(auth)])
-def change_password(body:PasswordChange, username:Annotated[str,Depends(auth)]):
-    if PASSWORD:
-        raise HTTPException(409,'Credentials are controlled by container environment')
-    if not _valid_credentials(username,body.current_password):
-        raise HTTPException(403,'Current password is incorrect')
-    if len(body.new_password)<12 or len(body.new_password)>256:
-        raise HTTPException(422,'Password must be between 12 and 256 characters')
-    with _identity_lock:
-        _save_identity(username,body.new_password)
-    return {'ok':True}
-
 
 def cleanup():
     JOBS.mkdir(parents=True,exist_ok=True)
@@ -134,20 +55,20 @@ def cleanup():
 
 @app.get('/health')
 def health():
-    return {'status':'ok','version':VERSION,'engine_available':bool(shutil.which(os.environ.get('MUSESCORE_BIN','musescore3'))),'authentication_configured':bool(PASSWORD or IDENTITY.exists())}
+    return {'status':'ok','version':VERSION,'engine_available':bool(shutil.which(os.environ.get('MUSESCORE_BIN','musescore3')))}
 
 
-@app.get('/',dependencies=[Depends(auth)])
+@app.get('/')
 def index():return FileResponse(STATIC/'index.html',media_type='text/html')
 
 
-@app.get('/static/{filename}',dependencies=[Depends(auth)])
+@app.get('/static/{filename}')
 def static(filename:str):
     if filename not in ('app.css','app.js','mark.svg'):raise HTTPException(404)
     return FileResponse(STATIC/filename,media_type='image/svg+xml' if filename.endswith('.svg') else None)
 
 
-@app.get('/api/info',dependencies=[Depends(auth)])
+@app.get('/api/info')
 def info():
     return {'version':VERSION,'max_upload_mb':MAX_FILE//1024//1024,'max_batch':MAX_BATCH,
             'supported':{'capx':'Native CapXML 2.0 engine','cap':'Legacy MuseScore importer (best effort)'},
@@ -215,7 +136,7 @@ def process_score(name,ext,raw,work,layout):
     return info
 
 
-@app.post('/api/convert',dependencies=[Depends(auth)])
+@app.post('/api/convert')
 async def upload(files: Annotated[list[UploadFile],File(...)],layout: str='balanced'):
     if layout not in ('balanced','compact','original'):
         raise HTTPException(400,'Unknown layout setting')
@@ -257,13 +178,13 @@ async def upload(files: Annotated[list[UploadFile],File(...)],layout: str='balan
         return {'job_id':job_id,'results':results,'batch_url':f'/api/files/{job_id}/CapellaBridge-batch.zip'}
 
 
-@app.get('/api/files/{job_id}/{filename}',dependencies=[Depends(auth)])
+@app.get('/api/files/{job_id}/{filename}')
 def batch_download(job_id:str,filename:str):
     if not re.fullmatch(r'[0-9a-f]{32}',job_id) or filename!='CapellaBridge-batch.zip':raise HTTPException(404)
     return serve(JOBS/job_id/filename)
 
 
-@app.get('/api/files/{job_id}/{directory}/{filename}',dependencies=[Depends(auth)])
+@app.get('/api/files/{job_id}/{directory}/{filename}')
 def download(job_id:str,directory:str,filename:str):
     if not re.fullmatch(r'[0-9a-f]{32}',job_id) or not re.fullmatch(r'[0-9]{2}',directory):raise HTTPException(404)
     if filename!=Path(filename).name or '..' in filename:raise HTTPException(404)
