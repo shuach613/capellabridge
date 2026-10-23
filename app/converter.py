@@ -568,6 +568,75 @@ def note_type(dur_node):
     return DURATION_TYPES.get(Fraction(dur_node.get('base','1/4')), 'quarter')
 
 
+# Single characters from capella3 are music glyph IDs, not literal text.
+# Use the same mapping as the MuseScore Capella legacy importer.
+CAPELLA_DYNAMICS={
+    'p':'p','q':'pp','r':'ppp','f':'f','g':'ff','h':'fff',
+    'i':'mp','j':'mf','s':'sf','z':'sfz','{':'fz','|':'fp',
+}
+CAPELLA_NAVIGATION={
+    'd':('D.C.',{'dacapo':'yes'}),
+    'e':('D.S.',{'dalsegno':'segno'}),
+    'y':('Segno',{'segno':'segno'}),
+    '$':('Segno',{'segno':'segno'}),
+    'n':('Coda',{'coda':'coda'}),
+    'o':('Coda',{'coda':'coda'}),
+}
+
+
+def capella_glyphs(event):
+    result=[]
+    for graphic in children(child(event.node,'drawObjects'),'drawObj'):
+        txt=child(graphic,'text')
+        font=child(txt,'font')
+        content=child(txt,'content')
+        if font is None or content is None:
+            continue
+        if font.get('face','').casefold() not in ('capella3','capella'):
+            continue
+        value=''.join(content.itertext()).strip()
+        if len(value)==1:
+            result.append(value)
+    return result
+
+
+def emit_glyph_directions(measure,event,voice):
+    for glyph in capella_glyphs(event):
+        if glyph in CAPELLA_DYNAMICS:
+            direction=sub(measure,'direction',placement='below')
+            sub(sub(direction,'direction-type'),'dynamics')
+            dtype=child(direction,'direction-type')
+            dynamics=child(dtype,'dynamics')
+            sub(dynamics,CAPELLA_DYNAMICS[glyph])
+            sub(direction,'voice',voice)
+        elif glyph in CAPELLA_NAVIGATION:
+            label,sound=CAPELLA_NAVIGATION[glyph]
+            direction=sub(measure,'direction',placement='above')
+            dtyp=sub(direction,'direction-type')
+            if glyph in ('y','$'):sub(dtyp,'segno')
+            elif glyph in ('n','o'):sub(dtyp,'coda')
+            else:sub(dtyp,'words',label)
+            sub(direction,'voice',voice)
+            sub(direction,'sound',**sound)
+
+
+def emit_staff_solo_direction(measure,event,voice):
+    for graphic in children(child(event.node,'drawObjects'),'drawObj'):
+        txt=child(graphic,'text')
+        font=child(txt,'font')
+        content=child(txt,'content')
+        if font is None or content is None:
+            continue
+        if font.get('face','').casefold() in ('capella3','capella'):
+            continue
+        label=' '.join(''.join(content.itertext()).split())
+        if not re.match(r'(?i)^solo\b',label):
+            continue
+        direction=sub(measure,'direction',placement='below')
+        sub(sub(direction,'direction-type'),'words',label,font_size='11')
+        sub(direction,'voice',voice)
+
+
 def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False):
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
@@ -634,9 +703,13 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             sub(note,'notehead','x' if shape=='cross' else shape)
         gliss_start, gliss_end = graphic_links if graphic_links else ({},{})
         tuplet_start, tuplet_end = tuplet_links if tuplet_links else ({},{})
-        graphical_trill=any(child(d,'trill') is not None for d in
-                              children(child(ob,'drawObjects'),'drawObj'))
-        has_notation=bool(marks or ties or graphical_trill or id(event) in slur_starts
+        glyphs=capella_glyphs(event)
+        graphical_trill=(
+            't' in glyphs or any(child(d,'trill') is not None for d in
+                                  children(child(ob,'drawObjects'),'drawObj'))
+        )
+        fermata_glyph='u' if 'u' in glyphs else 'k' if 'k' in glyphs else None
+        has_notation=bool(marks or ties or graphical_trill or fermata_glyph or id(event) in slur_starts
                           or id(event) in slur_ends or id(event) in gliss_start
                           or id(event) in gliss_end or id(event) in tuplet_start
                           or id(event) in tuplet_end)
@@ -656,6 +729,8 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                     sub(nt,'glissando',type='start',number=sn,line_type='wavy')
                 if graphical_trill:
                     sub(sub(nt,'ornaments'),'trill-mark')
+                if fermata_glyph:
+                    sub(nt,'fermata',type=('upright' if fermata_glyph=='u' else 'inverted'))
             if marks and hi == 0:
                 articulations=sub(nt,'articulations')
                 for a in marks:
@@ -1092,6 +1167,9 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 placed_directions=set()
                 for e in ve:
                     if e.kind in ('chord','rest') and e.time>=start:
+                        emit_glyph_directions(measure,e,voice)
+                        if pi>0:
+                            emit_staff_solo_direction(measure,e,voice)
                         for no in wedge_stops.get(id(e),()):
                             direction=sub(measure,'direction',placement='below')
                             dtype=sub(direction,'direction-type')
