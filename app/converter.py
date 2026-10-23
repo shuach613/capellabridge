@@ -410,9 +410,14 @@ def extract_variation_numbers(parts):
             if font is None or content is None:
                 continue
             label = ' '.join(''.join(content.itertext()).split())
-            if not re.fullmatch(
-                r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?(?:\s+[^\d].{1,35})?', label
-            ):
+            numbered=re.fullmatch(
+                r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?(?:\s+[^\d].{1,35})?',label
+            )
+            sectional=re.fullmatch(
+                r'(?i)(?:thema|var\.?\s*[1-9]\d?|finale)\b.{0,48}',label
+            )
+            letter=re.fullmatch(r'[A-Z]',label)
+            if not (numbered or sectional or letter):
                 continue
             if font.get('face', '').casefold() in ('capella', 'capella3'):
                 continue
@@ -459,11 +464,15 @@ def extract_score_directions(parts):
             performance=re.search(
                 r'(?i)(\bfine\b|\bcoda\b|\bsegno\b|'
                 r'\bd\.?\s*c\.?\b|\bd\.?\s*s\.?\b|'
-                r'\btrommelsolo\b|\btutti\b|\bsolo\b|'
+                r'\btrommelsolo\b|\btutti\b|\bsolo\b|\btrio\b|'
                 r'\britardando\b|\brit\.?\b|\ba tempo\b|'
                 r'\baccelerando\b|\baccel\.?\b)',
                 label)
-            if (performance and 10<=height<=20 and y<0
+            special=re.search(
+                r'(?i)^(?:glockeneffekt|gliss(?:ando)?|finale)\b',label
+            )
+            if (((performance and 10<=height<=20)
+                 or (special and 8<=height<=20))
                     and label not in out[event.time]):
                 out[event.time].append(label)
     return dict(out)
@@ -474,6 +483,23 @@ def add_score_direction(measure,label):
     kind=sub(direction,'direction-type')
     sub(kind,'words',label,font_size='10',font_weight='bold',
         relative_y='16',justify='left')
+    # MusicXML playback navigation, in addition to the visible label.
+    low=label.casefold()
+    sound={}
+    if re.search(r'\bd\.?\s*c\.?(?:\s|$)',low):
+        sound['dacapo']='yes'
+    if re.search(r'\bd\.?\s*s\.?(?:\s|$)',low):
+        sound['dalsegno']='segno'
+    if re.search(r'\b(?:to|al)\s+coda\b',low):
+        sound['tocoda']='coda'
+    elif re.search(r'\bcoda\b',low):
+        sound['coda']='coda'
+    if re.search(r'\bsegno\b',low) and 'dalsegno' not in sound:
+        sound['segno']='segno'
+    if re.fullmatch(r'fine\.?',low.strip()):
+        sound['fine']='yes'
+    if sound:
+        sub(direction,'sound',**sound)
 
 
 def add_variation_heading(measure, label):
@@ -892,7 +918,20 @@ def make_graphic_links(events):
                 name=(graphic.get('name') or '').casefold()
                 basic=child(graphic,'basic')
                 line=child(graphic,'line')
-                if line is None or 'gliss' not in name or basic is None:
+                wavy=child(graphic,'wavyLine')
+                labeled_target=(
+                    index+1<len(chords) and any(
+                        re.search(r'\bgliss(?:ando)?\b',
+                                  ''.join(child(child(g,'text'),'content').itertext()),
+                                  re.I)
+                        for g in children(child(chords[index+1].node,'drawObjects'),'drawObj')
+                        if child(g,'text') is not None
+                        and child(child(g,'text'),'content') is not None
+                    )
+                )
+                if basic is None or not (
+                        (line is not None and 'gliss' in name)
+                        or (wavy is not None and labeled_target)):
                     continue
                 span=int(basic.get('noteRange','0'))
                 if not 0<span or index+span>=len(chords):
