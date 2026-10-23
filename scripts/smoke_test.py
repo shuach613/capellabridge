@@ -547,6 +547,42 @@ def main():
         assert any(x.endswith('.mscx') for x in z.namelist())
     print('Low title and separate rights/composer survived native MuseScore export',flush=True)
 
+    # D'Preusse uses compact capella3 inline glyphs "¢=100"/"¢=110"
+    # rather than Fyyrvogel's grouped metronome. Check the real output
+    # pipeline without publishing user-owned CAPX or copyrighted notes.
+    source=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/3.0">'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices>'
+        '<voice><noteObjects><timeSign time="1/4"/>'
+        '<chord><duration base="1/4"/><drawObjects><drawObj>'
+        '<text y="-5"><font face="capella3" height="18"/>'
+        '<content>¢=100</content></text></drawObj></drawObjects>'
+        '<heads><head pitch="C5"/></heads></chord>'
+        '<chord><duration base="1/4"/><drawObjects><drawObj>'
+        '<text y="-5"><font face="capella3" height="24"/>'
+        '<content>14</content></text></drawObj><drawObj>'
+        '<text y="-7"><font face="Bookman Old Style" height="9" italic="true"/>'
+        '<content>Der Königsgrätzer</content></text></drawObj><drawObj>'
+        '<text y="-4"><font face="capella3" height="18"/>'
+        '<content>¢=110</content></text></drawObj></drawObjects>'
+        '<heads><head pitch="D5"/></heads></chord>'
+        '</noteObjects></voice></voices></staff></staves></system></systems>'
+        '</score>'
+    ).encode('utf-8')
+    body,ctype=make_upload(source,filename='Preusse-tempo.capx')
+    reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    item=reply['results'][0]
+    assert item['variation_numbers']==['14']
+    assert 'Der Königsgrätzer' in item['printed_directions']
+    xmltree=ET.fromstring(get(item['downloads']['musicxml']))
+    assert [x.text for x in xmltree.findall('.//metronome/per-minute')]==['100','110']
+    assert get(item['downloads']['pdf']).startswith(b'%PDF-')
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        assert any(x.endswith('.mscx') for x in z.namelist())
+    print('Preusse inline 100/110 BPM and multi-digit section survived MuseScore export',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
