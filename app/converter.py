@@ -995,8 +995,11 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     # halfway through an existing printed system.
     # This must cover EVERY system, including systems lacking the first part.
     indexed_system_starts = {}
+    seen_systems=set()
     for event in leading_voice_events(parts):
-        indexed_system_starts.setdefault(event.time,event.system)
+        if event.system not in seen_systems:
+            seen_systems.add(event.system)
+            indexed_system_starts[event.time]=event.system
     staff_transition_starts = {
         t for t,si in indexed_system_starts.items()
         if si > 0 and any(
