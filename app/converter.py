@@ -392,7 +392,7 @@ def extract_score_directions(parts):
             if font is None or content is None:
                 continue
             label=' '.join(''.join(content.itertext()).split())
-            if not label or re.fullmatch(r'(?i)(?:(?:no|nr|variation|vers)\\.?\\s*)?[1-9]\\d?',label):
+            if not label or re.fullmatch(r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?',label):
                 continue
             if font.get('face','').casefold() in ('capella','capella3'):
                 continue
@@ -949,7 +949,7 @@ def serialize_musicxml(raw, layout='balanced'):
                         start<=e.time<stop or (
                             e.kind=='rest' and e.time<start and
                             e.time+e.dur>start and
-                            re.fullmatch(r'[1-9]\\d*',
+                            re.fullmatch(r'[1-9]\d*',
                                 (child(e.node,'duration').get('base','')
                                  if child(e.node,'duration') is not None else ''))
                         )
@@ -986,7 +986,7 @@ def serialize_musicxml(raw, layout='balanced'):
                         rest_base=(rest_duration.get('base','')
                                    if rest_duration is not None else '')
                         is_multi_rest=(e.kind=='rest'
-                                       and re.fullmatch(r'[2-9]\\d*',rest_base) is not None)
+                                       and re.fullmatch(r'[2-9]\d*',rest_base) is not None)
                         event_for_note=e
                         if is_multi_rest and e.time<=start and e.time+e.dur>=stop:
                             # A source seven-/eight-measure rest must be
