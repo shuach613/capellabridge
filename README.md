@@ -102,7 +102,7 @@ app/
   static/             Responsive web UI
 scripts/              Smoke tests and reproducible screenshots
 tests/                CAPX and MuseScore regression coverage
-.github/workflows/    Tests, container publication, screenshots
+.github/workflows/    Tests and container publication
 Dockerfile
 docker-compose.yml
 ```
