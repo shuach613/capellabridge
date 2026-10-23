@@ -650,8 +650,13 @@ def main():
         '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
         '<systems><system><staves><staff layout="Piccolo"><voices>'
         '<voice><noteObjects><timeSign time="2/4"/>'
-        '<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>'
+        '<chord><duration base="1/4"/><drawObjects><drawObj>'
+        '<text x="0" y="-5"><font face="capella3" height="18"/>'
+        '<content>M</content></text></drawObj></drawObjects>'
+        '<heads><head pitch="C5"/></heads></chord>'
         '<rest><duration base="1/4"/><drawObjects><drawObj>'
+        '<text x="0" y="-5"><font face="capella3" height="18"/>'
+        '<content>L</content></text></drawObj><drawObj>'
         '<richText file="obj____1.rtf" x="-5.5" y="-14" width="22"/>'
         '</drawObj></drawObjects></rest>'
         '</noteObjects></voice></voices></staff></staves></system></systems>'
@@ -665,6 +670,7 @@ def main():
     xmltree=ET.fromstring(get(item['downloads']['musicxml']))
     words=[d.text for d in xmltree.findall('.//direction-type/words')]
     assert 'D.S. al Segno con rep. et poi Coda' in words,words
+    assert '\U0001D13E' in words and '\U0001D13F' in words,words
     assert xmltree.find('.//direction/sound[@dalsegno="segno"][@tocoda="coda"]') is not None
     with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
         assert any(n.endswith('.mscx') for n in z.namelist())
