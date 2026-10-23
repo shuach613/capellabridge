@@ -93,14 +93,11 @@ def test_waggis_late_fourth_staff_page_title_and_rest_section_label(layout):
 
 
 @pytest.mark.parametrize('layout',('balanced','compact','original'))
-def test_calvados_mixed_meter_multibar_rest_and_performance_text(layout):
+@pytest.mark.parametrize('rest_measures',(7,8))
+def test_calvados_mixed_meter_multibar_rest_and_performance_text(layout,rest_measures):
     """Integer rest bases count full measures, not whole notes."""
-    first=[staff(name,'<timeSign time="2/4"/>'+rest('7')) for name in
+    first=[staff(name,'<timeSign time="2/4"/>'+rest(str(rest_measures))) for name in
            ('Piccolo 1','Piccolo 2','Piccolo 3')]
-    second=[staff(name,'<timeSign time="6/8"/>'
-        +(rest('3/8',draw_words('Trommelsolo')) if i==0 else note(duration='1/4'))
-        +(note(duration='3/8') if i==0 else note(duration='1/2')))
-        for i,name in enumerate(('Piccolo 1','Piccolo 2','Piccolo 3'))]
     # Create exactly 6/8 in second system for all staves.
     second=[staff(name,
         '<timeSign time="6/8"/>'
@@ -111,7 +108,7 @@ def test_calvados_mixed_meter_multibar_rest_and_performance_text(layout):
                     page_credits('Calvados','Christoph Walliser'))
     xml,report=serialize_musicxml(data,layout)
     doc=ET.fromstring(xml)
-    assert report['measures']==8,report
+    assert report['measures']==rest_measures+1,report
     assert report['variable_staff_systems'] is False
     assert report['title']=='Calvados'
     assert doc.findtext('./identification/creator')=='Christoph Walliser'
