@@ -12,6 +12,7 @@ import time
 import uuid
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 from typing import Annotated
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -209,7 +210,7 @@ async def upload(files: Annotated[list[UploadFile],File(...)],layout: str='balan
             out.mkdir()
             try:
                 result=await asyncio.to_thread(process_score,name,ext,raw,out,layout)
-                result['downloads']={k:f'/api/files/{job_id}/{index+1:02d}/{v}' for k,v in result['files'].items()}
+                result['downloads']={k:f'/api/files/{job_id}/{index+1:02d}/{quote(v)}' for k,v in result['files'].items()}
                 results.append({'ok':True,**result})
             except (CapellaError,ConversionFailure,ScoreIntegrityError,ValueError,zipfile.BadZipFile) as exc:
                 shutil.rmtree(out,ignore_errors=True)
