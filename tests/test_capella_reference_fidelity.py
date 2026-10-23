@@ -176,12 +176,14 @@ def test_capxml_3_namespace_replacement_staff_and_logo_title(layout):
 @pytest.mark.parametrize('layout',('balanced','compact','original'))
 def test_capxml_1_namespace_second_voice_sections_and_hairpins(layout):
     """Nunnefirzli uses CapXML 1.0, 2 voices and expression hairpins."""
-    wedge=(
-        '<drawObjects><drawObj><wedge decrescendo="true" color="FF0000"/>'
-        '<basic noteRange="1"/></drawObj></drawObjects>'
-    )
     heading=draw_words('1 dr Aafang',height=12)
-    leading='<timeSign time="2/4"/>'+note(marks=heading+wedge)+note('D5')
+    # A Capella chord has ONE drawObjects parent holding several drawObj
+    # children, not two separate drawObjects containers.
+    notation=heading.replace(
+        '</drawObjects>',
+        '<drawObj><wedge decrescendo="true" color="FF0000"/>'
+        '<basic noteRange="1"/></drawObj></drawObjects>')
+    leading='<timeSign time="2/4"/>'+note(marks=notation)+note('D5')
     voice_two=note('C5',duration='1/8')*4
     multi_staff=(
         '<staff layout="1. Stimme"><voices>'
