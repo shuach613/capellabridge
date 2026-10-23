@@ -142,6 +142,44 @@ class Part:
 class CapellaError(ValueError): pass
 
 
+def _capella_rtf_direction(data):
+    """Extract score-direction text from a small Capella-embedded RTF object.
+
+    This deliberately interprets only a plaintext paragraph and the
+    documented Capella3 navigation glyphs. It does not guess the musical
+    meaning of arbitrary proprietary font glyphs or import RTF styling.
+    """
+    rtf=data.decode('cp1252','replace')
+    capella_fonts={int(n) for n in re.findall(
+        r'\{\\f(\d+)[^{}]{0,160}\bcapella3\s*;',rtf,re.I)}
+    para=re.search(r'\\pard\b(.*?)(?=\\par\b|$)',rtf,re.S)
+    if para is None:
+        return ''
+    out=[]
+    active_font=-1
+    for match in re.finditer(
+            r"\\'[0-9a-fA-F]{2}|\\[a-zA-Z]+-?\d* ?|\\[^a-zA-Z]|[^\\{}]+",
+            para.group(1)):
+        token=match.group()
+        font_switch=re.fullmatch(r'\\f(\d+) ?',token)
+        if font_switch:
+            active_font=int(font_switch.group(1))
+        elif token.startswith("\\'"):
+            out.append(bytes.fromhex(token[2:]).decode('cp1252','replace'))
+        elif token=='\\~':
+            out.append(' ')
+        elif token.startswith('\\'):
+            continue
+        elif active_font in capella_fonts:
+            # Display semantic names instead of raw Capella font IDs.
+            names={'e':'D.S.','d':'D.C.','$':'Segno','y':'Segno',
+                   'n':'Coda','o':'Coda'}
+            out.append(''.join(names.get(c,c) for c in token))
+        else:
+            out.append(token)
+    return ' '.join(''.join(out).split())[:500]
+
+
 def read_capx(raw: bytes):
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
@@ -151,6 +189,13 @@ def read_capx(raw: bytes):
             info = archive.getinfo(xml_name)
             if info.file_size > MAX_XML: raise CapellaError('score.xml is too large')
             xml = archive.read(xml_name)
+            # Keep short, referenced rich-text score directions available
+            # while rejecting huge or unrelated archive attachments.
+            rich_assets={}
+            for info in archive.infolist():
+                if (len(rich_assets)<24 and info.filename.endswith('.rtf')
+                        and 0<info.file_size<=65536):
+                    rich_assets[info.filename]=archive.read(info.filename)
     except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
         raise CapellaError('Not a valid CAPX ZIP archive') from exc
     if b'<!DOCTYPE' in xml.upper() or b'<!ENTITY' in xml.upper():
@@ -173,6 +218,19 @@ def read_capx(raw: bytes):
                 element.tag='{'+CAP_NS+'}'+ET.QName(element).localname
         ET.cleanup_namespaces(root)
     root.set('source-capxml-version',source_namespace.rsplit('/',1)[-1])
+    for item in root.xpath('//c:drawObj/c:richText',namespaces=N):
+        data=rich_assets.get(item.get('file',''))
+        if not data:
+            continue
+        caption=_capella_rtf_direction(data)
+        if not caption:
+            continue
+        parent=item.getparent()
+        text=ET.SubElement(parent,'{'+CAP_NS+'}text',
+                           x=item.get('x','0'),y=item.get('y','-7'))
+        ET.SubElement(text,'{'+CAP_NS+'}font',
+                      face='Arial',height='12',color='FF0000')
+        ET.SubElement(text,'{'+CAP_NS+'}content').text=caption
     return root
 
 
@@ -656,7 +714,8 @@ def extract_score_directions(parts, section_times=None):
             # adding it as a direction would print the credits twice.
             performance=re.search(
                 r'(?i)(\bfine\b|\bcoda\b|\bsegno\b|'
-                r'\bd\.?\s*c\.?\b|\bd\.?\s*s\.?\b|'
+                r'\bd\.?\s*c\.?\s*(?=al\b|\s|$)|'
+                r'\bd\.?\s*s\.?\s*(?=al\b|\s|$)|'
                 r'\bda\s+capo\b|\bintro\b|\bmaestoso\b|\blively\b|\bmarcial\b|'
                 r'\btrommelsolo\b|\btutti\b|\bsolo\b|\btrio\b|'
                 r'\britardando\b|\brit\.?\b|\ba tempo\b|'
@@ -703,9 +762,9 @@ def add_score_direction(measure,label,source_color=None):
     sound={}
     if re.search(r'\bd\.?\s*c\.?\s*(?=al\b|\s|$)|\bda\s+capo\b',low):
         sound['dacapo']='yes'
-    if re.search(r'\bd\.?\s*s\.?(?:\s|$)',low):
+    if re.search(r'\bd\.?\s*s\.?\s*(?=al\b|\s|$)',low):
         sound['dalsegno']='segno'
-    if re.search(r'\b(?:to|al)\s+coda\b',low):
+    if re.search(r'\b(?:to|al|poi)\s+coda\b',low):
         sound['tocoda']='coda'
     elif re.search(r'\bcoda\b',low):
         sound['coda']='coda'
@@ -1339,6 +1398,20 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             boxed_sections.add(event.time)
     score_directions=extract_score_directions(parts,set(variation_numbers))
     page_navigation_colors={}
+    for event in leading_voice_events(parts):
+        if event.kind not in ('chord','rest'):
+            continue
+        for graphic in children(child(event.node,'drawObjects'),'drawObj'):
+            node=child(graphic,'text')
+            font=child(node,'font')
+            content=child(node,'content')
+            if font is None or content is None:
+                continue
+            label=' '.join(''.join(content.itertext()).split())
+            rgb=font.get('color','')
+            if (label in score_directions.get(event.time,())
+                    and re.fullmatch(r'[A-Fa-f0-9]{6}',rgb)):
+                page_navigation_colors[(event.time,label)]='#'+rgb.upper()
     # Some Capella scores put a visible D.C. instruction at the bottom
     # of pageObjects (Vaudois), while the score carries a hidden white
     # playback hint. Attach the *visible* instruction to the final event.
