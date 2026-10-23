@@ -34,12 +34,12 @@ def main():
     </noteObjects></voice></voices></staff></staves></system></systems></score>'''
 
 
-    def make_upload(xml_bytes=xml):
+    def make_upload(xml_bytes=xml, filename='Smoke.capx'):
         score=io.BytesIO()
         with zipfile.ZipFile(score,'w') as z:
             z.writestr('score.xml', xml_bytes)
         boundary='CAPELLABRIDGE_SMOKE_BOUNDARY'
-        body=(f'--{boundary}\r\nContent-Disposition: form-data; name="files"; filename="Smoke.capx"\r\n'
+        body=(f'--{boundary}\r\nContent-Disposition: form-data; name="files"; filename="{filename}"\r\n'
               'Content-Type: application/octet-stream\r\n\r\n').encode()+score.getvalue()+f'\r\n--{boundary}--\r\n'.encode()
         return body, 'multipart/form-data; boundary='+boundary
 
@@ -265,6 +265,138 @@ def main():
             for a in native.findall('.//Articulation')
         ),'Uniform accents were reintroduced during MuseScore conversion'
     print('Uniform strongBeat marks suppressed in final editable MSCZ',flush=True)
+
+    # Source-library patterns: Waggis introduces an additional piccolo only
+    # in its final system; Calvados uses 7-bar rests and a 2/4 -> 6/8 change.
+    def staff_by_name(name,notes):
+        return f'<staff layout="{name}"><voices><voice><noteObjects>{notes}</noteObjects></voice></voices></staff>'
+    names=['Piccolo 1','Piccolo 2','Piccolo 3','Piccolo 4']
+    quarter='<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>'
+    opening=''.join(staff_by_name(n,'<timeSign time="2/4"/>'+quarter+quarter)
+                    for n in names[:3])
+    ending=''.join(staff_by_name(n,quarter+quarter) for n in names)
+    variable_xml=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<pageObjects><drawObj><text x="50" y="4"><font face="Arial" height="21"/>'
+        '<content>Waggis</content></text></drawObj>'
+        '<drawObj><text x="100" y="3"><font face="Arial" height="12"/>'
+        '<content>Karl Scherrer</content></text></drawObj></pageObjects>'
+        '<layout><staves>'+''.join(f'<staffLayout description="{n}"/>' for n in names)+
+        '</staves><brackets><bracket from="0" to="3"/></brackets></layout>'
+        '<systems><system><staves>'+opening+'</staves></system>'
+        '<system><staves>'+ending+'</staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(variable_xml)
+    rsp=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert rsp['results'][0]['ok'],rsp
+    score=rsp['results'][0]
+    assert score['variable_staff_systems'] is True,score
+    assert len(score['parts'])==4,score
+    assert score['title']=='Waggis',score
+    from xml.etree import ElementTree as ET
+    xmltree=ET.fromstring(get(score['downloads']['musicxml']))
+    last=xmltree.findall('./part')[3]
+    assert last.find('./measure[1]/attributes/staff-details').get('print-object')=='no'
+    assert last.find('./measure[2]/attributes/staff-details').get('print-object')=='yes'
+    assert get(score['downloads']['pdf']).startswith(b'%PDF-')
+    # The cross-version CI run must reopen the challenging Waggis-like
+    # score, not merely a stable four-part score without staff transitions.
+    if os.environ.get('STUDIO_COMPAT_OUTPUT'):
+        Path(os.environ['STUDIO_COMPAT_OUTPUT']).write_bytes(
+            get(score['downloads']['mscz'])
+        )
+
+    print('Later-appearing fourth staff and page-level credits rendered by MuseScore',flush=True)
+
+    old_rest='<rest><duration base="7"/></rest>'
+    solo='<rest><duration base="1/4"/><drawObjects><drawObj><text y="-4">'
+    solo+='<font face="Arial" height="12"/><content>Trommelsolo</content>'
+    solo+='</text></drawObj></drawObjects></rest>'
+    names=names[:3]
+    first=''.join(staff_by_name(n,'<timeSign time="2/4"/>'+old_rest) for n in names)
+    second=''.join(staff_by_name(n,
+                   '<timeSign time="6/8"/>'+ (solo if i==0 else quarter)
+                   +'<chord><duration base="1/2"/><heads><head pitch="D5"/></heads></chord>')
+                   for i,n in enumerate(names))
+    long_rest_xml=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves>'+''.join(f'<staffLayout description="{n}"/>' for n in names)+
+        '</staves></layout>'
+        '<systems><system><staves>'+first+'</staves></system>'
+        '<system><staves>'+second+'</staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(long_rest_xml)
+    rsp=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert rsp['results'][0]['ok'],rsp
+    score=rsp['results'][0]
+    assert score['measures']==8,score
+    assert 'Trommelsolo' in score['printed_directions'],score
+    assert get(score['downloads']['pdf']).startswith(b'%PDF-')
+    with zipfile.ZipFile(io.BytesIO(get(score['downloads']['mscz']))) as z:
+        assert any(n.endswith('.mscx') for n in z.namelist())
+    print('Seven-measure rest and 6/8 transition rendered and archived',flush=True)
+
+    # CapXML 3.0 can replace a quartet with a new solo Zier staff.
+    # A graphical title logo (WMF) is not machine-readable; the upload
+    # filename becomes the editable title while composer text is preserved.
+    layouts=['Piccolo 1','Piccolo 2','Piccolo 3','Piccolo 4','Piccolo Zier']
+    regular=''.join(staff_by_name(n,'<timeSign time="2/4"/>'+quarter+quarter)
+                    for n in layouts[:4])
+    solo=staff_by_name('Piccolo Zier',quarter+quarter)
+    v3=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/3.0">'
+        '<pageObjects><drawObj><metafile file="logo.wmf" x="65" y="-3" width="32" height="11"/></drawObj>'
+        '<drawObj><text x="150" y="2"><font face="Arial" height="11"/>'
+        '<content>Michael Robertson&#10;Trommeltext: Andri Obrist</content>'
+        '</text></drawObj></pageObjects><layout><staves>'+
+        ''.join(f'<staffLayout description="{n}"/>' for n in layouts)
+        +'</staves></layout><systems>'
+        '<system><staves>'+regular+'</staves></system>'
+        '<system><staves>'+solo+'</staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(v3,filename='Fyyrvogel.capx')
+    output=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert output['results'][0]['ok'],output
+    record=output['results'][0]
+    assert record['title']=='Fyyrvogel',record
+    assert record['composer']=='Michael Robertson',record
+    assert record['capxml_version']=='3.0',record
+    assert len(record['parts'])==5,record
+    assert get(record['downloads']['pdf']).startswith(b'%PDF-')
+    with zipfile.ZipFile(io.BytesIO(get(record['downloads']['mscz']))) as z:
+        assert any(n.endswith('.mscx') for n in z.namelist())
+    print('CapXML 3.0 graphical title and full-staff replacement rendered',flush=True)
+
+    # CapXML 1.0: two independent voices in one staff, and a graphical
+    # red diminuendo wedge linked to the following note.
+    wedge=('<drawObjects><drawObj><wedge decrescendo="true" color="FF0000"/>'
+           '<basic noteRange="1"/></drawObj></drawObjects>')
+    first_voice='<timeSign time="2/4"/>'+(
+        '<chord><duration base="1/4"/>'+wedge+
+        '<heads><head pitch="E5"/></heads></chord>')+quarter
+    second_voice=''.join(
+        '<chord><duration base="1/8"/><heads><head pitch="C5"/></heads></chord>'
+        for _ in range(4)
+    )
+    v1=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/1.0">'
+        '<layout><staves><staffLayout description="1. Stimme"/></staves></layout>'
+        '<systems><system><staves><staff layout="1. Stimme"><voices>'
+        '<voice><noteObjects>'+first_voice+'</noteObjects></voice>'
+        '<voice><noteObjects>'+second_voice+'</noteObjects></voice>'
+        '</voices></staff></staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(v1,filename='Nunnefirzli.capx')
+    output=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert output['results'][0]['ok'],output
+    record=output['results'][0]
+    assert record['capxml_version']=='1.0',record
+    xmltree=ET.fromstring(get(record['downloads']['musicxml']))
+    assert len(xmltree.findall('./part/measure/note[voice="2"]'))==4
+    assert xmltree.find('.//wedge[@type="diminuendo"]') is not None
+    assert xmltree.find('.//wedge[@type="stop"]') is not None
+    assert get(record['downloads']['pdf']).startswith(b'%PDF-')
+    print('CapXML 1.0 polyphony and crescendo/diminuendo graphics rendered',flush=True)
 
     print('All three layout modes passed the live Docker conversion test')
 

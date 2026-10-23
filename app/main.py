@@ -21,7 +21,7 @@ from .musescore import ConversionFailure, convert, create_preview, musescore_pat
 from .engraving import prepare_print_ready
 from .score_validation import audit_mscz, ScoreIntegrityError
 
-VERSION='1.7.1'
+VERSION='1.7.3'
 BASE=Path(os.environ.get('CAPELLABRIDGE_DATA','/data')).resolve()
 JOBS=BASE/'jobs'
 STATIC=Path(__file__).parent/'static'
@@ -143,7 +143,7 @@ def process_score(name,ext,raw,work,layout):
     inp.write_bytes(raw)
     warnings=[]
     if ext=='.capx':
-        xml,report=serialize_musicxml(raw,layout)
+        xml,report=serialize_musicxml(raw,layout,filename=name)
         xml_path=work/(prefix+'.musicxml')
         xml_path.write_bytes(xml)
         warnings.extend(report.get('warnings',[]))
@@ -164,7 +164,7 @@ def process_score(name,ext,raw,work,layout):
         pages=pdf_page_count(pdf)
         reasonable_pages=max(4,(source_systems+1)//2+1)
         if pages is not None and pages>reasonable_pages:
-            xml,balanced_report=serialize_musicxml(raw,'balanced')
+            xml,balanced_report=serialize_musicxml(raw,'balanced',filename=name)
             xml_path.write_bytes(xml)
             save_validated_mscz(xml_path, mscz, balanced_report, warnings)
             convert(mscz,pdf)

@@ -136,6 +136,7 @@ class Part:
     events: list[Event] = field(default_factory=list)
     midi_program: int = 1
     transpose: int = 0
+    present_systems: set[int] = field(default_factory=set)
 
 
 class CapellaError(ValueError): pass
@@ -158,8 +159,20 @@ def read_capx(raw: bytes):
         root = ET.fromstring(xml, parser=ET.XMLParser(resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False))
     except ET.XMLSyntaxError as exc:
         raise CapellaError('Invalid score XML') from exc
-    if tag(root) != 'score' or ET.QName(root).namespace != CAP_NS:
-        raise CapellaError('Only CapXML 2.0 scores are supported by the native converter')
+    source_namespace=ET.QName(root).namespace
+    allowed={f'http://www.capella.de/CapXML/{v}.0' for v in (1,2,3)}
+    if tag(root)!='score' or source_namespace not in allowed:
+        raise CapellaError('Unsupported CapXML format: expected CapXML 1.0, 2.0 or 3.0')
+    if source_namespace != CAP_NS:
+        # The notation primitives in these CapXML versions share element
+        # names. Normalize element namespaces in-memory, not the raw XML
+        # bytes, to avoid accidentally altering text, URLs or attributes.
+        # Unknown elements remain subject to the normal notation audit.
+        for element in root.iter():
+            if isinstance(element.tag,str) and ET.QName(element).namespace==source_namespace:
+                element.tag='{'+CAP_NS+'}'+ET.QName(element).localname
+        ET.cleanup_namespaces(root)
+    root.set('source-capxml-version',source_namespace.rsplit('/',1)[-1])
     return root
 
 
@@ -171,25 +184,54 @@ def parse_score(root):
     layout_map = {x.get('description', f'Part {i+1}'): x for i, x in enumerate(layouts)}
     first_staves = children(child(systems[0], 'staves'), 'staff')
     if not first_staves: raise CapellaError('No staves in score')
-    names = [x.get('layout') or f'Part {i+1}' for i, x in enumerate(first_staves)]
-    if len(names) != len(set(names)):
-        warnings.append('Duplicate staff names found; parts were disambiguated by staff position.')
+    # Capella may introduce or remove an instrumental staff on a later
+    # graphical system (Waggis adds Piccolo 4 only in its final system).
+    # Build a stable part list from ALL systems, not only the first.
+    names = []
+    repeated_names = False
+    for si,sys in enumerate(systems):
+        system_staves=children(child(sys,'staves'),'staff')
+        current=[staff.get('layout') or f'Part {i+1}' for i,staff in enumerate(system_staves)]
+        repeated_names |= len(set(current)) != len(current)
+        for name in current:
+            if name not in names:
+                names.append(name)
+    if repeated_names:
+        # Retain the historical positional fallback for overlapping layout
+        # names, rather than collapsing two identically named instruments
+        # into one part during the variable-staff discovery pass.
+        longest=max((children(child(sys,'staves'),'staff') for sys in systems),
+                    key=len)
+        names=[staff.get('layout') or f'Part {i+1}'
+               for i,staff in enumerate(longest)]
+        warnings.append('Duplicate staff layout names found; matching by position may need review.')
     parts = []
-    for i, name in enumerate(names):
+    for i,name in enumerate(names):
         layout = layout_map.get(name)
         sound = child(layout, 'sound')
         program = (int(sound.get('instr', '0')) + 1) if sound is not None else 1
         trans = int(sound.get('transpose', '0')) if sound is not None else 0
-        parts.append(Part(name=name or f'Part {i+1}', layout=name, midi_program=max(1, min(128, program)), transpose=trans))
+        parts.append(Part(name=name or f'Part {i+1}', layout=name,
+                          midi_program=max(1,min(128,program)), transpose=trans))
+    part_positions={p.layout:i for i,p in enumerate(parts)}
     clock = Fraction(0)
     current_meter = Fraction(1, 1)
-    for si, sys in enumerate(systems):
+    for si,sys in enumerate(systems):
         staves = children(child(sys, 'staves'), 'staff')
-        if len(staves) != len(parts):
-            raise CapellaError(f'System {si+1} has {len(staves)} staves; first system has {len(parts)}. Variable staff count requires a later importer.')
+        if repeated_names:
+            # Preserve old position-based behavior if source names are not unique.
+            selected=list(enumerate(staves))
+            if len(staves)>len(parts):
+                raise CapellaError(f'System {si+1} has ambiguous extra staves.')
+        else:
+            selected=[(part_positions[staff.get('layout') or f'Part {i+1}'],staff)
+                      for i,staff in enumerate(staves)]
+        if not selected:
+            raise CapellaError(f'System {si+1} contains no musical staves.')
         durations = []
         next_meter = current_meter
-        for pi, staff in enumerate(staves):
+        for pi, staff in selected:
+            parts[pi].present_systems.add(si)
             voices = children(child(staff, 'voices'), 'voice')
             if not voices: continue
             voice_lengths = []
@@ -219,15 +261,72 @@ def parse_score(root):
             warnings.append(f'Uneven staff durations in system {si+1}; original may have independent timing.')
         clock += max(durations) if durations else Fraction(0)
         current_meter = next_meter
+    for part in parts:
+        if len(part.present_systems)<len(systems):
+            warnings.append(
+                f'{part.name} appears in {len(part.present_systems)} of '
+                f'{len(systems)} Capella systems; the remaining staff measures '
+                'will be hidden where the target engraving engine supports it.'
+            )
     return parts, clock, sorted(set(warnings))
 
 
-def extract_metadata(root):
-    """Extract title, subtitle and author from first-system Capella text.
+def extract_metadata(root, filename=None):
+    """Read Capella page-level credits, falling back to note-attached titles.
 
-    Capella often combines subtitle and composer in one multiline text box.
-    Preserve those line breaks before selecting the prominent heading.
+    A logo is sometimes embedded as WMF rather than searchable text.
+    Avoid mistaking adjacent Intro or copyright strings for a work title.
     """
+    page_boxes=[]
+    for item in root.xpath('./c:pageObjects/c:drawObj/c:text',namespaces=N):
+        font=child(item,'font')
+        content=child(item,'content')
+        if font is None or content is None: continue
+        lines=[v.strip() for v in ''.join(content.itertext()).splitlines() if v.strip()]
+        try:
+            size=int(font.get('height','0'))
+            x=float(item.get('x','0'))
+            y=float(item.get('y','0'))
+        except ValueError:
+            continue
+        if (size<10 or y>25 or not lines or
+                any('#' in v or re.search(r'\b(?:seite|page)\b',v,re.I)
+                    for v in lines)):
+            continue
+        page_boxes.append((size,x,y,lines))
+    # A title in the upper margin is typographically larger than composer
+    # credits; don't treat a nearby introductory section label as the title.
+    titles=[box for box in page_boxes
+            if box[0]>=15 and box[2]<=9 and len(box[3][0])>=4
+            and box[3][0].casefold() not in ('intro','trommelsolo')]
+    if titles:
+        title_box=max(titles,key=lambda box:box[0])
+        title=title_box[3][0]
+        composer=''
+        subtitle_lines=[]
+        for size,x,y,lines in page_boxes:
+            if (size,x,y,lines)==title_box: continue
+            if len(lines)==1 and x>=title_box[1]+23 and size>=10 and not composer:
+                composer=lines[0]
+            elif len(lines)==1 and lines[0].casefold() in ('intro','trommelsolo'):
+                continue
+            else:
+                subtitle_lines.extend(v for v in lines if v not in subtitle_lines)
+        return title,'\n'.join(subtitle_lines),composer
+    # Capella may store the heading as a graphical metafile. In that case
+    # the upload filename is the only reliable machine-readable title.
+    has_graphical_title=bool(root.xpath(
+        './c:pageObjects/c:drawObj/c:metafile',namespaces=N))
+    if has_graphical_title and filename:
+        title=Path(filename).stem.replace('_',' ').strip() or 'Converted score'
+        composer=''
+        subtitles=[]
+        for size,x,y,lines in page_boxes:
+            if x>=70 and size>=10 and not composer:
+                composer=lines[0]
+                subtitles.extend(lines[1:])
+        return title,'\n'.join(subtitles),composer
+
     text_boxes = []
     for item in root.xpath('//c:systems/c:system[1]//c:drawObj/c:text', namespaces=N):
         font = child(item, 'font')
@@ -276,6 +375,24 @@ def extract_metadata(root):
     return title, '\n'.join(subtitle_lines), composer
 
 
+def leading_voice_events(parts):
+    """Use first AVAILABLE staff of each Capella system as score-wide ruler.
+
+    A source may replace all original staves with a new one in a later system
+    (Fyyrvogel ends with Piccolo Zier only). Always using parts[0] would
+    silently omit every barline, section label and system break afterwards.
+    """
+    indices=sorted({e.system for p in parts for e in p.events})
+    primary=[]
+    for index in indices:
+        for p in parts:
+            events=[e for e in p.events if e.system==index and e.voice==1]
+            if events:
+                primary.extend(events)
+                break
+    return sorted(primary,key=lambda e:(e.time,e.system))
+
+
 def extract_variation_numbers(parts):
     """Capella stores section/variation headings as graphical text on chords.
 
@@ -283,8 +400,8 @@ def extract_variation_numbers(parts):
     not tiny tuplet digits or unrelated score metadata.
     """
     markers = {}
-    for event in parts[0].events:
-        if event.kind != 'chord' or event.voice != 1:
+    for event in leading_voice_events(parts):
+        if event.kind not in ('chord','rest') or event.voice != 1:
             continue
         for draw in children(child(event.node, 'drawObjects'), 'drawObj'):
             element = child(draw, 'text')
@@ -294,7 +411,7 @@ def extract_variation_numbers(parts):
                 continue
             label = ' '.join(''.join(content.itertext()).split())
             if not re.fullmatch(
-                r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?', label
+                r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?(?:\s+[^\d].{1,35})?', label
             ):
                 continue
             if font.get('face', '').casefold() in ('capella', 'capella3'):
@@ -304,9 +421,59 @@ def extract_variation_numbers(parts):
                 y = float(element.get('y', '0'))
             except ValueError:
                 continue
-            if height >= 13 and y < 0:
+            if height >= (10 if ' ' in label else 13) and y < 0:
                 markers.setdefault(event.time, label)
     return markers
+
+
+def extract_score_directions(parts):
+    """Keep printed words attached to musical notes or rests.
+
+    Capella stores navigation and performance text such as 'fine' and
+    'Trommelsolo' in drawObjects, rather than as dedicated semantic events.
+    Avoid music-font glyphs, section numbers and small copyright text.
+    """
+    out=collections.defaultdict(list)
+    for event in leading_voice_events(parts):
+        if event.voice!=1 or event.kind not in ('chord','rest'):
+            continue
+        for draw in children(child(event.node,'drawObjects'),'drawObj'):
+            text=child(draw,'text')
+            font=child(text,'font')
+            content=child(text,'content')
+            if font is None or content is None:
+                continue
+            label=' '.join(''.join(content.itertext()).split())
+            if not label or re.fullmatch(r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?',label):
+                continue
+            if font.get('face','').casefold() in ('capella','capella3'):
+                continue
+            try:
+                height=int(font.get('height','0'))
+                y=float(text.get('y','0'))
+            except ValueError:
+                continue
+            # Not every graphical text is a performance instruction.
+            # The first-system title/subtitle is often attached to a note;
+            # adding it as a direction would print the credits twice.
+            performance=re.search(
+                r'(?i)(\bfine\b|\bcoda\b|\bsegno\b|'
+                r'\bd\.?\s*c\.?\b|\bd\.?\s*s\.?\b|'
+                r'\btrommelsolo\b|\btutti\b|\bsolo\b|'
+                r'\britardando\b|\brit\.?\b|\ba tempo\b|'
+                r'\baccelerando\b|\baccel\.?\b)',
+                label)
+            if (performance and 10<=height<=20 and y<0
+                    and label not in out[event.time]):
+                out[event.time].append(label)
+    return dict(out)
+
+
+def add_score_direction(measure,label):
+    direction=sub(measure,'direction',placement='above')
+    kind=sub(direction,'direction-type')
+    sub(kind,'words',label,font_size='10',font_weight='bold',
+        relative_y='16',justify='left')
 
 
 def add_variation_heading(measure, label):
@@ -324,7 +491,7 @@ def compute_boundaries(parts, end):
     Keeping the opening meter for the entire score creates phantom measures
     after a 2/4 -> 6/8 change and places notes across those phantom barlines.
     """
-    first = sorted((e for e in parts[0].events if e.voice == 1), key=lambda e:e.time)
+    first = leading_voice_events(parts)
     signatures = []
     for event in first:
         if event.kind == 'timeSign':
@@ -568,7 +735,7 @@ def source_notation_audit(root):
             if name=='basic':
                 continue
             annotations[name]+=1
-            if name not in ('text','slur','volta','trill'):
+            if name not in ('text','slur','volta','trill','wedge'):
                 unsupported[name]+=1
     beams=root.xpath('//c:chord/c:beam',namespaces=N)
     custom_beams=[e for e in beams if e.get('group','auto')!='auto']
@@ -582,6 +749,7 @@ def source_notation_audit(root):
         'rests':len(root.xpath('//c:rest',namespaces=N)),
         'ties':len(root.xpath('//c:tie',namespaces=N)),
         'slurs':annotations['slur'],
+        'hairpins':annotations['wedge'],
         'tuplets':len(root.xpath('//c:tuplet',namespaces=N)),
         'grace_notes':len(root.xpath('//c:duration[@noDuration="true"]',namespaces=N)),
         'lyrics':len(root.xpath('//c:lyric/c:verse',namespaces=N)),
@@ -591,6 +759,44 @@ def source_notation_audit(root):
         'time_signatures':sorted(set(root.xpath('//c:timeSign/@time',namespaces=N))),
     }
     return feature_counts,dict(sorted(unsupported.items()))
+
+
+def make_wedge_links(events):
+    """Attach Capella graphical crescendo/diminuendo hairpins to note times.
+
+    Wedge noteRange addresses subsequent rhythmic events in the same voice.
+    Keep distinct numbers for overlapping wedges; do not infer ornaments
+    from unrelated graphic lines.
+    """
+    starts=collections.defaultdict(list)
+    stops=collections.defaultdict(list)
+    per_voice=collections.defaultdict(list)
+    for event in events:
+        if event.kind in ('chord','rest'):
+            per_voice[event.voice].append(event)
+    serial=0
+    for voice,notes in per_voice.items():
+        for index,event in enumerate(notes):
+            for draw in children(child(event.node,'drawObjects'),'drawObj'):
+                wedge=child(draw,'wedge')
+                basic=child(draw,'basic')
+                if wedge is None or basic is None:continue
+                try:
+                    span=int(basic.get('noteRange','0'))
+                except ValueError:
+                    continue
+                if span<1 or index+span>=len(notes):
+                    continue
+                serial+=1
+                number=1+((serial-1)%16)
+                kind=('diminuendo' if wedge.get('decrescendo')=='true'
+                      else 'crescendo')
+                raw_color=wedge.get('color','')
+                color=('#'+raw_color if re.fullmatch(r'[A-Fa-f0-9]{6}',raw_color)
+                       else None)
+                starts[id(event)].append((number,kind,color))
+                stops[id(notes[index+span])].append(number)
+    return starts,stops
 
 
 def make_graphic_links(events):
@@ -674,11 +880,17 @@ def uniformly_marked_voices(parts, articulation='strongBeat', minimum_chords=32)
     return affected
 
 
-def serialize_musicxml(raw, layout='balanced'):
+def serialize_musicxml(raw, layout='balanced', filename=None):
     """Returns (MusicXML bytes, report dict)."""
     if layout not in ('balanced','compact','original'):raise CapellaError('Invalid layout mode')
     root=read_capx(raw)
     parts,end,warnings=parse_score(root)
+    original_capxml=root.get('source-capxml-version','2.0')
+    if original_capxml!='2.0':
+        warnings.append(
+            f'CapXML {original_capxml} source normalized to the common '
+            'notation model; review proprietary graphics and advanced symbols.'
+        )
     uniform_strongbeat=uniformly_marked_voices(parts)
     if uniform_strongbeat:
         names=', '.join(parts[i].name for i in sorted(uniform_strongbeat))
@@ -687,6 +899,14 @@ def serialize_musicxml(raw, layout='balanced'):
             f'{names}; explicitly selected accents and other articulations remain.'
         )
     boundaries,meter=compute_boundaries(parts,end)
+    # A time signature's written form is semantically significant: 2/4 is
+    # NOT displayed as 1/2, and 6/8 is NOT displayed as 3/4, even though
+    # both pairs have equal Fraction values.
+    opening_time=next((
+        event.node.get('time','4/4')
+        for event in leading_voice_events(parts)
+        if event.kind=='timeSign' and event.time==0
+    ),str(meter.numerator)+'/'+str(meter.denominator))
     if len(boundaries)<2: raise CapellaError('Could not determine measures')
     # CapXML permits tuplets whose prime denominators (e.g. 11, 13)
     # cannot be represented by the old fixed 10080 divisions/quarter.
@@ -702,8 +922,23 @@ def serialize_musicxml(raw, layout='balanced'):
         raise CapellaError('Score requires an impractically fine rhythmic grid; '
                            'cannot safely encode it in MusicXML.')
     features,unsupported=source_notation_audit(root)
-    title,subtitle,composer=extract_metadata(root)
+    title,subtitle,composer=extract_metadata(root, filename)
     variation_numbers=extract_variation_numbers(parts)
+    score_directions=extract_score_directions(parts)
+    # Short standalone page-level introduction labels are not score credits.
+    # Capella 3.0 scores such as Fyyrvogel place 'Intro' just above the
+    # first system, rather than attaching it to a note.
+    for item in root.xpath('./c:pageObjects/c:drawObj/c:text',namespaces=N):
+        content=child(item,'content')
+        if content is None:continue
+        label=' '.join(''.join(content.itertext()).split())
+        try:
+            y=float(item.get('y','0'))
+        except ValueError:
+            continue
+        if (8 <= y <= 18 and label.casefold() in ('intro','trommelsolo')
+                and label not in score_directions.get(Fraction(0),[])):
+            score_directions.setdefault(Fraction(0),[]).append(label)
     score=ET.Element('score-partwise',version='4.0')
     work=sub(score,'work');sub(work,'work-title',title)
     sub(score,'movement-title',title)
@@ -745,7 +980,7 @@ def serialize_musicxml(raw, layout='balanced'):
     # Do NOT store them in a time->single-type dictionary: last-write-wins
     # drops the backward repeat (seven times in Alte Schwytzer).
     boundary_marks=collections.defaultdict(set)
-    for event in parts[0].events:
+    for event in leading_voice_events(parts):
         if event.kind=='barline' and event.voice==1:
             boundary_marks[event.time].add(event.node.get('type','single'))
     def repeat_start(position):
@@ -762,21 +997,37 @@ def serialize_musicxml(raw, layout='balanced'):
     # Most Capella ending brackets are attached graphically to the first chord
     # of the ending measure. Their firstNumber is a semantic indicator.
     ending_starts={}
-    for event in parts[0].events:
+    for event in leading_voice_events(parts):
         if event.kind != 'chord' or event.voice!=1:continue
         for obj in children(child(event.node,'drawObjects'),'drawObj'):
             volta=child(obj,'volta')
             if volta is not None and volta.get('firstNumber'):
                 ending_starts[event.time]=volta.get('firstNumber')
 
+    # Staves introduced or removed later need a system boundary even when
+    # the user selected Balanced/Compact; otherwise a fourth part can appear
+    # halfway through an existing printed system.
+    # This must cover EVERY system, including systems lacking the first part.
+    indexed_system_starts = {}
+    seen_systems=set()
+    for event in leading_voice_events(parts):
+        if event.system not in seen_systems:
+            seen_systems.add(event.system)
+            indexed_system_starts[event.time]=event.system
+    staff_transition_starts = {
+        t for t,si in indexed_system_starts.items()
+        if si > 0 and any(
+            (si in part.present_systems) != (si-1 in part.present_systems)
+            for part in parts
+        )
+    }
     measure_count=len(boundaries)-1
     # Record each source system's actual *first event*. Looking for any
     # event from a noninitial system marks every later bar as a line break.
     # Capella's graphical systems can occasionally start mid-measure; only
     # request a break when the start aligns with an exported measure.
     source_system_starts = {
-        min(e.time for e in parts[0].events if e.system == index)
-        for index in {e.system for e in parts[0].events if e.system > 0}
+        time for time,si in indexed_system_starts.items() if si>0
     }
     valid_system_starts = source_system_starts.intersection(boundaries[1:-1])
     if layout == 'original' and len(valid_system_starts) != len(source_system_starts):
@@ -786,35 +1037,83 @@ def serialize_musicxml(raw, layout='balanced'):
         events=sorted(p.events,key=lambda x:(x.time,x.voice))
         slur_starts,slur_ends=make_slur_links(events)
         graphic_links=make_graphic_links(events)
+        wedge_starts,wedge_stops=make_wedge_links(events)
         tuplet_links=make_tuplet_links(events)
-        state={'key':0,'time':str(meter.numerator)+'/'+str(meter.denominator),'clef':'treble','accidentals':{}}
+        state={'key':0,'time':opening_time,'clef':'treble','accidentals':{}}
         nnotes=0
         for mi in range(measure_count):
             start,stop=boundaries[mi],boundaries[mi+1]
             measure=sub(pr,'measure',number=mi+1)
             # Score-wide system breaks and bar numbers belong only to the
             # leading part. One print instruction per affected measure.
-            if pi == 0 and (mi == 0 or (layout == 'original' and start in valid_system_starts)):
-                layout_print = sub(measure, 'print', **({'new_system':'yes'} if mi > 0 else {}))
+            new_system = mi>0 and (
+                (layout == 'original' and start in valid_system_starts)
+                or start in staff_transition_starts
+            )
+            if pi == 0 and (mi == 0 or new_system):
+                layout_print = sub(measure, 'print',
+                                   **({'new_system':'yes'} if new_system else {}))
                 if mi == 0:
                     sub(layout_print, 'measure-numbering', 'system')
             if pi==0 and start in variation_numbers:
                 add_variation_heading(measure,variation_numbers[start])
             if mi==0:
-                add_attributes(measure, key=0, time=str(meter.numerator)+'/'+str(meter.denominator),clef='treble',transpose=p.transpose,initial=True,divisions=active_divisions)
+                add_attributes(measure, key=0, time=opening_time,clef='treble',transpose=p.transpose,initial=True,divisions=active_divisions)
+            # A staff which exists only in later Capella systems must not
+            # appear throughout the entire score. MusicXML staff-details
+            # controls its visibility independently of musical durations.
+            visibility = None
+            if mi==0 and 0 not in p.present_systems:
+                visibility='no'
+            elif start in indexed_system_starts:
+                si=indexed_system_starts[start]
+                if si>0 and (si in p.present_systems)!=(si-1 in p.present_systems):
+                    visibility='yes' if si in p.present_systems else 'no'
+            if visibility is not None:
+                sub(sub(measure,'attributes'),'staff-details',print_object=visibility)
             state['accidentals']={}
             vs=sorted({e.voice for e in events if start<=e.time<stop})
             if not vs:vs=[1]
             for vsi,voice in enumerate(vs):
                 if vsi:
                     back=sub(measure,'backup');sub(back,'duration',to_div(stop-start,active_divisions))
-                ve=[e for e in events if e.voice==voice and start<=e.time<stop]
+                ve=[
+                    e for e in events if e.voice==voice and (
+                        start<=e.time<stop or (
+                            e.kind=='rest' and e.time<start and
+                            e.time+e.dur>start and
+                            re.fullmatch(r'[1-9]\d*',
+                                (child(e.node,'duration').get('base','')
+                                 if child(e.node,'duration') is not None else ''))
+                        )
+                    )
+                ]
                 cursor=start
+                placed_directions=set()
                 for e in ve:
+                    if e.kind in ('chord','rest') and e.time>=start:
+                        for no in wedge_stops.get(id(e),()):
+                            direction=sub(measure,'direction',placement='below')
+                            dtype=sub(direction,'direction-type')
+                            sub(dtype,'wedge',number=no,type='stop')
+                            sub(direction,'voice',voice)
+                        for no,kind,color in wedge_starts.get(id(e),()):
+                            direction=sub(measure,'direction',placement='below')
+                            dtype=sub(direction,'direction-type')
+                            props={'number':no,'type':kind}
+                            if color:props['color']=color
+                            sub(dtype,'wedge',**props)
+                            sub(direction,'voice',voice)
+                    if (pi==0 and voice==1 and e.kind in ('chord','rest')
+                            and e.time not in placed_directions):
+                        for words in score_directions.get(e.time,()):
+                            add_score_direction(measure,words)
+                        placed_directions.add(e.time)
                     if e.time>cursor:
                         sub(sub(measure,'forward'),'duration',to_div(e.time-cursor,active_divisions))
                         cursor=e.time
-                    if e.kind in ('chord','rest') and e.time<cursor:
+                    if (e.kind in ('chord','rest') and e.time<cursor
+                            and not (e.kind=='rest' and e.time<start)):
                         raise CapellaError(
                             f'Overlapping notes in {p.name}, voice {voice}, measure {mi+1}'
                         )
@@ -830,15 +1129,31 @@ def serialize_musicxml(raw, layout='balanced'):
                         if clef!=state['clef']:add_attributes(measure,clef=clef)
                         state['clef']=clef
                     elif e.kind in ('chord','rest'):
-                        if e.time+e.dur>stop:
+                        rest_duration=child(e.node,'duration')
+                        rest_base=(rest_duration.get('base','')
+                                   if rest_duration is not None else '')
+                        is_multi_rest=(e.kind=='rest'
+                                       and re.fullmatch(r'[2-9]\d*',rest_base) is not None)
+                        event_for_note=e
+                        if is_multi_rest and e.time<=start and e.time+e.dur>=stop:
+                            # A source seven-/eight-measure rest must be
+                            # represented in each destination measure, not
+                            # treated as a giant single note crossing bars.
+                            event_for_note=Event(start,e.kind,e.node,e.system,
+                                                 e.voice,stop-start)
+                            if start==e.time:
+                                style=sub(sub(measure,'attributes'),'measure-style')
+                                sub(style,'multiple-rest',rest_base)
+                        elif e.time+e.dur>stop:
                             raise CapellaError(
                                 f'Note crosses a barline in {p.name}, voice {voice}, '
                                 f'measure {mi+1}; source measure boundaries need review.'
                             )
-                        nnotes+=make_note(measure,e,voice,state,slur_starts,slur_ends,active_divisions,
+                        nnotes+=make_note(measure,event_for_note,voice,state,
+                                          slur_starts,slur_ends,active_divisions,
                                           graphic_links,tuplet_links,
                                           suppress_uniform_strongbeat=pi in uniform_strongbeat)
-                        cursor=e.time+e.dur
+                        cursor=event_for_note.time+event_for_note.dur
                 if cursor<stop:
                     sub(sub(measure,'forward'),'duration',to_div(stop-cursor,active_divisions))
             left_repeat=repeat_start(start)
@@ -874,11 +1189,16 @@ def serialize_musicxml(raw, layout='balanced'):
             'measures':measure_count,'notes':sum(1 for p in parts for e in p.events if e.kind=='chord'),
             'warnings':sorted(set(warnings)),'layout':layout,'source_format':'capx',
             'source_systems':len(children(child(root, 'systems'), 'system')),
+            'capxml_version':original_capxml,
             'variation_numbers':list(variation_numbers.values()),
+            'printed_directions':[word for words in score_directions.values() for word in words],
             'notation_features':features,
             'notation_not_fully_interpreted':unsupported,
             'print_review_recommended':True,
             'normalized_uniform_strongbeat':sum(uniform_strongbeat.values()),
+            'variable_staff_systems':any(
+                len(p.present_systems)!=len(children(child(root,'systems'),'system'))
+                for p in parts),
             'repeat_boundaries':{
                 'forward':sum(repeat_start(p) for p in boundaries),
                 'backward':sum(repeat_end(p) for p in boundaries)
