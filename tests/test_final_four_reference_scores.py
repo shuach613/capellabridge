@@ -152,3 +152,17 @@ def test_uncle_sam_embedded_rtf_navigation_is_not_silently_lost():
     assert directions[0].find('./sound').get('tocoda')=='coda'
     words=directions[0].find('./direction-type/words')
     assert words.text==caption and words.get('color')=='#FF0000'
+
+
+def test_legacy_note_attached_rest_symbols_do_not_change_rhythm():
+    page=draw('Tango',18,55,4)
+    graphics=chord(draw('L',18,0,-5,face='capella3')) + \
+             chord(draw('M',18,0,-5,face='capella3'))
+    xml,report=output(score(page,lead=graphics,count=3))
+    notes=xml.findall('./part/measure/note')
+    assert len(notes)==2
+    assert [n.findtext('duration') for n in notes]==['10080','10080']
+    assert all(n.find('pitch') is not None for n in notes)
+    printed=[n.text for n in xml.findall('.//direction-type/words')]
+    assert '\U0001D13E' in printed,printed
+    assert '\U0001D13F' in printed,printed
