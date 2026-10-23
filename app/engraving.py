@@ -64,7 +64,7 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                     # the SAME baseline. A single rich-text block with <br/>
                     # keeps lines distinct and prevents the observed overlap.
                     if subtitle_lines:
-                        credits.append(('Subtitle','<br/>'.join(subtitle_lines)))
+                        credits.append(('Subtitle','\n'.join(subtitle_lines)))
                     if metadata.get('composer'):
                         credits.append(('Composer',metadata['composer']))
                     old_credits = [element for element in frame.findall('Text')
@@ -79,13 +79,22 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                                 continue
                             text = ET.Element('Text')
                             ET.SubElement(text, 'style').text = kind
-                            ET.SubElement(text, 'text').text = value
+                            body = ET.SubElement(text, 'text')
+                            # MuseScore's native text element stores rich-text
+                            # tags as XML children. A string containing "<br/>"
+                            # is escaped to "&lt;br/&gt;" and PRINTS literally.
+                            # Build actual <br/> nodes, preserving Unicode text.
+                            lines = value.split('\\n')
+                            body.text = lines[0]
+                            for following in lines[1:]:
+                                ET.SubElement(body, 'br').tail = following
                             frame.insert(insertion_index, text)
                             insertion_index += 1
                         height = frame.find('height')
                         if height is not None:
-                            height.text = str(max(14.0, 8.0 + 3.0 * len(credits),
-                                                  float(height.text or '0')))
+                            height.text = str(max(14.0, 8.0 + 3.0 * (
+                                len(credits)+max(0,len(subtitle_lines)-1)),
+                                float(height.text or '0')))
             # MusicXML imports a group of four independent parts as a single
             # barLineSpan=4 on the first staff. MuseScore 3 treats staff
             # spanning as a per-adjacent-staff flag, making bars appear joined
