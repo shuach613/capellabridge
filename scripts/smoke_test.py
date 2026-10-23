@@ -89,7 +89,7 @@ def main():
                 '<drawObj><text x="0" y="-25"><font face="Lato" height="37"/>'
                 '<content>Concert Example</content></text></drawObj>'
                 '<drawObj><text x="0" y="-17"><font face="Lato" height="17"/>'
-                '<content>Four flutes&#10;von Example Composer</content></text></drawObj>'
+                '<content>Four flutes in an extended ensemble arrangement&#10;A second subtitle line for the quartet&#10;von Example Composer</content></text></drawObj>'
                 '<drawObj><text x="-3" y="-5"><font face="Lato" height="17"/>'
                 '<content>1</content></text></drawObj>'
                 '</drawObjects>'
@@ -149,7 +149,7 @@ def main():
             heads={
                 name:[fitz.Rect(span['bbox']) for span in spans
                       if name in unicodedata.normalize('NFKC',span['text'])]
-                for name in ('Concert Example','Four flutes','Example Composer')
+                for name in ('Concert Example','Four flutes','A second subtitle','Example Composer')
             }
             print('DEBUG_RENDERED_TITLES',
                   {key:[tuple(round(v,1) for v in r) for r in rects]
@@ -157,7 +157,9 @@ def main():
             print('DEBUG_FIRST_PAGE_TEXT',repr(page.get_text()[:800]),flush=True)
             assert all(heads.values()), heads
             assert heads['Concert Example'][0].y1 <= heads['Four flutes'][0].y0+1
-            assert heads['Four flutes'][0].y1 <= heads['Example Composer'][0].y0+1
+            assert heads['Four flutes'][0].y1 <= heads['A second subtitle'][0].y0+1
+            assert heads['A second subtitle'][0].y1 <= heads['Example Composer'][0].y0+1
+            assert '<br/>' not in page.get_text(), 'Literal linebreak markup printed in PDF'
             numbers=[(span['text'],hex(span['color'])) for span in spans
                      if span['text'].strip()=='1']
             print('DEBUG_RENDERED_NUMBERS',numbers[:20],flush=True)
