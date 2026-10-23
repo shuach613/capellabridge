@@ -411,7 +411,7 @@ def extract_variation_numbers(parts):
                 continue
             label = ' '.join(''.join(content.itertext()).split())
             if not re.fullmatch(
-                r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?', label
+                r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?(?:\s+[^\d].{1,35})?', label
             ):
                 continue
             if font.get('face', '').casefold() in ('capella', 'capella3'):
