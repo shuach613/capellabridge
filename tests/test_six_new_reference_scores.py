@@ -169,7 +169,7 @@ def test_piano_playback_tempo_does_not_invent_printed_metronome():
 
 
 def test_dynamic_on_later_note_does_not_move_to_beginning_of_measure():
-    second=chord(text('p',font='capella3',size=18,y=4.5))
+    second=chord(text('p',face='capella3',size=18,y=4.5))
     xml,report=serialize_musicxml(make_file(
         {'Piccolo 1':chord()+second+chord()*2},version='3.0'))
     measure=ET.fromstring(xml).find('./part/measure')
