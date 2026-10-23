@@ -363,9 +363,14 @@ def add_attributes(measure, key=None, time=None, clef=None, transpose=0, initial
         times = sub(attrs,'time')
         if time in ('C','allaBreve','longAllaBreve'):
             times.set('symbol','common' if time=='C' else 'cut')
-        frac=meter_fraction(time)
-        sub(times,'beats',frac.numerator)
-        sub(times,'beat-type',frac.denominator)
+        if '/' in time:
+            numerator, denominator=time.split('/',1)
+        else:
+            named={'C':('4','4'),'allaBreve':('2','2'),
+                   'longAllaBreve':('4','2')}
+            numerator, denominator=named[time]
+        sub(times,'beats',numerator)
+        sub(times,'beat-type',denominator)
     if clef is not None:
         mapping={'treble':('G',2,0),'bass':('F',4,0),
                  'alto':('C',3,0),'tenor':('C',4,0),
