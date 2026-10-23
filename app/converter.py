@@ -867,7 +867,20 @@ def make_graphic_links(events):
                 name=(graphic.get('name') or '').casefold()
                 basic=child(graphic,'basic')
                 line=child(graphic,'line')
-                if line is None or 'gliss' not in name or basic is None:
+                wavy=child(graphic,'wavyLine')
+                labeled_next=(
+                    index+1 < len(chords)
+                    and any(
+                        re.search(r'\bgliss(?:ando)?\b',
+                            ''.join(child(obj,'content').itertext()),re.I)
+                        for obj in children(child(chords[index+1].node,'drawObjects'),'drawObj')
+                        if child(obj,'text') is not None
+                        and child(child(obj,'text'),'content') is not None
+                    )
+                )
+                if basic is None or not (
+                    (line is not None and 'gliss' in name)
+                    or (wavy is not None and labeled_next)):
                     continue
                 span=int(basic.get('noteRange','0'))
                 if not 0<span or index+span>=len(chords):
@@ -1143,6 +1156,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 for e in ve:
                     if e.kind in ('chord','rest') and e.time>=start:
                         write_capella_symbol_directions(measure,e,voice)
+                        if pi>0:
+                            write_staff_performance_text(measure,e,voice)
                         for no in wedge_stops.get(id(e),()):
                             direction=sub(measure,'direction',placement='below')
                             dtype=sub(direction,'direction-type')
@@ -1276,6 +1291,21 @@ def capella_music_font_glyphs(event):
         if len(glyph)==1:
             glyphs.append(glyph)
     return glyphs
+
+
+def write_staff_performance_text(measure,event,voice):
+    """Keep staff-specific instrument entries (e.g. fourth-piccolo Solo)."""
+    for obj in children(child(event.node,'drawObjects'),'drawObj'):
+        t=child(obj,'text')
+        font=child(t,'font')
+        content=child(t,'content')
+        if font is None or content is None:continue
+        if font.get('face','').casefold() in ('capella','capella3'):continue
+        label=' '.join(''.join(content.itertext()).split())
+        if not re.match(r'(?i)^solo\b',label):continue
+        direction=sub(measure,'direction',placement='below')
+        sub(sub(direction,'direction-type'),'words',label,font_size='11')
+        sub(direction,'voice',voice)
 
 
 def write_capella_symbol_directions(measure,event,voice):
