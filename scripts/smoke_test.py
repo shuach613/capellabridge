@@ -266,6 +266,69 @@ def main():
         ),'Uniform accents were reintroduced during MuseScore conversion'
     print('Uniform strongBeat marks suppressed in final editable MSCZ',flush=True)
 
+    # Source-library patterns: Waggis introduces an additional piccolo only
+    # in its final system; Calvados uses 7-bar rests and a 2/4 -> 6/8 change.
+    def staff_by_name(name,notes):
+        return f'<staff layout="{name}"><voices><voice><noteObjects>{notes}</noteObjects></voice></voices></staff>'
+    names=['Piccolo 1','Piccolo 2','Piccolo 3','Piccolo 4']
+    quarter='<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>'
+    opening=''.join(staff_by_name(n,'<timeSign time="2/4"/>'+quarter+quarter)
+                    for n in names[:3])
+    ending=''.join(staff_by_name(n,quarter+quarter) for n in names)
+    variable_xml=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<pageObjects><drawObj><text x="50" y="4"><font face="Arial" height="21"/>'
+        '<content>Waggis</content></text></drawObj>'
+        '<drawObj><text x="100" y="3"><font face="Arial" height="12"/>'
+        '<content>Karl Scherrer</content></text></drawObj></pageObjects>'
+        '<layout><staves>'+''.join(f'<staffLayout description="{n}"/>' for n in names)+
+        '</staves><brackets><bracket from="0" to="3"/></brackets></layout>'
+        '<systems><system><staves>'+opening+'</staves></system>'
+        '<system><staves>'+ending+'</staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(variable_xml)
+    rsp=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert rsp['results'][0]['ok'],rsp
+    score=rsp['results'][0]
+    assert score['variable_staff_systems'] is True,score
+    assert len(score['parts'])==4,score
+    assert score['title']=='Waggis',score
+    from xml.etree import ElementTree as ET
+    xmltree=ET.fromstring(get(score['downloads']['musicxml']))
+    last=xmltree.findall('./part')[3]
+    assert last.find('./measure[1]/attributes/staff-details').get('print-object')=='no'
+    assert last.find('./measure[2]/attributes/staff-details').get('print-object')=='yes'
+    assert get(score['downloads']['pdf']).startswith(b'%PDF-')
+    print('Later-appearing fourth staff and page-level credits rendered by MuseScore',flush=True)
+
+    old_rest='<rest><duration base="7"/></rest>'
+    solo='<rest><duration base="1/4"/><drawObjects><drawObj><text y="-4">'
+    solo+='<font face="Arial" height="12"/><content>Trommelsolo</content>'
+    solo+='</text></drawObj></drawObjects></rest>'
+    names=names[:3]
+    first=''.join(staff_by_name(n,'<timeSign time="2/4"/>'+old_rest) for n in names)
+    second=''.join(staff_by_name(n,
+                   '<timeSign time="6/8"/>'+ (solo if i==0 else quarter)
+                   +'<chord><duration base="1/2"/><heads><head pitch="D5"/></heads></chord>')
+                   for i,n in enumerate(names))
+    long_rest_xml=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves>'+''.join(f'<staffLayout description="{n}"/>' for n in names)+
+        '</staves></layout>'
+        '<systems><system><staves>'+first+'</staves></system>'
+        '<system><staves>'+second+'</staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(long_rest_xml)
+    rsp=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert rsp['results'][0]['ok'],rsp
+    score=rsp['results'][0]
+    assert score['measures']==8,score
+    assert 'Trommelsolo' in score['printed_directions'],score
+    assert get(score['downloads']['pdf']).startswith(b'%PDF-')
+    with zipfile.ZipFile(io.BytesIO(get(score['downloads']['mscz']))) as z:
+        assert any(n.endswith('.mscx') for n in z.namelist())
+    print('Seven-measure rest and 6/8 transition rendered and archived',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
