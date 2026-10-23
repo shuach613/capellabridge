@@ -644,9 +644,7 @@ def emit_glyph_directions(measure,event,voice):
     for glyph in capella_glyphs(event):
         if glyph in CAPELLA_DYNAMICS:
             direction=sub(measure,'direction',placement='below')
-            sub(sub(direction,'direction-type'),'dynamics')
-            dtype=child(direction,'direction-type')
-            dynamics=child(dtype,'dynamics')
+            dynamics=sub(sub(direction,'direction-type'),'dynamics')
             sub(dynamics,CAPELLA_DYNAMICS[glyph])
             sub(direction,'voice',voice)
         elif glyph in CAPELLA_NAVIGATION:
