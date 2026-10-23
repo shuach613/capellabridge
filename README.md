@@ -1,47 +1,37 @@
 # CapellaBridge
 
-**Capella scores in. Editable MuseScore scores out.**
+**From Capella notation to editable MuseScore scores.**  
+An independent, self-hosted converter with a straightforward upload-and-download interface.
 
-CapellaBridge is a private, self-hosted web converter for Capella score files. Upload a **.capx** or **.cap**, choose a layout, and download an editable **MuseScore (.mscz)** score, **MusicXML**, a printable **PDF**, and a first-page preview. No login, account, external API, or cloud conversion service.
+![CapellaBridge desktop](docs/screenshot.png)
 
-![CapellaBridge desktop interface](docs/screenshot.png)
+<p align="center">
+  <strong>CAPX / CAP</strong> &nbsp;→&nbsp; <strong>MuseScore · MusicXML · PDF</strong>
+</p>
+
+## Why CapellaBridge?
+
+CapellaBridge is for musicians and arrangers who need to continue working with scores originally created in Capella. Upload a score in your browser, choose a page layout, and receive an editable **MuseScore (.mscz)** file alongside **MusicXML (.musicxml)** and a PDF preview.
+
+- **No application account**: a single simple web interface; no registration.
+- **Private deployment**: the conversion engine runs on your Docker host, not an external conversion API.
+- **Editable output**: staves, pitches, voices, meters, and supported music symbols are translated into notation data, not merely rendered as images.
+- **Batch conversion**: upload multiple files, view results independently, or download a combined ZIP.
+- **Transparent validation**: warnings and a JSON report explain notation elements that may need manual review.
+- **Progress you can see**: a measured upload indicator and an animated engraving stage.
 
 <details>
-<summary>Mobile interface</summary>
+<summary>Mobile screenshot</summary>
 
-![CapellaBridge mobile interface](docs/mobile.png)
+![CapellaBridge on mobile](docs/mobile.png)
 
 </details>
 
-## How it works
+## Quick start — Synology NAS / Docker Compose
 
-1. **Drop files** into the browser (batch uploads supported).
-2. **Choose a layout** — Balanced (recommended), Compact, or Original system breaks.
-3. **Convert and download** the score, MusicXML, PDF and conversion report. Upload progress is measured; engraving progress is shown as an activity indicator.
+A prebuilt **Linux amd64** image is published automatically from the main branch at `ghcr.io/shuach613/capellabridge:latest`. This deployment uses host port **9595** and a persistent named volume.
 
-Original files are discarded after processing. Downloadable results expire by default after 24 hours. Jobs and settings are stored in a persistent Docker volume.
-
-### Notation fidelity
-
-CapellaBridge reads CapXML 2.0 notation as **structured musical events**, not screenshots or PDFs. It preserves score parts and voices, notes and chords, clefs, key and time changes, rests, exact tuplets, lyrics, ties, slurs, repeats, section numbers and supported articulations. The conversion report identifies features that require manual review.
-
-**Version 1.7.0** fixes simultaneous repeat-end and repeat-start boundaries (including transitions across Capella systems), creates visible accent and staccato markings, adds explicit tuplet grouping and trill marks and explicitly named glissando spanners, and fixes literal subtitle break tags in exported MuseScore files.
-
-An **.mscz** is verified as an actual MuseScore score, not merely a readable ZIP. The test pipeline imports a generated score using MuseScore Studio 4 after MuseScore 3 export. Very unusual Capella drawing objects can still require manual cleanup: different engraving engines cannot guarantee identical page breaks, graphical placement, or playback for every source file.
-
-**Legacy .cap:** Uses MuseScore's legacy Capella importer. This pathway is best-effort; the native CAPX interpretation is more capable.
-
-## Version 1.7.1: cleaner articulations
-
-Some older CAPX sources apply `strongBeat` to virtually every chord. Rendering all those markers as individual marcato symbols produces a crowded and misleading score. CapellaBridge now recognizes a **near-universal strongBeat pattern** on substantial parts (at least 32 chords, at least 98% marked) and omits only that redundant token from engraved notation. The conversion report records the normalization.
-
-**Sparse, intentionally placed** `strongBeat` markings, explicit `strongAccent`, staccato, slurs, repeats, titles, and other notation are preserved. The change affects neither source pitch nor rhythm. Unit and live Docker smoke tests verify this before the new version is published.
-
-## Deployment: Synology Container Manager / Docker Compose
-
-CapellaBridge provides a public prebuilt Linux **amd64** Docker image at `ghcr.io/shuach613/capellabridge:latest`. The configuration below exposes it on **port 9595**, with persistent application data. It avoids CPU quota controls that some Synology kernels do not support.
-
-Create a folder such as `/volume1/docker/capellabridge`, open **DSM → Container Manager → Project → Create**, and paste the complete configuration:
+Create a Container Manager project (or a `docker-compose.yml` file) with:
 
 ```yaml
 services:
@@ -59,60 +49,93 @@ volumes:
   capellabridge_data:
 ```
 
-Start the project, then visit **http://NAS-IP:9595**. The webpage opens directly—there is **no application sign-in**.
+Start the project, then open **http://YOUR-NAS-IP:9595**. No `.env` file, credentials, database setup, or application sign-in is required.
 
-> **Security:** Anyone who can access the service can upload files and use CPU resources. Do not expose port 9595 directly to the public internet. For remote use, protect it with a VPN or authentication/access restrictions on your reverse proxy.
-
-### Updating an existing NAS installation
-
-From SSH, in the directory containing your Docker Compose configuration:
+To update an existing Synology installation over SSH:
 
 ```bash
 cd /volume1/docker/capellabridge && docker compose pull && docker compose up -d --force-recreate && curl -s http://127.0.0.1:9595/health
 ```
 
-This pulls the latest published image and recreates the existing container **without deleting the named volume**. Do not use `docker compose down -v` unless you deliberately intend to remove stored results.
+This recreates the container with the latest image while retaining the named volume. **Never run `docker compose down -v` unless you intend to erase its persistent data.**
 
-### Available endpoints
+> **Network security:** CapellaBridge intentionally has no login. Anyone able to reach the interface can use conversion resources. Keep the port on a trusted network, or protect remote access with a VPN or an authenticated reverse proxy. Do not publish port 9595 openly to the internet.
 
-| Endpoint | Description |
+## Converting a score
+
+1. Drop one or more **.capx** or legacy **.cap** files into the upload area.
+2. Select **Balanced** (recommended), **Compact**, or **Original systems**.
+3. Convert, preview the results, and download MuseScore, MusicXML, PDF or the full batch ZIP.
+
+Results are temporary and normally expire after 24 hours. Uploaded originals are discarded following processing. The application stores its job files in the Docker volume.
+
+| Layout | Intended behavior |
 | --- | --- |
-| `/` | Browser conversion interface |
-| `/health` | Health, version, MuseScore engine availability |
-| `/api/info` | Supported formats, upload limits, application version |
-| `/api/convert?layout=balanced` | Multipart POST with one or more `files` |
-| `/api/files/...` | Temporary score, PDF, MusicXML and report downloads |
+| **Balanced** | Comfortable spacing and flexible system breaks; recommended for most scores |
+| **Compact** | Denser engraving to reduce empty space |
+| **Original systems** | Request source Capella system breaks; may fall back to Balanced when the result would be impractically long |
 
-## Development
+## Supported notation and fidelity
 
-Requires Python 3.12, dependencies in `requirements.txt`, MuseScore 3 CLI and Poppler for the full web service. For local parser checks:
+CAPX files are interpreted through CapXML 2.0 into **MusicXML**, then converted by the installed MuseScore engine to native `.mscz`, PDF, and preview images. Supported features include standard notes and rests, chords, multiple voices, grace notes, ties, slurs, tuplets, written time signatures and changes, key changes, clefs, accidentals, articulation marks, repeat signs, first/second endings, variation numbers and page-one credits.
+
+The converter validates native MuseScore score structure and rhythmic measure lengths, then runs a **MuseScore Studio 4** cross-version reopen/export test during CI.
+
+### Examples covered by the regression suite
+
+The following independently provided Capella scores were used to identify general compatibility cases. The repository includes **small synthetic regression fixtures**, not the original copyrighted music files.
+
+| Source-score example | Original pages | Important notation characteristics |
+| --- | ---: | --- |
+| **Vaudois** | 2 | Repeats, alternative endings, attached Fine/navigation text, three instruments |
+| **Waggis** | 3 | Numerous triplets, grace notes, slurs and ties, section numbers, a fourth piccolo appearing only in the last system |
+| **Calvados (mit TS)** | 4 | 2/4 ↔ 6/8 transitions, seven- and eight-measure rests, first/second endings, performance text and late repeats |
+
+The converter now preserves part identities when a staff appears only in later systems, reads titles and composers from Capella page-level objects, retains the written meter (for example **2/4**, not **1/2**), and expands multimeasure rests across their actual measure spans.
+
+**Important:** A correctly generated MSCZ and valid MusicXML are not a guarantee of a facsimile engraving. Exact page counts, custom music fonts, beams, complex graphical objects and advanced ornaments may differ from the original PDF. Always compare the exported PDF and playback with the source before professional publication. Supported legacy `.cap` import uses MuseScore’s own older importer and is inherently best effort.
+
+## Development and verification
+
+Requires Python 3.12 for source development. Install the Python dependencies and run unit tests with:
 
 ```bash
 python -m pip install -r requirements.txt pytest httpx
 python -m pytest -q
 ```
 
-Run the browser UI locally with `uvicorn app.main:app --host 127.0.0.1 --port 8080` (requires MuseScore for successful conversions). The Playwright script `scripts/capture_ui.py` generates the README screenshots from the **real HTML/CSS frontend**, using a local stub for the engine-status API.
+The complete CI pipeline builds the Linux Docker image, runs real conversions and previews through MuseScore 3, checks file integrity, and verifies that MuseScore Studio 4 can reopen the generated MSCZ. Main-branch builds publish the prebuilt image to GitHub Container Registry.
 
-Every pull request runs unit tests, builds a container, performs actual conversions in all three layout modes, and checks a native score with MuseScore Studio 4. Pushes to `main` publish `ghcr.io/shuach613/capellabridge:latest` through GitHub Actions.
+The browser UI lives in `app/static/`. Screenshots are captured from the **real responsive interface** using `scripts/capture_ui.py` (Playwright), rather than generated marketing mockups.
 
-## Project layout
+### Repository map
 
 ```text
 app/
-  converter.py        CapXML event parser → MusicXML
-  engraving.py        Native MuseScore print/layout styles
-  score_validation.py MSCZ integrity validation
-  musescore.py        MuseScore and PDF rendering
-  main.py             FastAPI upload/download service
-  static/             Responsive web UI
-scripts/              Smoke tests and reproducible screenshots
-tests/                CAPX and MuseScore regression coverage
-.github/workflows/    Tests and container publication
+  converter.py          CapXML 2.0 parser → structured MusicXML
+  engraving.py          MuseScore printing and layout adjustments
+  score_validation.py   Native-score integrity checks
+  musescore.py          MuseScore CLI and PDF rendering
+  main.py               FastAPI routes, upload handling and downloads
+  static/               Desktop/mobile web interface
+tests/                  Notation and compatibility regressions
+scripts/                Docker smoke tests and screenshot capture
+docs/                   Actual desktop and mobile screenshots
+.github/workflows/      Automated verification and GHCR image publication
 Dockerfile
 docker-compose.yml
 ```
 
+### API
+
+| Endpoint | Use |
+| --- | --- |
+| `/` | Conversion webpage |
+| `/health` | Application version and engine health |
+| `/api/info` | Upload limits and renderer details |
+| `POST /api/convert?layout=balanced` | Multipart request with one or more `files` fields |
+| `/api/files/…` | Time-limited download of generated artifacts |
+
 ---
 
-*CapellaBridge is an independent project and is not affiliated with capella-software AG or MuseScore.*
+CapellaBridge is an independent project; it is not affiliated with **capella-software AG** or **MuseScore**. Original scores and their publication rights remain with their respective owners.
