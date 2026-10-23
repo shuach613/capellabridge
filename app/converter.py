@@ -533,6 +533,41 @@ def make_slur_links(events):
     return starts,ends
 
 
+def source_notation_audit(root):
+    """Inventory notation features, including constructs requiring review."""
+    annotations=collections.Counter()
+    unsupported=collections.Counter()
+    for graphic in root.xpath('//c:drawObj',namespaces=N):
+        for element in graphic:
+            name=tag(element)
+            if name=='basic':
+                continue
+            annotations[name]+=1
+            if name not in ('text','slur','volta'):
+                unsupported[name]+=1
+    beams=root.xpath('//c:chord/c:beam',namespaces=N)
+    custom_beams=[e for e in beams if e.get('group','auto')!='auto']
+    tempos=root.xpath('//c:chord[@tempo]',namespaces=N)
+    if custom_beams:
+        unsupported['custom_beaming']+=len(custom_beams)
+    if tempos:
+        unsupported['tempo_changes']+=len(tempos)
+    feature_counts={
+        'chords':len(root.xpath('//c:chord',namespaces=N)),
+        'rests':len(root.xpath('//c:rest',namespaces=N)),
+        'ties':len(root.xpath('//c:tie',namespaces=N)),
+        'slurs':annotations['slur'],
+        'tuplets':len(root.xpath('//c:tuplet',namespaces=N)),
+        'grace_notes':len(root.xpath('//c:duration[@noDuration="true"]',namespaces=N)),
+        'lyrics':len(root.xpath('//c:lyric/c:verse',namespaces=N)),
+        'repeat_barlines':len(root.xpath(
+            '//c:barline[starts-with(@type,"rep")]',namespaces=N
+        )),
+        'time_signatures':sorted(set(root.xpath('//c:timeSign/@time',namespaces=N))),
+    }
+    return feature_counts,dict(sorted(unsupported.items()))
+
+
 def serialize_musicxml(raw, layout='balanced'):
     """Returns (MusicXML bytes, report dict)."""
     if layout not in ('balanced','compact','original'):raise CapellaError('Invalid layout mode')
@@ -553,6 +588,7 @@ def serialize_musicxml(raw, layout='balanced'):
     if active_divisions > 5_000_000:
         raise CapellaError('Score requires an impractically fine rhythmic grid; '
                            'cannot safely encode it in MusicXML.')
+    features,unsupported=source_notation_audit(root)
     title,subtitle,composer=extract_metadata(root)
     variation_numbers=extract_variation_numbers(parts)
     score=ET.Element('score-partwise',version='4.0')
@@ -695,9 +731,14 @@ def serialize_musicxml(raw, layout='balanced'):
     if root.xpath('//c:drawObj/c:text[c:font[@face="capella3"]]',namespaces=N):
         warnings.append('Capella-specific music-font symbols may need manual correction.')
     data=ET.tostring(score,encoding='utf-8',xml_declaration=True,pretty_print=True,doctype='<!DOCTYPE score-partwise  PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">')
+    for name,count in unsupported.items():
+        warnings.append(f'{count} source {name} elements require manual notation review.')
     report={'title':title,'subtitle':subtitle,'composer':composer,'parts':[p.name for p in parts],
             'measures':measure_count,'notes':sum(1 for p in parts for e in p.events if e.kind=='chord'),
             'warnings':sorted(set(warnings)),'layout':layout,'source_format':'capx',
             'source_systems':len(children(child(root, 'systems'), 'system')),
-            'variation_numbers':list(variation_numbers.values())}
+            'variation_numbers':list(variation_numbers.values()),
+            'notation_features':features,
+            'notation_not_fully_interpreted':unsupported,
+            'print_review_recommended':True}
     return data,report
