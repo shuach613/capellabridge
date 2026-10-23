@@ -1,0 +1,47 @@
+name: Refresh UI screenshots
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/static/**'
+      - 'scripts/capture_ui.py'
+      - 'docs/screenshot.png'
+      - 'docs/mobile.png'
+
+permissions:
+  contents: read
+
+jobs:
+  screenshots:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'feature/accurate-repeats-ornaments-and-ui-v1-7'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare browser
+        run: |
+          python -m pip install --quiet playwright
+          if ! command -v google-chrome >/dev/null 2>&1 && ! command -v chromium >/dev/null 2>&1; then
+            python -m playwright install --with-deps chromium
+          fi
+      - name: Render real UI screenshots
+        run: python scripts/capture_ui.py
+      - name: Commit refreshed screenshots
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/screenshot.png docs/mobile.png
+          if ! git diff --cached --quiet; then
+            git commit -m "docs: update desktop and mobile UI screenshots"
+            git push origin "HEAD:$HEAD_REF"
+          fi
