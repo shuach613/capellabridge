@@ -25,7 +25,7 @@ Original files are discarded after processing. Downloadable results expire by de
 
 CapellaBridge reads CapXML 2.0 notation as **structured musical events**, not screenshots or PDFs. It preserves score parts and voices, notes and chords, clefs, key and time changes, rests, exact tuplets, lyrics, ties, slurs, repeats, section numbers and supported articulations. The conversion report identifies features that require manual review.
 
-**Version 1.7.0** fixes simultaneous repeat-end and repeat-start boundaries (including transitions across Capella systems), creates visible accent and staccato markings, adds explicit tuplet grouping and supported graphical trill/glissando marks, and fixes literal subtitle break tags in exported MuseScore files.
+**Version 1.7.0** fixes simultaneous repeat-end and repeat-start boundaries (including transitions across Capella systems), creates visible accent and staccato markings, adds explicit tuplet grouping and trill marks and explicitly named glissando spanners, and fixes literal subtitle break tags in exported MuseScore files.
 
 An **.mscz** is verified as an actual MuseScore score, not merely a readable ZIP. The test pipeline imports a generated score using MuseScore Studio 4 after MuseScore 3 export. Very unusual Capella drawing objects can still require manual cleanup: different engraving engines cannot guarantee identical page breaks, graphical placement, or playback for every source file.
 
