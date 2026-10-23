@@ -511,6 +511,42 @@ def main():
     assert get(record['downloads']['pdf']).startswith(b'%PDF-')
     print('Printed 95 BPM and playback-only 180 BPM survived live MuseScore export',flush=True)
 
+    # Verify that the actual native MuseScore CLI accepts the repaired
+    # first-page title and separate metadata/rights credit. Regression
+    # modelled after a low-positioned Capella title, without publishing
+    # the original Hanswurscht score.
+    byline_xml=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<pageObjects>'
+        '<drawObj><text x="55" y="9.3125"><font face="Arial" height="28"/>'
+        '<content>Dr Hanswurscht</content></text></drawObj>'
+        '<drawObj><text x="0" y="6.125"><font face="Arial" height="12"/>'
+        '<content>© Znynibigger</content></text></drawObj>'
+        '<drawObj><text x="96.46875" y="6.125">'
+        '<font face="Arial" height="12"/><content>René Brielmann 1982'
+        '</content></text></drawObj></pageObjects>'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices>'
+        '<voice><noteObjects><timeSign time="2/4"/>'
+        '<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>'
+        '</noteObjects></voice></voices></staff></staves></system></systems>'
+        '</score>'
+    ).encode()
+    body,ctype=make_upload(byline_xml,filename='Dr Hanswurscht.capx')
+    reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    item=reply['results'][0]
+    assert item['title']=='Dr Hanswurscht'
+    assert item['composer']=='René Brielmann 1982'
+    xmltree=ET.fromstring(get(item['downloads']['musicxml']))
+    assert xmltree.findtext('./identification/rights')=='© Znynibigger'
+    assert xmltree.findtext('./identification/creator[@type="composer"]')=='René Brielmann 1982'
+    assert get(item['downloads']['pdf']).startswith(b'%PDF-')
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        assert any(x.endswith('.mscx') for x in z.namelist())
+    print('Low title and separate rights/composer survived native MuseScore export',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
