@@ -131,3 +131,24 @@ def test_z_basel_4th_voice_byline_and_six_point_reviser():
     assert report['variation_numbers']==['1']
     assert 'U. Ganz 2000 / F. Peter 2014' in [
         x.text for x in xml.findall('./credit[@page="3"]/credit-words')]
+
+
+def test_uncle_sam_embedded_rtf_navigation_is_not_silently_lost():
+    page=draw('Uncle Sam',18,47,4.15)
+    attach=('<drawObj><richText file="obj____1.rtf" x="-5.5" y="-14" '
+            'width="22.21875"/></drawObj>')
+    original=score(page,lead=chord()+chord(),last=chord()+chord(attach))
+    rtf=(r'{\rtf1\ansi{\fonttbl{\f0 capella3;}{\f1 Arial;}}'
+         r'\pard\f0 e\f1  al \f0 $\f1  con rep. et poi Coda\par}')
+    file=io.BytesIO()
+    with zipfile.ZipFile(original) as previous, zipfile.ZipFile(file,'w') as updated:
+        updated.writestr('score.xml',previous.read('score.xml'))
+        updated.writestr('obj____1.rtf',rtf.encode('cp1252'))
+    xml,report=output(file.getvalue())
+    caption='D.S. al Segno con rep. et poi Coda'
+    assert caption in report['printed_directions']
+    directions=xml.xpath('.//direction[sound[@dalsegno="segno"]]')
+    assert len(directions)==1
+    assert directions[0].find('./sound').get('tocoda')=='coda'
+    words=directions[0].find('./direction-type/words')
+    assert words.text==caption and words.get('color')=='#FF0000'
