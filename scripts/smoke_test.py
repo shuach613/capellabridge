@@ -634,6 +634,44 @@ def main():
         assert any(n.endswith('.mscx') for n in z.namelist())
     print('Sperber composer and full printed dedication survived native MuseScore export',flush=True)
 
+    # Native MuseScore smoke: final source-pair navigation, including an
+    # embedded RTF D.S. al Segno / Coda instruction. Synthetic only.
+    rtf_content=(
+        r'{\rtf1\ansi{\fonttbl{\f0 capella3;}{\f1 Arial;}}'
+        r'\pard\f0 e\f1  al \f0 $\f1  con rep. et poi Coda\par}'
+    ).encode('cp1252')
+    rtf_xml=(
+        '<score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<pageObjects><drawObj><text x="49" y="4">'
+        '<font face="Arial" height="18"/><content>Uncle Sam</content>'
+        '</text></drawObj></pageObjects>'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices>'
+        '<voice><noteObjects><timeSign time="2/4"/>'
+        '<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>'
+        '<rest><duration base="1/4"/><drawObjects><drawObj>'
+        '<richText file="obj____1.rtf" x="-5.5" y="-14" width="22"/>'
+        '</drawObj></drawObjects></rest>'
+        '</noteObjects></voice></voices></staff></staves></system></systems>'
+        '</score>'
+    ).encode('utf-8')
+    upload=io.BytesIO()
+    with zipfile.ZipFile(upload,'w') as z:
+        z.writestr('score.xml',rtf_xml)
+        z.writestr('obj____1.rtf',rtf_content)
+    body,ctype=make_upload(upload.getvalue(),filename='Uncle Sam.capx')
+    reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    item=reply['results'][0]
+    xmltree=ET.fromstring(get(item['downloads']['musicxml']))
+    words=[d.text for d in xmltree.findall('.//direction-type/words')]
+    assert 'D.S. al Segno con rep. et poi Coda' in words,words
+    assert xmltree.find('.//direction/sound[@dalsegno="segno"][@tocoda="coda"]') is not None
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        assert any(n.endswith('.mscx') for n in z.namelist())
+    assert get(item['downloads']['pdf']).startswith(b'%PDF-')
+    print('Embedded RTF D.S. al Segno navigation survived native MSCZ/PDF export',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
