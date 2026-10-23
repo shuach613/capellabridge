@@ -158,7 +158,7 @@ def test_capxml_3_namespace_replacement_staff_and_logo_title(layout):
         '</pageObjects>'
     )
     fixture=make_score(list(group)+['Piccolo Zier'],[opening,closing],page)
-    fixture=fixture.replace(b'CapXML/2.0',b'CapXML/3.0')
+    fixture=capx(zipfile.ZipFile(io.BytesIO(fixture)).read('score.xml').replace(b'CapXML/2.0',b'CapXML/3.0').decode('utf-8'))
     xml,report=serialize_musicxml(fixture,layout,filename='Fyyrvogel.capx')
     tree=ET.fromstring(xml)
     assert report['capxml_version']=='3.0'
@@ -191,7 +191,7 @@ def test_capxml_1_namespace_second_voice_sections_and_hairpins(layout):
     )
     accompaniment=staff('2. Stimme','<timeSign time="2/4"/>'+note()+note('D5'))
     fixture=make_score(['1. Stimme','2. Stimme'],[[multi_staff,accompaniment]])
-    fixture=fixture.replace(b'CapXML/2.0',b'CapXML/1.0')
+    fixture=capx(zipfile.ZipFile(io.BytesIO(fixture)).read('score.xml').replace(b'CapXML/2.0',b'CapXML/1.0').decode('utf-8'))
     xml,report=serialize_musicxml(fixture,layout,filename='Nunnefirzli.capx')
     tree=ET.fromstring(xml)
     assert report['capxml_version']=='1.0'
