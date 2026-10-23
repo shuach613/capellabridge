@@ -1308,7 +1308,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             r'(?i)(?:^|[\s,])(?:arrangiert\s+(?:vom|von)|arr\.\s*(?:von)?|bearb\.\s*(?:von)?)\s+(.+)$',
             credit_line.strip())
         if arranged:
-            name=re.sub(r'(?:,\s*|\s+)(?:18|19|20)\d{2}\s*
+            name=re.sub(r'(?:,\s*|\s+)(?:18|19|20)\d{2}\s*$','',arranged.group(1).strip())
             sub(identification,'creator',name,type='arranger')
     defaults=sub(score,'defaults');scaling=sub(defaults,'scaling');sub(scaling,'millimeters',{'balanced':'6.4','compact':'5.8','original':'6.0'}[layout]);sub(scaling,'tenths','40')
     page=sub(defaults,'page-layout');sub(page,'page-height','1683.78');sub(page,'page-width','1190.55')
