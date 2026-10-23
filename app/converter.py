@@ -375,6 +375,24 @@ def extract_metadata(root, filename=None):
     return title, '\n'.join(subtitle_lines), composer
 
 
+def leading_voice_events(parts):
+    """Use first AVAILABLE staff of each Capella system as score-wide ruler.
+
+    A source may replace all original staves with a new one in a later system
+    (Fyyrvogel ends with Piccolo Zier only). Always using parts[0] would
+    silently omit every barline, section label and system break afterwards.
+    """
+    indices=sorted({e.system for p in parts for e in p.events})
+    primary=[]
+    for index in indices:
+        for p in parts:
+            events=[e for e in p.events if e.system==index and e.voice==1]
+            if events:
+                primary.extend(events)
+                break
+    return sorted(primary,key=lambda e:(e.time,e.system))
+
+
 def extract_variation_numbers(parts):
     """Capella stores section/variation headings as graphical text on chords.
 
@@ -382,7 +400,7 @@ def extract_variation_numbers(parts):
     not tiny tuplet digits or unrelated score metadata.
     """
     markers = {}
-    for event in parts[0].events:
+    for event in leading_voice_events(parts):
         if event.kind not in ('chord','rest') or event.voice != 1:
             continue
         for draw in children(child(event.node, 'drawObjects'), 'drawObj'):
@@ -403,7 +421,7 @@ def extract_variation_numbers(parts):
                 y = float(element.get('y', '0'))
             except ValueError:
                 continue
-            if height >= 13 and y < 0:
+            if height >= (10 if ' ' in label else 13) and y < 0:
                 markers.setdefault(event.time, label)
     return markers
 
@@ -416,7 +434,7 @@ def extract_score_directions(parts):
     Avoid music-font glyphs, section numbers and small copyright text.
     """
     out=collections.defaultdict(list)
-    for event in parts[0].events:
+    for event in leading_voice_events(parts):
         if event.voice!=1 or event.kind not in ('chord','rest'):
             continue
         for draw in children(child(event.node,'drawObjects'),'drawObj'):
@@ -473,7 +491,7 @@ def compute_boundaries(parts, end):
     Keeping the opening meter for the entire score creates phantom measures
     after a 2/4 -> 6/8 change and places notes across those phantom barlines.
     """
-    first = sorted((e for e in parts[0].events if e.voice == 1), key=lambda e:e.time)
+    first = leading_voice_events(parts)
     signatures = []
     for event in first:
         if event.kind == 'timeSign':
@@ -847,7 +865,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     # both pairs have equal Fraction values.
     opening_time=next((
         event.node.get('time','4/4')
-        for event in parts[0].events
+        for event in leading_voice_events(parts)
         if event.kind=='timeSign' and event.time==0
     ),str(meter.numerator)+'/'+str(meter.denominator))
     if len(boundaries)<2: raise CapellaError('Could not determine measures')
@@ -909,7 +927,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     # Do NOT store them in a time->single-type dictionary: last-write-wins
     # drops the backward repeat (seven times in Alte Schwytzer).
     boundary_marks=collections.defaultdict(set)
-    for event in parts[0].events:
+    for event in leading_voice_events(parts):
         if event.kind=='barline' and event.voice==1:
             boundary_marks[event.time].add(event.node.get('type','single'))
     def repeat_start(position):
@@ -926,7 +944,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     # Most Capella ending brackets are attached graphically to the first chord
     # of the ending measure. Their firstNumber is a semantic indicator.
     ending_starts={}
-    for event in parts[0].events:
+    for event in leading_voice_events(parts):
         if event.kind != 'chord' or event.voice!=1:continue
         for obj in children(child(event.node,'drawObjects'),'drawObj'):
             volta=child(obj,'volta')
@@ -936,10 +954,10 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     # Staves introduced or removed later need a system boundary even when
     # the user selected Balanced/Compact; otherwise a fourth part can appear
     # halfway through an existing printed system.
-    indexed_system_starts = {
-        min(e.time for e in parts[0].events if e.system == si): si
-        for si in sorted({e.system for e in parts[0].events})
-    }
+    # This must cover EVERY system, including systems lacking the first part.
+    indexed_system_starts = {}
+    for event in leading_voice_events(parts):
+        indexed_system_starts.setdefault(event.time,event.system)
     staff_transition_starts = {
         t for t,si in indexed_system_starts.items()
         if si > 0 and any(
@@ -953,8 +971,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     # Capella's graphical systems can occasionally start mid-measure; only
     # request a break when the start aligns with an exported measure.
     source_system_starts = {
-        min(e.time for e in parts[0].events if e.system == index)
-        for index in {e.system for e in parts[0].events if e.system > 0}
+        time for time,si in indexed_system_starts.items() if si>0
     }
     valid_system_starts = source_system_starts.intersection(boundaries[1:-1])
     if layout == 'original' and len(valid_system_starts) != len(source_system_starts):
