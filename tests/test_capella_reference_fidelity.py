@@ -137,3 +137,67 @@ def test_vaudois_fine_navigation_repeats_and_accents():
     assert len(doc.findall('.//articulations/accent'))==1
     assert doc.find('./part/measure[1]/barline/repeat[@direction="backward"]') is not None
     assert doc.find('./part/measure[2]/barline/repeat[@direction="forward"]') is not None
+
+
+@pytest.mark.parametrize('layout',('balanced','compact','original'))
+def test_capxml_3_namespace_replacement_staff_and_logo_title(layout):
+    """Fyyrvogel-type 3.0 files replace a quartet with a solo Zier part."""
+    group=('Piccolo 1','Piccolo 2','Piccolo 3','Piccolo 4')
+    opening=[staff(n,'<timeSign time="2/4"/>'+note()+note('D5'))
+             for n in group]
+    closing=[staff('Piccolo Zier',note('E5')+note('F5'))]
+    page=(
+        '<pageObjects>'
+        '<drawObj><text x="150" y="2"><font face="Arial" height="11"/>'
+        '<content>Michael Robertson&#10;Trommeltext: Andri Obrist</content>'
+        '</text></drawObj>'
+        '<drawObj><metafile file="logo.wmf" x="67" y="-3" width="30" height="11"/>'
+        '</drawObj>'
+        '<drawObj><text x="18" y="11"><font face="Arial" height="12"/>'
+        '<content>Intro</content></text></drawObj>'
+        '</pageObjects>'
+    )
+    fixture=make_score(list(group)+['Piccolo Zier'],[opening,closing],page)
+    fixture=fixture.replace(b'CapXML/2.0',b'CapXML/3.0')
+    xml,report=serialize_musicxml(fixture,layout,filename='Fyyrvogel.capx')
+    tree=ET.fromstring(xml)
+    assert report['capxml_version']=='3.0'
+    assert report['title']=='Fyyrvogel'
+    assert report['composer']=='Michael Robertson'
+    assert report['subtitle']=='Trommeltext: Andri Obrist'
+    assert report['variable_staff_systems']
+    assert len(tree.findall('./part'))==5
+    assert tree.find('./part[5]/measure[1]/attributes/staff-details').get('print-object')=='no'
+    assert tree.find('./part[5]/measure[2]/attributes/staff-details').get('print-object')=='yes'
+    assert tree.find('./part[1]/measure[2]/attributes/staff-details').get('print-object')=='no'
+    assert tree.find('./part[1]/measure[2]/print').get('new-system')=='yes'
+
+
+@pytest.mark.parametrize('layout',('balanced','compact','original'))
+def test_capxml_1_namespace_second_voice_sections_and_hairpins(layout):
+    """Nunnefirzli uses CapXML 1.0, 2 voices and expression hairpins."""
+    wedge=(
+        '<drawObjects><drawObj><wedge decrescendo="true" color="FF0000"/>'
+        '<basic noteRange="1"/></drawObj></drawObjects>'
+    )
+    heading=draw_words('1 dr Aafang',height=12)
+    leading='<timeSign time="2/4"/>'+note(marks=heading+wedge)+note('D5')
+    voice_two=note('C5',duration='1/8')*4
+    multi_staff=(
+        '<staff layout="1. Stimme"><voices>'
+        '<voice><noteObjects>'+leading+'</noteObjects></voice>'
+        '<voice><noteObjects>'+voice_two+'</noteObjects></voice>'
+        '</voices></staff>'
+    )
+    accompaniment=staff('2. Stimme','<timeSign time="2/4"/>'+note()+note('D5'))
+    fixture=make_score(['1. Stimme','2. Stimme'],[[multi_staff,accompaniment]])
+    fixture=fixture.replace(b'CapXML/2.0',b'CapXML/1.0')
+    xml,report=serialize_musicxml(fixture,layout,filename='Nunnefirzli.capx')
+    tree=ET.fromstring(xml)
+    assert report['capxml_version']=='1.0'
+    assert report['variation_numbers']==['1 dr Aafang']
+    assert report['notation_features']['hairpins']==1
+    assert tree.find('.//wedge[@type="diminuendo"]') is not None
+    assert tree.find('.//wedge[@type="stop"]') is not None
+    assert len(tree.findall('./part[1]/measure[1]/note[voice="2"]'))==4
+    assert tree.find('./part[1]/measure[1]/backup') is not None
