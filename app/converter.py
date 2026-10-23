@@ -67,6 +67,22 @@ def tuplet_normal_notes(tuplet):
     return min(eligible) if prolong else max(eligible)
 
 
+def meter_fraction(raw):
+    """Normalize CapXML numeric, common-time and cut-time meters exactly."""
+    names={'C':Fraction(4,4),'allaBreve':Fraction(2,2),
+           'longAllaBreve':Fraction(4,2)}
+    if raw == 'infinite':
+        raise CapellaError('Unmetered CapXML requires an explicit-barlines '
+                           'importer; cannot infer safe measure durations.')
+    try:
+        value=names.get(raw) if raw in names else Fraction(raw)
+    except (ValueError,ZeroDivisionError) as exc:
+        raise CapellaError(f'Unsupported CapXML meter: {raw!r}') from exc
+    if value <= 0:
+        raise CapellaError(f'Invalid CapXML meter: {raw!r}')
+    return value
+
+
 def duration_of(node, meter=None):
     """Read CapXML time values as sounding fractions of a whole note.
 
@@ -187,8 +203,7 @@ def parse_score(root):
                         continue
                     if kind == 'timeSign':
                         try:
-                            local_meter = Fraction(ob.get('time', '4/4'))
-                            if local_meter <= 0: raise ValueError()
+                            local_meter = meter_fraction(ob.get('time', '4/4'))
                         except (ValueError, ZeroDivisionError):
                             raise CapellaError(f'Invalid time signature in system {si+1}')
                         if pi == 0 and vi == 0:
@@ -314,8 +329,7 @@ def compute_boundaries(parts, end):
     for event in first:
         if event.kind == 'timeSign':
             try:
-                meter = Fraction(event.node.get('time', '4/4'))
-                if meter <= 0: raise ValueError()
+                meter = meter_fraction(event.node.get('time', '4/4'))
             except (ValueError, ZeroDivisionError):
                 raise CapellaError('Invalid time signature in source score')
             signatures.append((event.time,meter))
@@ -347,13 +361,35 @@ def add_attributes(measure, key=None, time=None, clef=None, transpose=0, initial
     if key is not None:sub(sub(attrs,'key'), 'fifths',key)
     if time is not None:
         times = sub(attrs,'time')
-        numerator,denominator = time.split('/')
-        sub(times,'beats',numerator);sub(times,'beat-type',denominator)
+        if time in ('C','allaBreve','longAllaBreve'):
+            times.set('symbol','common' if time=='C' else 'cut')
+        frac=meter_fraction(time)
+        sub(times,'beats',frac.numerator)
+        sub(times,'beat-type',frac.denominator)
     if clef is not None:
-        c=sub(attrs,'clef'); mapping = {'treble':('G',2),'bass':('F',4),'alto':('C',3),'tenor':('C',4),'percussion':('percussion',2)}
-        sign,line = mapping.get(clef, ('G',2));sub(c,'sign',sign);sub(c,'line',line)
+        mapping={'treble':('G',2,0),'bass':('F',4,0),
+                 'alto':('C',3,0),'tenor':('C',4,0),
+                 'percussion':('percussion',2,0)}
+        if clef in mapping:
+            sign,line,octave_change=mapping[clef]
+        else:
+            match=re.fullmatch(r'([GFC])([1-5])([+-]?)',clef)
+            if not match:
+                raise CapellaError(f'Unsupported source clef: {clef!r}')
+            sign,line,octave=match.groups()
+            line=int(line)
+            octave_change={'':0,'+':1,'-':-1}[octave]
+        c=sub(attrs,'clef')
+        sub(c,'sign',sign);sub(c,'line',line)
+        if octave_change:sub(c,'clef-octave-change',octave_change)
     if initial and transpose:
-        tr=sub(attrs,'transpose');sub(tr,'diatonic',0);sub(tr,'chromatic',0);sub(tr,'octave-change',int(transpose/12))
+        octaves=int(transpose/12)
+        semitones=transpose-(12*octaves)
+        scale={0:0,1:0,2:1,3:2,4:2,5:3,6:3,7:4,8:5,9:5,10:6,11:6}
+        tr=sub(attrs,'transpose')
+        sub(tr,'diatonic',scale[abs(semitones)]*(1 if semitones>=0 else -1))
+        sub(tr,'chromatic',semitones)
+        if octaves:sub(tr,'octave-change',octaves)
 
 
 def note_type(dur_node):
