@@ -370,6 +370,14 @@ def extract_metadata(root, filename=None):
             contribution=bool(re.match(
                 r'(?i)^(?:arrangiert\b|arr\.|bearb\.|\d+\.\s*(?:schtimm|stimm))',
                 lines[0]))
+            # A parenthesized arranger credit, such as "(arr. R. Brielmann
+            # 1988)", must never become the composer.
+            if (len(lines)==1 and re.fullmatch(
+                    r'(?i)\(\s*(?:arr\.?|arrangiert)\s+[^()]{3,80}\s*\)',
+                    lines[0])):
+                if lines[0] not in subtitle_lines:
+                    subtitle_lines.append(lines[0])
+                continue
             # A printed byline can name both the original composer and
             # an arranger. Preserve the complete source words *visibly*
             # while writing semantically correct MusicXML creator metadata.
@@ -636,6 +644,8 @@ def extract_score_directions(parts, section_times=None):
                 continue
             if font.get('face','').casefold() in ('capella','capella3'):
                 continue
+            if font.get('color','').upper()=='FFFFFF':
+                continue  # Hidden source annotation, not a printed direction.
             try:
                 height=int(font.get('height','0'))
                 y=float(text.get('y','0'))
@@ -647,7 +657,8 @@ def extract_score_directions(parts, section_times=None):
             performance=re.search(
                 r'(?i)(\bfine\b|\bcoda\b|\bsegno\b|'
                 r'\bd\.?\s*c\.?\b|\bd\.?\s*s\.?\b|'
-                r'\bda\s+capo\b|\bintro\b|\btrommelsolo\b|\btutti\b|\bsolo\b|\btrio\b|'
+                r'\bda\s+capo\b|\bintro\b|\bmaestoso\b|\blively\b|\bmarcial\b|'
+                r'\btrommelsolo\b|\btutti\b|\bsolo\b|\btrio\b|'
                 r'\britardando\b|\brit\.?\b|\ba tempo\b|'
                 r'\baccelerando\b|\baccel\.?\b)',
                 label)
@@ -657,7 +668,7 @@ def extract_score_directions(parts, section_times=None):
             # Medleys often use a small italic tune caption such as
             # "The chimes of Liberty (Goldman)" on each new theme.
             tune_caption=(y<0 and re.fullmatch(
-                r"(?u)[^()\n]{4,65}\s+\([A-ZÄÖÜ][\wÄÖÜäöüß .'-]{2,35}\)",
+                r"(?u)[^()\n]{4,65}\s+\([A-Za-zÄÖÜäöüß][\wÄÖÜäöüß .'-]{2,35}\)",
                 label) is not None)
             # A march caption is drawn in italic text beside a numbered
             # section (D'Preusse), not always with an author in parentheses.
@@ -674,21 +685,23 @@ def extract_score_directions(parts, section_times=None):
     return dict(out)
 
 
-def add_score_direction(measure,label):
+def add_score_direction(measure,label,source_color=None):
     direction=sub(measure,'direction',placement='above')
     kind=sub(direction,'direction-type')
     is_tune=bool(re.fullmatch(
-        r"(?u)[^()\n]{4,65}\s+\([A-ZÄÖÜ][\wÄÖÜäöüß .'-]{2,35}\)",label))
+        r"(?u)[^()\n]{4,65}\s+\([A-Za-zÄÖÜäöüß][\wÄÖÜäöüß .'-]{2,35}\)",label))
     if is_tune:
         sub(kind,'words',label,font_size='9',font_style='italic',
-            color='#008000',relative_y='16',justify='left')
+            color=source_color or '#008000',relative_y='16',justify='left')
     else:
-        sub(kind,'words',label,font_size='10',font_weight='bold',
-            relative_y='16',justify='left')
+        attrs={'font_size':'10','font_weight':'bold',
+               'relative_y':'16','justify':'left'}
+        if source_color: attrs['color']=source_color
+        sub(kind,'words',label,**attrs)
     # MusicXML playback navigation, in addition to the visible label.
     low=label.casefold()
     sound={}
-    if re.search(r'\bd\.?\s*c\.?(?:\s|$)|\bda\s+capo\b',low):
+    if re.search(r'\bd\.?\s*c\.?\s*(?=al\b|\s|$)|\bda\s+capo\b',low):
         sound['dacapo']='yes'
     if re.search(r'\bd\.?\s*s\.?(?:\s|$)',low):
         sound['dalsegno']='segno'
@@ -1352,10 +1365,11 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             sub(identification,'rights',raw)
     for credit_line in subtitle.splitlines():
         arranged=re.search(
-            r'(?i)(?:^|[\s,])(?:arrangiert\s+(?:vom|von)|arr\.\s*(?:von)?|bearb\.\s*(?:von)?)\s+(.+)$',
+            r'(?i)(?:^|[(\s,])(?:arrangiert\s+(?:vom|von)|arr\.\s*(?:von)?|bearb\.\s*(?:von)?)\s+(.+)$',
             credit_line.strip())
         if arranged:
-            name=re.sub(r'(?:,\s*|\s+)(?:18|19|20)\d{2}\s*$','',arranged.group(1).strip())
+            name=arranged.group(1).strip().rstrip(')').strip()
+            name=re.sub(r'(?:,\s*|\s+)(?:18|19|20)\d{2}\s*$','',name)
             sub(identification,'creator',name,type='arranger')
     defaults=sub(score,'defaults');scaling=sub(defaults,'scaling');sub(scaling,'millimeters',{'balanced':'6.4','compact':'5.8','original':'6.0'}[layout]);sub(scaling,'tenths','40')
     page=sub(defaults,'page-layout');sub(page,'page-height','1683.78');sub(page,'page-width','1190.55')
@@ -1426,7 +1440,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                     y=float(words.get('y','0'))
                 except ValueError:
                     continue
-                if (7<=size<=12 and y>=4.5 and len(label)>=10 and
+                if (6<=size<=12 and (size>=7 or re.search(r'\b(?:19|20)\d{2}\b',label))
+                        and y>=4.5 and len(label)>=10 and
                         any(ch.isalpha() for ch in label) and
                         label not in closing_credits):
                     closing_credits.append(label)
