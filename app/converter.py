@@ -610,7 +610,7 @@ def extract_score_directions(parts):
             # Medleys often use a small italic tune caption such as
             # "The chimes of Liberty (Goldman)" on each new theme.
             tune_caption=(y<0 and re.fullmatch(
-                r'(?u)[^()\n]{4,65}\s+\([A-ZÄÖÜ][\wÄÖÜäöüß .'-]{2,35}\)',
+                r"(?u)[^()\n]{4,65}\s+\([A-ZÄÖÜ][\wÄÖÜäöüß .'-]{2,35}\)",
                 label) is not None)
             if (((performance and (10<=height<=20 or
                                   (label.casefold()=='trio' and 7<=height<=20)))
@@ -625,7 +625,7 @@ def add_score_direction(measure,label):
     direction=sub(measure,'direction',placement='above')
     kind=sub(direction,'direction-type')
     is_tune=bool(re.fullmatch(
-        r'(?u)[^()\n]{4,65}\s+\([A-ZÄÖÜ][\wÄÖÜäöüß .'-]{2,35}\)',label))
+        r"(?u)[^()\n]{4,65}\s+\([A-ZÄÖÜ][\wÄÖÜäöüß .'-]{2,35}\)",label))
     if is_tune:
         sub(kind,'words',label,font_size='9',font_style='italic',
             color='#008000',relative_y='16',justify='left')
