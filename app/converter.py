@@ -280,6 +280,7 @@ def first_system_named_credits(root):
     """
     composer=''
     supplementary=[]
+    unambiguous_byline=[]
     for item in root.xpath('//c:systems/c:system[1]//c:drawObj/c:text',namespaces=N):
         font=child(item,'font')
         content=child(item,'content')
@@ -301,7 +302,14 @@ def first_system_named_credits(root):
         elif re.match(r'(?i)^\d+\.\s*(?:schtimm|stimm|stimme)\b',label):
             if label not in supplementary:
                 supplementary.append(label)
-    return composer,supplementary
+        elif (y <= -11 and 9 <= height <= 13 and re.fullmatch(
+                r'(?u)(?:(?:[A-ZÄÖÜ]\.|[A-ZÄÖÜ][a-zäöüß-]+)\s+){1,3}'
+                r'[A-ZÄÖÜ][a-zäöüß-]+',label)):
+            # Score authors may be attached to the first staff rather than
+            # pageObjects, e.g. "H. Weber" or "Karl Roth". The strict name,
+            # size and height rules exclude dates, tune headings and digits.
+            unambiguous_byline.append(label)
+    return composer or (unambiguous_byline[0] if unambiguous_byline else ''),supplementary
 
 
 def extract_metadata(root, filename=None):
@@ -477,6 +485,12 @@ def extract_metadata(root, filename=None):
     extra_composer,extra_lines=first_system_named_credits(root)
     if not composer:
         composer=extra_composer
+    if not composer:
+        title_byline=re.search(
+            r'(?iu),\s*(?:vom|von)\s+([A-ZÄÖÜ][a-zäöüß-]+\s+'
+            r'[A-ZÄÖÜ][a-zäöüß-]+)$',title)
+        if title_byline:
+            composer=title_byline.group(1)
     for line in extra_lines:
         if line not in subtitle_lines:
             subtitle_lines.append(line)
@@ -1318,7 +1332,9 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     # Don't print the composer twice when the original byline already
     # contains the composer and arranger ("Mozart, arr. ...").
     compact=lambda x: re.sub(r'[\W_]+','',x,flags=re.UNICODE).casefold()
-    display_composer=('' if composer and compact(composer) in compact(subtitle)
+    display_composer=('' if composer and
+                      (compact(composer) in compact(subtitle)
+                       or compact(composer) in compact(title))
                       else composer)
     for kind, value, y, size, weight in (
         ('title', title, 1580, 23, 'bold'),
