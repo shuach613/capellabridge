@@ -547,7 +547,7 @@ def extract_variation_numbers(parts):
                     face=font.get('face','').casefold()
                     if face in ('capella','capella3') and not (
                             (is_circled and re.fullmatch(r'[1-9]',label))
-                            or (face=='capella3' and re.fullmatch(r'[1-9]',label)
+                            or (face=='capella3' and re.fullmatch(r'[1-9]\d?',label)
                                 and float(font.get('height','0'))>=20
                                 and float(element.get('y','0'))<0)):
                         continue
@@ -599,7 +599,7 @@ def extract_variation_numbers(parts):
             markers.setdefault(event.time,label)
     return markers
 
-def extract_score_directions(parts):
+def extract_score_directions(parts, section_times=None):
     """Keep printed words attached to musical notes or rests.
 
     Capella stores navigation and performance text such as 'fine' and
@@ -607,6 +607,7 @@ def extract_score_directions(parts):
     Avoid music-font glyphs, section numbers and small copyright text.
     """
     out=collections.defaultdict(list)
+    section_times=section_times or set()
     for event in leading_voice_events(parts):
         if event.voice!=1 or event.kind not in ('chord','rest'):
             continue
@@ -644,10 +645,16 @@ def extract_score_directions(parts):
             tune_caption=(y<0 and re.fullmatch(
                 r"(?u)[^()\n]{4,65}\s+\([A-ZÄÖÜ][\wÄÖÜäöüß .'-]{2,35}\)",
                 label) is not None)
+            # A march caption is drawn in italic text beside a numbered
+            # section (D'Preusse), not always with an author in parentheses.
+            section_caption=(event.time in section_times and 8<=height<=13
+                             and y<0 and font.get('italic')=='true'
+                             and len(label)>=5 and any(c.isalpha() for c in label))
             if (((performance and (10<=height<=20 or
                                   (label.casefold()=='trio' and 7<=height<=20)))
                  or (special and 8<=height<=20)
-                 or (tune_caption and 8<=height<=15))
+                 or (tune_caption and 8<=height<=15)
+                 or section_caption)
                     and label not in out[event.time]):
                 out[event.time].append(label)
     return dict(out)
@@ -1291,7 +1298,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 child(obj,'rectangle') is not None for obj in
                 children(child(event.node,'drawObjects'),'drawObj'))):
             boxed_sections.add(event.time)
-    score_directions=extract_score_directions(parts)
+    score_directions=extract_score_directions(parts,set(variation_numbers))
     # Short standalone page-level introduction labels are not score credits.
     # Capella 3.0 scores such as Fyyrvogel place 'Intro' just above the
     # first system, rather than attaching it to a note.
