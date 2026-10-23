@@ -34,10 +34,12 @@ def main():
     </noteObjects></voice></voices></staff></staves></system></systems></score>'''
 
 
-    def make_upload(xml_bytes=xml, filename='Smoke.capx'):
+    def make_upload(xml_bytes=xml, filename='Smoke.capx', extras=None):
         score=io.BytesIO()
         with zipfile.ZipFile(score,'w') as z:
             z.writestr('score.xml', xml_bytes)
+            for name,content in (extras or {}).items():
+                z.writestr(name,content)
         boundary='CAPELLABRIDGE_SMOKE_BOUNDARY'
         body=(f'--{boundary}\r\nContent-Disposition: form-data; name="files"; filename="{filename}"\r\n'
               'Content-Type: application/octet-stream\r\n\r\n').encode()+score.getvalue()+f'\r\n--{boundary}--\r\n'.encode()
@@ -655,11 +657,8 @@ def main():
         '</noteObjects></voice></voices></staff></staves></system></systems>'
         '</score>'
     ).encode('utf-8')
-    upload=io.BytesIO()
-    with zipfile.ZipFile(upload,'w') as z:
-        z.writestr('score.xml',rtf_xml)
-        z.writestr('obj____1.rtf',rtf_content)
-    body,ctype=make_upload(upload.getvalue(),filename='Uncle Sam.capx')
+    body,ctype=make_upload(rtf_xml,filename='Uncle Sam.capx',
+                            extras={'obj____1.rtf':rtf_content})
     reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
     assert reply['results'][0]['ok'],reply
     item=reply['results'][0]
