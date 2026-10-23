@@ -872,7 +872,7 @@ def make_graphic_links(events):
                     index+1 < len(chords)
                     and any(
                         re.search(r'\bgliss(?:ando)?\b',
-                            ''.join(child(obj,'content').itertext()),re.I)
+                            ''.join(child(child(obj,'text'),'content').itertext()),re.I)
                         for obj in children(child(chords[index+1].node,'drawObjects'),'drawObj')
                         if child(obj,'text') is not None
                         and child(child(obj,'text'),'content') is not None
