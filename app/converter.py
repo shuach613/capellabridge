@@ -554,13 +554,13 @@ def source_notation_audit(root):
     """Inventory notation features, including constructs requiring review."""
     annotations=collections.Counter()
     unsupported=collections.Counter()
-    for graphic in root.xpath('//c:drawObj',namespaces=N):
+    for graphic in root.xpath('//c:systems//c:drawObj | //c:pageObjects//c:drawObj',namespaces=N):
         for element in graphic:
             name=tag(element)
             if name=='basic':
                 continue
             annotations[name]+=1
-            if name not in ('text','slur','volta'):
+            if name not in ('text','slur','volta','trill'):
                 unsupported[name]+=1
     beams=root.xpath('//c:chord/c:beam',namespaces=N)
     custom_beams=[e for e in beams if e.get('group','auto')!='auto']
@@ -603,7 +603,7 @@ def make_graphic_links(events):
                 name=(graphic.get('name') or '').casefold()
                 basic=child(graphic,'basic')
                 line=child(graphic,'line')
-                if not line or 'gliss' not in name or basic is None:
+                if line is None or 'gliss' not in name or basic is None:
                     continue
                 span=int(basic.get('noteRange','0'))
                 if not 0<span or index+span>=len(chords):
@@ -826,7 +826,9 @@ def serialize_musicxml(raw, layout='balanced'):
     # Notation-level warnings: emphasize these instead of silently promising fidelity.
     if root.xpath('//c:systems//c:volta | //c:pageObjects//c:volta',namespaces=N):
         warnings.append('Some graphical ending brackets may need layout review.')
-    if root.xpath('//c:trill',namespaces=N):
+    if root.xpath('//c:systems//c:trill',namespaces=N) and not any(
+        e.kind=='chord' and child(child(e.node,'drawObjects'),'trill') is not None
+        for p in parts for e in p.events):
         warnings.append('Some graphical trill spans are not yet semantically reconstructed.')
     if root.xpath('//c:drawObj/c:text[c:font[@face="capella3"]]',namespaces=N):
         warnings.append('Capella-specific music-font symbols may need manual correction.')
