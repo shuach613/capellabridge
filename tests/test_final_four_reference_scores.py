@@ -159,7 +159,7 @@ def test_legacy_note_attached_rest_symbols_do_not_change_rhythm():
     graphics=chord(draw('L',18,0,-5,face='capella3')) + \
              chord(draw('M',18,0,-5,face='capella3'))
     xml,report=output(score(page,lead=graphics,count=3))
-    notes=xml.findall('./part/measure/note')
+    notes=xml.findall('./part[1]/measure/note')
     assert len(notes)==2
     assert [n.findtext('duration') for n in notes]==['10080','10080']
     assert all(n.find('pitch') is not None for n in notes)
