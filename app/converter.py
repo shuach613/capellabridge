@@ -298,7 +298,7 @@ def extract_metadata(root, filename=None):
     # A title in the upper margin is typographically larger than composer
     # credits; don't treat a nearby introductory section label as the title.
     titles=[box for box in page_boxes
-            if box[0]>=15 and box[2]<=9 and len(box[3][0])>=4
+            if box[0]>=14 and box[2]<=9 and len(box[3][0])>=4
             and box[3][0].casefold() not in ('intro','trommelsolo')]
     if titles:
         title_box=max(titles,key=lambda box:box[0])
@@ -408,22 +408,46 @@ def leading_voice_events(parts):
 
 
 def extract_variation_numbers(parts):
-    """Capella stores section/variation headings as graphical text on chords.
+    """Preserve printed section numbers and captions, including grouped graphics.
 
-    Keep only prominent, negative-Y numbered annotations in the leading staff,
-    not tiny tuplet digits or unrelated score metadata.
+    Capella stores circled section digits inside a group/ellipse with a
+    capella3 digit, whereas some multipart marches place a small movement
+    caption on the same chord or on the next short upbeat note.
+    Neither should be confused with tuplets, music-font dynamics or credits.
     """
-    markers = {}
-    for event in leading_voice_events(parts):
-        if event.kind not in ('chord','rest') or event.voice != 1:
+    markers={}
+    first=leading_voice_events(parts)
+    for index,event in enumerate(first):
+        if event.kind not in ('chord','rest') or event.voice!=1:
             continue
-        for draw in children(child(event.node, 'drawObjects'), 'drawObj'):
-            element = child(draw, 'text')
-            font = child(element, 'font')
-            content = child(element, 'content')
-            if font is None or content is None:
-                continue
-            label = ' '.join(''.join(content.itertext()).split())
+
+        def annotations(source):
+            results=[]
+            for draw in children(child(source.node,'drawObjects'),'drawObj'):
+                is_circled=bool(draw.xpath('.//c:group/c:drawObj/c:ellipse',
+                                             namespaces=N))
+                for element in draw.xpath('.//c:text',namespaces=N):
+                    font=child(element,'font')
+                    content=child(element,'content')
+                    if font is None or content is None:
+                        continue
+                    label=' '.join(''.join(content.itertext()).split())
+                    if not label:
+                        continue
+                    face=font.get('face','').casefold()
+                    if face in ('capella','capella3') and not (
+                            is_circled and re.fullmatch(r'[1-9]',label)):
+                        continue
+                    try:
+                        height=float(font.get('height','0'))
+                        y=float(element.get('y','0'))
+                    except ValueError:
+                        continue
+                    results.append((label,height,y,is_circled))
+            return results
+
+        visible=annotations(event)
+        for label,height,y,circled in visible:
             numbered=re.fullmatch(
                 r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?(?:\s+[^\d].{1,35})?',label
             )
@@ -433,17 +457,27 @@ def extract_variation_numbers(parts):
             letter=re.fullmatch(r'[A-Z]',label)
             if not (numbered or sectional or letter):
                 continue
-            if font.get('face', '').casefold() in ('capella', 'capella3'):
+            if height < (10 if ' ' in label else 13) or y >= 0:
                 continue
-            try:
-                height = int(font.get('height', 0))
-                y = float(element.get('y', '0'))
-            except ValueError:
-                continue
-            if height >= (10 if ' ' in label else 13) and y < 0:
-                markers.setdefault(event.time, label)
+            if circled and re.fullmatch(r'[1-9]',label):
+                # Use a printable Unicode circled number rather than silently
+                # throwing away the Capella group/ellipse graphic.
+                label=chr(0x245f+int(label))
+            elif re.fullmatch(r'[1-9]\d?',label):
+                nearby=list(visible)
+                if index+1<len(first):
+                    nxt=first[index+1]
+                    if (nxt.kind=='chord' and nxt.system==event.system
+                            and Fraction(0)<nxt.time-event.time<=Fraction(1,16)):
+                        nearby.extend(annotations(nxt))
+                captions=[text for text,size,cy,_ in nearby
+                          if text!=label and 8<=size<=12 and cy<0
+                          and re.fullmatch(r'[A-Za-zÄÖÜäöüß][\wÄÖÜäöüß .,\'-]{3,55}',text)
+                          and not re.search(r'(?i)\b(?:arr\.|von|seite|trommeltext)\b',text)]
+                if captions:
+                    label=f'{label} {captions[0]}'
+            markers.setdefault(event.time,label)
     return markers
-
 
 def extract_score_directions(parts):
     """Keep printed words attached to musical notes or rests.
@@ -693,12 +727,17 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
     is_full_measure_rest = (event.kind == 'rest' and dnode is not None
         and re.fullmatch(r'[1-9]\d*',dnode.get('base','')) is not None)
     tuplet = child(dnode, 'tuplet')
+    display=child(ob,'display')
+    invisible=display is not None and display.get('invisible')=='true'
     for hi,head in enumerate(heads):
-        note=sub(meas,'note')
+        note=sub(meas,'note',**({'print_object':'no'} if invisible else {}))
         if is_grace:sub(note,'grace',slash='yes')
         if hi>0:sub(note,'chord')
         accidental=None; shape=None; ties=[]
-        if head is None:
+        if head is None or (invisible and head.get('silent')=='true'):
+            # Silent placeholder heads in older Capella scores are visual
+            # spacing/rhythm events, not audible pitched notes. Keep their
+            # duration, but don't synthesize a sounding pitch.
             sub(note,'rest', **({'measure':'yes'} if is_full_measure_rest else {}))
         else:
             raw=head.get('pitch','C5')
@@ -707,12 +746,23 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             step,cap_oct=match.groups()
             octave=int(cap_oct)-1
             alteration=child(head,'alter')
-            if alteration is not None:
-                alter=int(alteration.get('step','0'))
+            prev=state['accidentals'].get(
+                (step,octave),key_fifths_map(state['key'])[step])
+            if alteration is not None and alteration.get('step') is not None:
+                alter=int(alteration.get('step'))
                 state['accidentals'][(step,octave)]=alter
-                accidental={-2:'flat-flat',-1:'flat',0:'natural',1:'sharp',2:'double-sharp'}.get(alter)
+                # Capella frequently writes the key-signature sharp on
+                # every F note. A semantic pitch alteration is not always a
+                # printed accidental, especially when it is already in force.
+                display=alteration.get('display','')
+                if display!='suppress' and (
+                        alter!=prev or display in ('force','cautionary')):
+                    accidental={-2:'flat-flat',-1:'flat',0:'natural',
+                                1:'sharp',2:'double-sharp'}.get(alter)
             else:
-                alter=state['accidentals'].get((step,octave),key_fifths_map(state['key'])[step])
+                # <alter display="suppress"/> explicitly means no new
+                # accidental, not a natural sign or a pitch change.
+                alter=prev
             pitch=sub(note,'pitch');sub(pitch,'step',step)
             if alter:sub(pitch,'alter',alter)
             sub(pitch,'octave',octave)
