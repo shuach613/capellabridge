@@ -80,14 +80,9 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                             text = ET.Element('Text')
                             ET.SubElement(text, 'style').text = kind
                             body = ET.SubElement(text, 'text')
-                            # MuseScore's native text element stores rich-text
-                            # tags as XML children. A string containing "<br/>"
-                            # is escaped to "&lt;br/&gt;" and PRINTS literally.
-                            # Build actual <br/> nodes, preserving Unicode text.
-                            lines = value.splitlines()
-                            body.text = lines[0]
-                            for following in lines[1:]:
-                                ET.SubElement(body, 'br').tail = following
+                            # Use a literal newline in the native MuseScore
+                            # value; XML <br/> is not parsed as a paragraph.
+                            body.text = value
                             frame.insert(insertion_index, text)
                             insertion_index += 1
                         height = frame.find('height')
