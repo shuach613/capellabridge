@@ -7,8 +7,28 @@ picker.addEventListener('change',()=>{putFile(picker.files);picker.value='';});f
 document.querySelectorAll('input[name=layout]').forEach(x=>x.addEventListener('change',()=>document.querySelectorAll('.option').forEach(y=>y.classList.toggle('selected',y.querySelector('input').checked))));
 const node=(tag,text,cls)=>{const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(cls)el.className=cls;return el};
 function link(label,url,other=false){const a=node('a','↓ '+label,'download'+(other?' other':''));a.href=url;a.download='';return a;}
-function display(r){const card=node('article',undefined,'result-item');const top=node('div',undefined,'result-title');top.append(node('strong',r.source_filename),node('span',r.ok?`${r.measures??'—'} measures · ${(r.parts||[]).length||'—'} parts`:'Conversion failed'));card.append(top);
-if(!r.ok){card.append(node('p',r.error,'error'));return card;}const body=node('div',undefined,'result-body');const img=node('img');img.className='thumbnail';img.src=r.downloads.preview;img.alt='First page preview';body.append(img);const side=node('div');const links=node('div',undefined,'links');links.append(link('MuseScore',r.downloads.mscz),link('MusicXML',r.downloads.musicxml,true),link('PDF',r.downloads.pdf,true),link('Report',r.downloads.report,true));side.append(links);if(r.warnings?.length){const title=node('p','Review notes:');title.style.marginBottom='4px';side.append(title);const ul=node('ul',undefined,'warnings');for(const w of r.warnings)ul.append(node('li',w));side.append(ul);}body.append(side);card.append(body);return card;}
+function display(r){
+  const card=node('article',undefined,'result-item');
+  const heading=node('div',undefined,'result-title');
+  heading.append(node('strong',r.source_filename),node('span',r.ok?`${r.measures??'—'} measures · ${(r.parts||[]).length} parts`:'Needs attention'));
+  card.append(heading);
+  if(!r.ok){card.append(node('p',r.error,'error'));return card;}
+  const body=node('div',undefined,'result-body');
+  const img=node('img');img.className='thumbnail';img.loading='lazy';img.src=r.downloads.preview;img.alt='First page score preview';
+  body.append(img);
+  const side=node('div');
+  const links=node('div',undefined,'links');
+  links.append(link('MuseScore',r.downloads.mscz),link('MusicXML',r.downloads.musicxml,true),link('PDF',r.downloads.pdf,true),link('Report',r.downloads.report,true));
+  side.append(links);
+  if(r.warnings?.length){
+    const details=node('details',undefined,'review-details');
+    const summary=node('summary',`${r.warnings.length} review note${r.warnings.length===1?'':'s'}`);
+    const ul=node('ul',undefined,'warnings');
+    for(const message of r.warnings)ul.append(node('li',message));
+    details.append(summary,ul);side.append(details);
+  }
+  body.append(side);card.append(body);return card;
+}
 const progressPanel=document.getElementById('conversion-progress');
 const progressLabel=document.getElementById('progress-label');
 const progressFill=document.getElementById('progress-fill');
