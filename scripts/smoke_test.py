@@ -476,6 +476,41 @@ def main():
     assert get(record['downloads']['pdf']).startswith(b'%PDF-')
     print('Circus/Elfer boxed and circled headings rendered by native MuseScore',flush=True)
 
+    # Two distinct tempo encodings from the new source references:
+    # a printed Fyyrvogel quarter-note=95 grouped graphic and a Glaibasler
+    # playback-only tempo=180. Both must import into real MuseScore.
+    metronome_xml=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/3.0">'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices>'
+        '<voice><noteObjects><timeSign time="4/4"/>'
+        '<chord><duration base="1/4"/><drawObjects><drawObj><group>'
+        '<drawObj><text y="-7"><font face="capella3" height="18"/>'
+        '<content>¢</content></text></drawObj>'
+        '<drawObj><text y="-7"><font face="Times New Roman" height="10"/>'
+        '<content>=95</content></text></drawObj>'
+        '</group></drawObj></drawObjects>'
+        '<heads><head pitch="C5"/></heads></chord>'
+        '<chord tempo="180"><duration base="1/4"/>'
+        '<heads><head pitch="D5"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="E5"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="F5"/></heads></chord>'
+        '</noteObjects></voice></voices></staff></staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(metronome_xml,filename='TempoPrintAndPlayback.capx')
+    reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    record=reply['results'][0]
+    from xml.etree import ElementTree as ET
+    parsed=ET.fromstring(get(record['downloads']['musicxml']))
+    assert parsed.findtext('.//metronome/per-minute')=='95'
+    assert parsed.find('.//direction/sound[@tempo="95"]') is not None
+    assert parsed.find('./part/measure/sound[@tempo="180"]') is not None
+    with zipfile.ZipFile(io.BytesIO(get(record['downloads']['mscz']))) as z:
+        assert any(x.endswith('.mscx') for x in z.namelist())
+    assert get(record['downloads']['pdf']).startswith(b'%PDF-')
+    print('Printed 95 BPM and playback-only 180 BPM survived live MuseScore export',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
