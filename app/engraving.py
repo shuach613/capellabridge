@@ -84,7 +84,7 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                             # tags as XML children. A string containing "<br/>"
                             # is escaped to "&lt;br/&gt;" and PRINTS literally.
                             # Build actual <br/> nodes, preserving Unicode text.
-                            lines = value.split('\\n')
+                            lines = value.splitlines()
                             body.text = lines[0]
                             for following in lines[1:]:
                                 ET.SubElement(body, 'br').tail = following
