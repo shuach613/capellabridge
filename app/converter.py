@@ -1383,6 +1383,47 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         sub(credit,'credit-type','rights' if raw.startswith('©') else 'other')
         sub(credit,'credit-words',raw,default_x=x,default_y=y,
             justify=align,valign='top',font_size='9')
+    # Preserve closing attribution/dedication text that Capella anchors
+    # to the last system, rather than to the first-page pageObjects.
+    # Olymper and several Basel marches otherwise lose their final credits.
+    source_page_count=None
+    for box in root.xpath('./c:pageObjects/c:drawObj/c:text',namespaces=N):
+        content=child(box,'content')
+        if content is None:continue
+        pagination=' '.join(''.join(content.itertext()).split())
+        count_match=re.search(r'#\s*/\s*(\d{1,3})\b',pagination)
+        if count_match:
+            source_page_count=int(count_match.group(1))
+            break
+    if source_page_count and 1<=source_page_count<=200:
+        last_systems=root.xpath('./c:systems/c:system[last()]',namespaces=N)
+        if last_systems:
+            closing_credits=[]
+            for words in last_systems[0].xpath('.//c:drawObj/c:text',
+                                                 namespaces=N):
+                font=child(words,'font')
+                content=child(words,'content')
+                if font is None or content is None:continue
+                if font.get('face','').casefold() in ('capella','capella3'):
+                    continue
+                label=' '.join(''.join(content.itertext()).split())
+                try:
+                    size=float(font.get('height','0'))
+                    y=float(words.get('y','0'))
+                except ValueError:
+                    continue
+                if (7<=size<=12 and y>=4.5 and len(label)>=10 and
+                        any(ch.isalpha() for ch in label) and
+                        label not in closing_credits):
+                    closing_credits.append(label)
+            for i,label in enumerate(closing_credits):
+                credit=sub(score,'credit',page=source_page_count)
+                sub(credit,'credit-type','other')
+                sub(credit,'credit-words',label,
+                    default_x=('64' if i%2==0 else '1126'),
+                    default_y=str(64+(i//2)*20),
+                    justify=('left' if i%2==0 else 'right'),
+                    valign='bottom',font_size='8')
     plist=sub(score,'part-list')
     # Respect Capella's multi-staff brace/bracket grouping. This is structural,
     # and avoids MuseScore displaying four unrelated solo parts.
