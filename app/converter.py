@@ -360,6 +360,7 @@ def extract_metadata(root, filename=None):
     title = title_box[2][0]
     subtitle_lines = []
     composer = ''
+    title_height,title_y,_ = title_box
     for height, y, lines in sorted(text_boxes, key=lambda box: box[1]):
         if (height, y, lines) == title_box:
             # Some Capella documents combine title and byline in one box.
@@ -384,6 +385,13 @@ def extract_metadata(root, filename=None):
                 if remaining:
                     remaining=re.sub(r'\s+(?=Trommeltext:|Arr\.)','\n',remaining)
                     subtitle_lines.extend(remaining.splitlines())
+            elif (not composer and 8 <= height < title_height and
+                  title_y < y <= title_y + 8 and
+                  re.fullmatch(r'(?u)[A-ZÄÖÜ][A-Za-zÄÖÜäöüß. ]{3,45}',line)
+                  and not re.search(r'(?i)\b(?:trio|intro|solo|tutti)\b',line)):
+                # A compact Capella first-system credit (e.g. W. E. Saladin)
+                # can use a 9-point font, while the main title uses 16.
+                composer=line
             elif height >= 10 and len(line) > 3 and line not in subtitle_lines:
                 subtitle_lines.append(line)
     return title, '\n'.join(subtitle_lines), composer
@@ -436,7 +444,10 @@ def extract_variation_numbers(parts):
                         continue
                     face=font.get('face','').casefold()
                     if face in ('capella','capella3') and not (
-                            is_circled and re.fullmatch(r'[1-9]',label)):
+                            (is_circled and re.fullmatch(r'[1-9]',label))
+                            or (face=='capella3' and re.fullmatch(r'[1-9]',label)
+                                and float(font.get('height','0'))>=20
+                                and float(element.get('y','0'))<0)):
                         continue
                     try:
                         height=float(font.get('height','0'))
@@ -512,14 +523,15 @@ def extract_score_directions(parts):
             performance=re.search(
                 r'(?i)(\bfine\b|\bcoda\b|\bsegno\b|'
                 r'\bd\.?\s*c\.?\b|\bd\.?\s*s\.?\b|'
-                r'\btrommelsolo\b|\btutti\b|\bsolo\b|\btrio\b|'
+                r'\bda\s+capo\b|\btrommelsolo\b|\btutti\b|\bsolo\b|\btrio\b|'
                 r'\britardando\b|\brit\.?\b|\ba tempo\b|'
                 r'\baccelerando\b|\baccel\.?\b)',
                 label)
             special=re.search(
                 r'(?i)^(?:glockeneffekt|gliss(?:ando)?|finale)\b',label
             )
-            if (((performance and 10<=height<=20)
+            if (((performance and (10<=height<=20 or
+                                  (label.casefold()=='trio' and 7<=height<=20)))
                  or (special and 8<=height<=20))
                     and label not in out[event.time]):
                 out[event.time].append(label)
@@ -534,7 +546,7 @@ def add_score_direction(measure,label):
     # MusicXML playback navigation, in addition to the visible label.
     low=label.casefold()
     sound={}
-    if re.search(r'\bd\.?\s*c\.?(?:\s|$)',low):
+    if re.search(r'\bd\.?\s*c\.?(?:\s|$)|\bda\s+capo\b',low):
         sound['dacapo']='yes'
     if re.search(r'\bd\.?\s*s\.?(?:\s|$)',low):
         sound['dalsegno']='segno'
@@ -715,6 +727,12 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
     heads = children(child(ob,'heads'),'head') if event.kind=='chord' else [None]
     dnode=child(ob,'duration')
     marks=children(ob,'articulation')
+    # Capella's 0xCA music-font symbol (Ê) is a printed accent,
+    # distinct from the source's generic strongBeat playback convention.
+    glyphs=capella_glyphs(event)
+    if event.kind=='chord' and 'Ê' in glyphs and not any(
+            'normalAccent' in m.get('type','').split() for m in marks):
+        marks=marks+[ET.Element('articulation',type='normalAccent')]
     if suppress_uniform_strongbeat:
         # Widespread strongBeat markers are commonly a source-wide playback/
         # formatting convention, not thousands of individual marcato marks.
@@ -791,13 +809,13 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             sub(note,'notehead','x' if shape=='cross' else shape)
         gliss_start, gliss_end = graphic_links if graphic_links else ({},{})
         tuplet_start, tuplet_end = tuplet_links if tuplet_links else ({},{})
-        glyphs=capella_glyphs(event)
         graphical_trill=(
-            't' in glyphs or any(child(d,'trill') is not None for d in
+            't' in glyphs or '¿' in glyphs or any(child(d,'trill') is not None for d in
                                   children(child(ob,'drawObjects'),'drawObj'))
         )
         fermata_glyph='u' if 'u' in glyphs else 'k' if 'k' in glyphs else None
-        has_notation=bool(marks or ties or graphical_trill or fermata_glyph or id(event) in slur_starts
+        upper_mordent='l' in glyphs
+        has_notation=bool(marks or ties or graphical_trill or upper_mordent or fermata_glyph or id(event) in slur_starts
                           or id(event) in slur_ends or id(event) in gliss_start
                           or id(event) in gliss_end or id(event) in tuplet_start
                           or id(event) in tuplet_end)
@@ -815,8 +833,10 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                     sub(nt,'glissando',type='stop',number=sn,line_type='wavy')
                 for sn in gliss_start.get(id(event),[]):
                     sub(nt,'glissando',type='start',number=sn,line_type='wavy')
-                if graphical_trill:
-                    sub(sub(nt,'ornaments'),'trill-mark')
+                if graphical_trill or upper_mordent:
+                    ornaments=sub(nt,'ornaments')
+                    if graphical_trill:sub(ornaments,'trill-mark')
+                    if upper_mordent:sub(ornaments,'mordent')
                 if fermata_glyph:
                     sub(nt,'fermata',type=('upright' if fermata_glyph=='u' else 'inverted'))
             if marks and hi == 0:
