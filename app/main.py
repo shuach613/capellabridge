@@ -21,7 +21,7 @@ from .musescore import ConversionFailure, convert, create_preview, musescore_pat
 from .engraving import prepare_print_ready
 from .score_validation import audit_mscz, ScoreIntegrityError
 
-VERSION='1.7.0'
+VERSION='1.7.1'
 BASE=Path(os.environ.get('CAPELLABRIDGE_DATA','/data')).resolve()
 JOBS=BASE/'jobs'
 STATIC=Path(__file__).parent/'static'

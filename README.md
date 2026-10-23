@@ -31,6 +31,12 @@ An **.mscz** is verified as an actual MuseScore score, not merely a readable ZIP
 
 **Legacy .cap:** Uses MuseScore's legacy Capella importer. This pathway is best-effort; the native CAPX interpretation is more capable.
 
+## Version 1.7.1: cleaner articulations
+
+Some older CAPX sources apply `strongBeat` to virtually every chord. Rendering all those markers as individual marcato symbols produces a crowded and misleading score. CapellaBridge now recognizes a **near-universal strongBeat pattern** on substantial parts (at least 32 chords, at least 98% marked) and omits only that redundant token from engraved notation. The conversion report records the normalization.
+
+**Sparse, intentionally placed** `strongBeat` markings, explicit `strongAccent`, staccato, slurs, repeats, titles, and other notation are preserved. The change affects neither source pitch nor rhythm. Unit and live Docker smoke tests verify this before the new version is published.
+
 ## Deployment: Synology Container Manager / Docker Compose
 
 CapellaBridge provides a public prebuilt Linux **amd64** Docker image at `ghcr.io/shuach613/capellabridge:latest`. The configuration below exposes it on **port 9595**, with persistent application data. It avoids CPU quota controls that some Synology kernels do not support.
