@@ -401,12 +401,20 @@ def note_type(dur_node):
     return DURATION_TYPES.get(Fraction(dur_node.get('base','1/4')), 'quarter')
 
 
-def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None):
+def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False):
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
     heads = children(child(ob,'heads'),'head') if event.kind=='chord' else [None]
     dnode=child(ob,'duration')
     marks=children(ob,'articulation')
+    if suppress_uniform_strongbeat:
+        # Widespread strongBeat markers are commonly a source-wide playback/
+        # formatting convention, not thousands of individual marcato marks.
+        # Retain every other token (e.g. staccato, strongAccent) verbatim.
+        marks=[ET.Element('articulation', type=' '.join(
+            typ for typ in mark.get('type','').split() if typ != 'strongBeat'))
+               for mark in marks]
+        marks=[mark for mark in marks if mark.get('type')]
     is_grace = dnode is not None and dnode.get('noDuration') == 'true'
     is_full_measure_rest = (event.kind == 'rest' and dnode is not None
         and re.fullmatch(r'[1-9]\d*',dnode.get('base','')) is not None)
@@ -645,11 +653,39 @@ def make_tuplet_links(events):
     return starts,stops
 
 
+def uniformly_marked_voices(parts, articulation='strongBeat', minimum_chords=32):
+    """Find parts with a near-universal source articulation on their chords.
+
+    Distinguish implicit score-wide defaults from deliberate, isolated accents.
+    Only the ubiquitous token is omitted; other articulations remain editable.
+    """
+    affected = {}
+    for index, part in enumerate(parts):
+        chords = [event for event in part.events if event.kind == 'chord']
+        if len(chords) < minimum_chords:
+            continue
+        applied = sum(
+            articulation in mark.get('type','').split()
+            for event in chords
+            for mark in children(event.node, 'articulation')
+        )
+        if applied >= len(chords) * 0.98:
+            affected[index] = applied
+    return affected
+
+
 def serialize_musicxml(raw, layout='balanced'):
     """Returns (MusicXML bytes, report dict)."""
     if layout not in ('balanced','compact','original'):raise CapellaError('Invalid layout mode')
     root=read_capx(raw)
     parts,end,warnings=parse_score(root)
+    uniform_strongbeat=uniformly_marked_voices(parts)
+    if uniform_strongbeat:
+        names=', '.join(parts[i].name for i in sorted(uniform_strongbeat))
+        warnings.append(
+            'Uniform Capella strongBeat marks omitted from notation in '
+            f'{names}; explicitly selected accents and other articulations remain.'
+        )
     boundaries,meter=compute_boundaries(parts,end)
     if len(boundaries)<2: raise CapellaError('Could not determine measures')
     # CapXML permits tuplets whose prime denominators (e.g. 11, 13)
@@ -800,7 +836,8 @@ def serialize_musicxml(raw, layout='balanced'):
                                 f'measure {mi+1}; source measure boundaries need review.'
                             )
                         nnotes+=make_note(measure,e,voice,state,slur_starts,slur_ends,active_divisions,
-                                          graphic_links,tuplet_links)
+                                          graphic_links,tuplet_links,
+                                          suppress_uniform_strongbeat=pi in uniform_strongbeat)
                         cursor=e.time+e.dur
                 if cursor<stop:
                     sub(sub(measure,'forward'),'duration',to_div(stop-cursor,active_divisions))
@@ -841,6 +878,7 @@ def serialize_musicxml(raw, layout='balanced'):
             'notation_features':features,
             'notation_not_fully_interpreted':unsupported,
             'print_review_recommended':True,
+            'normalized_uniform_strongbeat':sum(uniform_strongbeat.values()),
             'repeat_boundaries':{
                 'forward':sum(repeat_start(p) for p in boundaries),
                 'backward':sum(repeat_end(p) for p in boundaries)
