@@ -51,7 +51,7 @@ def test_capella_ornaments_staccato_marcato_glissando_and_trill():
     xml=('<score xmlns="http://www.capella.de/CapXML/2.0"><layout><staves>'
          '<staffLayout description="Flute"/></staves></layout><systems>'
          '<system><staves><staff layout="Flute"><voices><voice><noteObjects>'
-         '<timeSign time="2/4"/>'+notes
+         '<timeSign time="2/4"/>'+notes+
          '</noteObjects></voice></voices></staff></staves></system>'
          '</systems></score>')
     music,report=serialize_musicxml(as_capx(xml))
