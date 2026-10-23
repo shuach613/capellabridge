@@ -55,10 +55,16 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                     # right-hand page margin. Use native MuseScore text items
                     # so the title frame grows vertically, not horizontally.
                     credits = [('Title', metadata.get('title', ''))]
+                    subtitle_lines = []
                     for paragraph in metadata.get('subtitle', '').splitlines():
-                        for line in textwrap.wrap(paragraph.strip(), width=62,
-                                                  break_long_words=False):
-                            credits.append(('Subtitle',line))
+                        subtitle_lines.extend(textwrap.wrap(
+                            paragraph.strip(), width=50, break_long_words=False
+                        ))
+                    # MuseScore positions separate "Subtitle" Text nodes at
+                    # the SAME baseline. A single rich-text block with <br/>
+                    # keeps lines distinct and prevents the observed overlap.
+                    if subtitle_lines:
+                        credits.append(('Subtitle','<br/>'.join(subtitle_lines)))
                     if metadata.get('composer'):
                         credits.append(('Composer',metadata['composer']))
                     old_credits = [element for element in frame.findall('Text')
