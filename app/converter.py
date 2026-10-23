@@ -9,6 +9,7 @@ import io
 import re
 import zipfile
 import collections
+from math import lcm
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -88,8 +89,8 @@ def duration_of(node, meter=None):
     return duration
 
 
-def to_div(f):
-    value = f * DIVISIONS * 4
+def to_div(f, divisions=DIVISIONS):
+    value = f * divisions * 4
     if value.denominator != 1:
         raise ValueError(f'Unsupported rhythmic subdivision: {f}')
     return value.numerator
@@ -339,10 +340,10 @@ def compute_boundaries(parts, end):
     return sorted(bars),opening
 
 
-def add_attributes(measure, key=None, time=None, clef=None, transpose=0, initial=False):
+def add_attributes(measure, key=None, time=None, clef=None, transpose=0, initial=False, divisions=DIVISIONS):
     if not initial and key is None and time is None and clef is None:return
     attrs = sub(measure, 'attributes')
-    if initial:sub(attrs, 'divisions', DIVISIONS)
+    if initial:sub(attrs, 'divisions', divisions)
     if key is not None:sub(sub(attrs,'key'), 'fifths',key)
     if time is not None:
         times = sub(attrs,'time')
@@ -359,7 +360,7 @@ def note_type(dur_node):
     return DURATION_TYPES.get(Fraction(dur_node.get('base','1/4')), 'quarter')
 
 
-def make_note(meas, event, voice, state, slur_starts, slur_ends):
+def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS):
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
     heads = children(child(ob,'heads'),'head') if event.kind=='chord' else [None]
@@ -397,7 +398,7 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends):
             if ti is not None:
                 if ti.get('end')=='true':ties.append('stop')
                 if ti.get('begin')=='true':ties.append('start')
-        if not is_grace:sub(note,'duration',to_div(event.dur))
+        if not is_grace:sub(note,'duration',to_div(event.dur, divisions))
         for tp in ties:sub(note,'tie',type=tp)
         sub(note,'voice',voice)
         if dnode is not None and not is_full_measure_rest:
@@ -464,6 +465,19 @@ def serialize_musicxml(raw, layout='balanced'):
     parts,end,warnings=parse_score(root)
     boundaries,meter=compute_boundaries(parts,end)
     if len(boundaries)<2: raise CapellaError('Could not determine measures')
+    # CapXML permits tuplets whose prime denominators (e.g. 11, 13)
+    # cannot be represented by the old fixed 10080 divisions/quarter.
+    # Select exact divisions for this score; never round note timings.
+    active_divisions = DIVISIONS
+    for part in parts:
+        for event in part.events:
+            if event.dur:
+                active_divisions = lcm(active_divisions,(event.dur*4).denominator)
+    for begin, finish in zip(boundaries, boundaries[1:]):
+        active_divisions = lcm(active_divisions,((finish-begin)*4).denominator)
+    if active_divisions > 5_000_000:
+        raise CapellaError('Score requires an impractically fine rhythmic grid; '
+                           'cannot safely encode it in MusicXML.')
     title,subtitle,composer=extract_metadata(root)
     variation_numbers=extract_variation_numbers(parts)
     score=ET.Element('score-partwise',version='4.0')
@@ -543,18 +557,18 @@ def serialize_musicxml(raw, layout='balanced'):
             if pi==0 and start in variation_numbers:
                 add_variation_heading(measure,variation_numbers[start])
             if mi==0:
-                add_attributes(measure, key=0, time=str(meter.numerator)+'/'+str(meter.denominator),clef='treble',transpose=p.transpose,initial=True)
+                add_attributes(measure, key=0, time=str(meter.numerator)+'/'+str(meter.denominator),clef='treble',transpose=p.transpose,initial=True,divisions=active_divisions)
             state['accidentals']={}
             vs=sorted({e.voice for e in events if start<=e.time<stop})
             if not vs:vs=[1]
             for vsi,voice in enumerate(vs):
                 if vsi:
-                    back=sub(measure,'backup');sub(back,'duration',to_div(stop-start))
+                    back=sub(measure,'backup');sub(back,'duration',to_div(stop-start,active_divisions))
                 ve=[e for e in events if e.voice==voice and start<=e.time<stop]
                 cursor=start
                 for e in ve:
                     if e.time>cursor:
-                        sub(sub(measure,'forward'),'duration',to_div(e.time-cursor))
+                        sub(sub(measure,'forward'),'duration',to_div(e.time-cursor,active_divisions))
                         cursor=e.time
                     if e.kind in ('chord','rest') and e.time<cursor:
                         raise CapellaError(
@@ -577,10 +591,10 @@ def serialize_musicxml(raw, layout='balanced'):
                                 f'Note crosses a barline in {p.name}, voice {voice}, '
                                 f'measure {mi+1}; source measure boundaries need review.'
                             )
-                        nnotes+=make_note(measure,e,voice,state,slur_starts,slur_ends)
+                        nnotes+=make_note(measure,e,voice,state,slur_starts,slur_ends,active_divisions)
                         cursor=e.time+e.dur
                 if cursor<stop:
-                    sub(sub(measure,'forward'),'duration',to_div(stop-cursor))
+                    sub(sub(measure,'forward'),'duration',to_div(stop-cursor,active_divisions))
             left_repeat=primary_barlines.get(start) in ('repBegin','repEndBegin')
             if left_repeat or (pi==0 and start in ending_starts):
                 bl=sub(measure,'barline',location='left')
