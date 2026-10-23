@@ -539,7 +539,9 @@ def extract_variation_numbers(parts):
                 captions=[text for text,size,cy,_ in nearby
                           if text!=label and 8<=size<=12 and cy<0
                           and re.fullmatch(r'[A-Za-zÄÖÜäöüß][\wÄÖÜäöüß .,\'-]{3,55}',text)
-                          and not re.search(r'(?i)\b(?:arr\.|von|seite|trommeltext)\b',text)]
+                          and not re.search(r'(?i)\b(?:arr\.|von|seite|trommeltext)\b',text)
+                          and not re.search(r'\b(?:18|19|20)\d{2}\b',text)
+                          and not re.match(r'(?i)^\d+\.\s*(?:schtimm|stimm)',text)]
                 if captions:
                     label=f'{label} {captions[0]}'
             markers.setdefault(event.time,label)
