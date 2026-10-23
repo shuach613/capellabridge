@@ -258,6 +258,41 @@ def extract_metadata(root):
     Capella often combines subtitle and composer in one multiline text box.
     Preserve those line breaks before selecting the prominent heading.
     """
+    # Some Capella scores put the title and composer in *pageObjects*
+    # rather than on notes in the first system (Vaudois, Waggis, Calvados).
+    # These credits are separate from headers showing "# / 4" page numbers
+    # and from bottom-of-page D.C./Fine instructions.
+    page_boxes=[]
+    for item in root.xpath('./c:pageObjects/c:drawObj/c:text',namespaces=N):
+        font=child(item,'font')
+        content=child(item,'content')
+        if font is None or content is None:
+            continue
+        value=' '.join(''.join(content.itertext()).split())
+        try:
+            size=int(font.get('height','0'))
+            x=float(item.get('x','0'))
+            y=float(item.get('y','0'))
+        except ValueError:
+            continue
+        if (size<10 or y>25 or not value or '#' in value
+                or re.search(r'\\b(?:seite|page)\\b',value,re.I)):
+            continue
+        page_boxes.append((size,x,y,value))
+    if page_boxes:
+        title_box=max(page_boxes,key=lambda box:box[0])
+        title=title_box[3]
+        composer=''
+        subtitle_lines=[]
+        for size,x,y,value in page_boxes:
+            if (size,x,y,value)==title_box:
+                continue
+            if x>=title_box[1]+23 and size>=10 and not composer:
+                composer=value
+            elif value not in subtitle_lines:
+                subtitle_lines.append(value)
+        return title,'\\n'.join(subtitle_lines),composer
+
     text_boxes = []
     for item in root.xpath('//c:systems/c:system[1]//c:drawObj/c:text', namespaces=N):
         font = child(item, 'font')
