@@ -141,7 +141,7 @@ def test_uncle_sam_embedded_rtf_navigation_is_not_silently_lost():
     rtf=(r'{\rtf1\ansi{\fonttbl{\f0 capella3;}{\f1 Arial;}}'
          r'\pard\f0 e\f1  al \f0 $\f1  con rep. et poi Coda\par}')
     file=io.BytesIO()
-    with zipfile.ZipFile(original) as previous, zipfile.ZipFile(file,'w') as updated:
+    with zipfile.ZipFile(io.BytesIO(original)) as previous, zipfile.ZipFile(file,'w') as updated:
         updated.writestr('score.xml',previous.read('score.xml'))
         updated.writestr('obj____1.rtf',rtf.encode('cp1252'))
     xml,report=output(file.getvalue())
