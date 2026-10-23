@@ -925,6 +925,20 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     title,subtitle,composer=extract_metadata(root, filename)
     variation_numbers=extract_variation_numbers(parts)
     score_directions=extract_score_directions(parts)
+    # Short standalone page-level introduction labels are not score credits.
+    # Capella 3.0 scores such as Fyyrvogel place 'Intro' just above the
+    # first system, rather than attaching it to a note.
+    for item in root.xpath('./c:pageObjects/c:drawObj/c:text',namespaces=N):
+        content=child(item,'content')
+        if content is None:continue
+        label=' '.join(''.join(content.itertext()).split())
+        try:
+            y=float(item.get('y','0'))
+        except ValueError:
+            continue
+        if (8 <= y <= 18 and label.casefold() in ('intro','trommelsolo')
+                and label not in score_directions.get(Fraction(0),[])):
+            score_directions.setdefault(Fraction(0),[]).append(label)
     score=ET.Element('score-partwise',version='4.0')
     work=sub(score,'work');sub(work,'work-title',title)
     sub(score,'movement-title',title)
