@@ -583,6 +583,57 @@ def main():
         assert any(x.endswith('.mscx') for x in z.namelist())
     print('Preusse inline 100/110 BPM and multi-digit section survived MuseScore export',flush=True)
 
+    # A source-shaped four-part Sperber fixture: the visible author, date
+    # and dedication stay together, while composer metadata is name-only.
+    # The full original score is private and not stored in this test.
+    page=(
+        '<pageObjects>'
+        '<drawObj><text x="49.90625" y="3"><font face="Bookman Old Style" height="16"/>'
+        '<content>Sperber</content></text></drawObj>'
+        '<drawObj><text x="49.96875" y="6.0625">'
+        '<font face="Bookman Old Style" height="9"/>'
+        '<content>René Brielmann, 22.06.1983, für die Musketiere</content>'
+        '</text></drawObj></pageObjects>'
+    )
+    staves=[]
+    layouts=[]
+    for number in range(4):
+        name='Piccolo-'+str(number+1)
+        layouts.append('<staffLayout description="'+name+'"/>')
+        score_marks=(
+            '<drawObjects><drawObj><text x="-2" y="-5">'
+            '<font face="capella3" height="22"/>'
+            '<content>1</content></text></drawObj></drawObjects>'
+            if number==0 else '')
+        staves.append(
+            '<staff layout="'+name+'"><voices><voice><noteObjects>'
+            '<timeSign time="2/4"/><chord><duration base="1/4"/>'
+            +score_marks+'<heads><head pitch="C5"/></heads></chord>'
+            '<chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>'
+            '</noteObjects></voice></voices></staff>')
+    mini=(
+        '<score xmlns="http://www.capella.de/CapXML/3.0">'+page
+        +'<layout><staves>'+''.join(layouts)+'</staves></layout>'
+        '<systems><system><staves>'+''.join(staves)
+        +'</staves></system></systems></score>'
+    ).encode('utf-8')
+    body,ctype=make_upload(mini,filename='Sperber.capx')
+    reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    item=reply['results'][0]
+    assert item['title']=='Sperber'
+    assert item['composer']=='René Brielmann'
+    assert item['subtitle']=='René Brielmann, 22.06.1983, für die Musketiere'
+    xmltree=ET.fromstring(get(item['downloads']['musicxml']))
+    assert len(xmltree.findall('./part'))==4
+    assert xmltree.findtext('./identification/creator[@type="composer"]')=='René Brielmann'
+    visible=[v.text for v in xmltree.findall('./credit/credit-words')]
+    assert visible.count('René Brielmann, 22.06.1983, für die Musketiere')==1
+    assert get(item['downloads']['pdf']).startswith(b'%PDF-')
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        assert any(n.endswith('.mscx') for n in z.namelist())
+    print('Sperber composer and full printed dedication survived native MuseScore export',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
