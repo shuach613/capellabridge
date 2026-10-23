@@ -384,8 +384,8 @@ def extract_metadata(root, filename=None):
                 subtitle_lines.append(lines[0])
                 continue
             dedication_credit=re.fullmatch(
-                r'(?u)([A-ZÄÖÜ][A-Za-zÄÖÜäöüß-]+(?:\s+[A-ZÄÖÜ]'
-                r'[A-Za-zÄÖÜäöüß-]+){1,3}),\s*\d{1,2}\.\d{1,2}\.'
+                r'(?u)([A-ZÄÖÜ][^\W\d_]+(?:\s+[A-ZÄÖÜ]'
+                r'[^\W\d_]+){1,3}),\s*\d{1,2}\.\d{1,2}\.'
                 r'\d{4},\s*für\s+.+',lines[0])
             if (len(lines)==1 and not composer and byline_below
                     and dedication_credit):
