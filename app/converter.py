@@ -160,9 +160,9 @@ def read_capx(raw: bytes):
     except ET.XMLSyntaxError as exc:
         raise CapellaError('Invalid score XML') from exc
     source_namespace=ET.QName(root).namespace
-    allowed={f'http://www.capella.de/CapXML/{v}.0' for v in (1,2,3)}
+    allowed={f'http://www.capella.de/CapXML/{v}.0' for v in (1,2,3,4)}
     if tag(root)!='score' or source_namespace not in allowed:
-        raise CapellaError('Unsupported CapXML format: expected CapXML 1.0, 2.0 or 3.0')
+        raise CapellaError('Unsupported CapXML format: expected CapXML 1.0, 2.0, 3.0 or 4.0')
     if source_namespace != CAP_NS:
         # The notation primitives in these CapXML versions share element
         # names. Normalize element namespaces in-memory, not the raw XML
@@ -340,6 +340,18 @@ def extract_metadata(root, filename=None):
         subtitle_lines=[]
         for size,x,y,lines in page_boxes:
             if (size,x,y,lines)==title_box: continue
+            # Capella may combine a composer and arrangement credit in one
+            # multiline page text (e.g. "von W. A. Mozart" followed by
+            # "für 4 Piccolo arr. ..."). Preserve both semantic fields.
+            if len(lines)>1:
+                first=lines[0]
+                explicit=re.match(r'(?i)^(?:von|by)\s+(.+)$',first)
+                if explicit and not composer:
+                    composer=explicit.group(1).strip()
+                    subtitle_lines.extend(lines[1:])
+                else:
+                    subtitle_lines.extend(v for v in lines if v not in subtitle_lines)
+                continue
             byline_below=(len(lines)==1 and size>=8 and
                           y>title_box[2] and abs(x-title_box[1])<=15)
             contribution=bool(re.match(
@@ -364,13 +376,19 @@ def extract_metadata(root, filename=None):
     has_graphical_title=bool(root.xpath(
         './c:pageObjects/c:drawObj/c:metafile',namespaces=N))
     if has_graphical_title and filename:
-        title=Path(filename).stem.replace('_',' ').strip() or 'Converted score'
+        title=re.sub(r'\s*\(\d+\)$','',
+                     Path(filename).stem.replace('_',' ').strip()) or 'Converted score'
         composer=''
         subtitles=[]
         for size,x,y,lines in page_boxes:
             if x>=70 and size>=10 and not composer:
                 composer=lines[0]
                 subtitles.extend(lines[1:])
+                break
+        if 'Trommeltext:' in composer:
+            lead,drums=composer.split('Trommeltext:',1)
+            composer=lead.strip()
+            subtitles.append('Trommeltext: '+drums.strip())
         return title,'\n'.join(subtitles),composer
 
     text_boxes = []
@@ -427,15 +445,17 @@ def extract_metadata(root, filename=None):
                 if remaining:
                     remaining=re.sub(r'\s+(?=Trommeltext:|Arr\.)','\n',remaining)
                     subtitle_lines.extend(remaining.splitlines())
-            elif (not composer and 8 <= height <= 10 and
+            elif (not composer and len(lines)==1 and 8 <= height <= 10 and
                   title_y < y <= title_y + 8 and
                   re.fullmatch(r'(?u)[A-ZÄÖÜ][A-Za-zÄÖÜäöüß. ]{3,45}',line)
                   and not re.search(r'(?i)\b(?:trio|intro|solo|tutti)\b',line)):
                 # A compact Capella first-system credit (e.g. W. E. Saladin)
                 # can use a 9-point font, while the main title uses 16.
                 composer=line
-            elif height >= 10 and len(line) > 3 and line not in subtitle_lines:
-                subtitle_lines.append(line)
+            elif (height >= 10 or (height >= 8 and len(lines)>1
+                    and title_y <= y <= title_y + 10)) and len(line)>3:
+                if line not in subtitle_lines:
+                    subtitle_lines.append(line)
     extra_composer,extra_lines=first_system_named_credits(root)
     if not composer:
         composer=extra_composer
@@ -587,9 +607,15 @@ def extract_score_directions(parts):
             special=re.search(
                 r'(?i)^(?:glockeneffekt|gliss(?:ando)?|finale)\b',label
             )
+            # Medleys often use a small italic tune caption such as
+            # "The chimes of Liberty (Goldman)" on each new theme.
+            tune_caption=(y<0 and re.fullmatch(
+                r'(?u)[^()\n]{4,65}\s+\([A-ZÄÖÜ][\wÄÖÜäöüß .'-]{2,35}\)',
+                label) is not None)
             if (((performance and (10<=height<=20 or
                                   (label.casefold()=='trio' and 7<=height<=20)))
-                 or (special and 8<=height<=20))
+                 or (special and 8<=height<=20)
+                 or (tune_caption and 8<=height<=15))
                     and label not in out[event.time]):
                 out[event.time].append(label)
     return dict(out)
@@ -598,8 +624,14 @@ def extract_score_directions(parts):
 def add_score_direction(measure,label):
     direction=sub(measure,'direction',placement='above')
     kind=sub(direction,'direction-type')
-    sub(kind,'words',label,font_size='10',font_weight='bold',
-        relative_y='16',justify='left')
+    is_tune=bool(re.fullmatch(
+        r'(?u)[^()\n]{4,65}\s+\([A-ZÄÖÜ][\wÄÖÜäöüß .'-]{2,35}\)',label))
+    if is_tune:
+        sub(kind,'words',label,font_size='9',font_style='italic',
+            color='#008000',relative_y='16',justify='left')
+    else:
+        sub(kind,'words',label,font_size='10',font_weight='bold',
+            relative_y='16',justify='left')
     # MusicXML playback navigation, in addition to the visible label.
     low=label.casefold()
     sound={}
@@ -1206,11 +1238,12 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     identification=sub(score,'identification')
     if composer:sub(identification,'creator',composer,type='composer')
     for credit_line in subtitle.splitlines():
-        arranged=re.match(
-            r'(?i)^(?:arrangiert\s+(?:vom|von)|arr\.\s*(?:von)?|bearb\.\s*(?:von)?)\s+(.+)$',
+        arranged=re.search(
+            r'(?i)(?:^|[\s,])(?:arrangiert\s+(?:vom|von)|arr\.\s*(?:von)?|bearb\.\s*(?:von)?)\s+(.+)$',
             credit_line.strip())
         if arranged:
-            sub(identification,'creator',arranged.group(1).strip(),type='arranger')
+            name=re.sub(r',\s*(?:18|19|20)\d{2}\s*$','',arranged.group(1).strip())
+            sub(identification,'creator',name,type='arranger')
     defaults=sub(score,'defaults');scaling=sub(defaults,'scaling');sub(scaling,'millimeters',{'balanced':'6.4','compact':'5.8','original':'6.0'}[layout]);sub(scaling,'tenths','40')
     page=sub(defaults,'page-layout');sub(page,'page-height','1683.78');sub(page,'page-width','1190.55')
     margins=sub(page,'page-margins',type='both');sub(margins,'left-margin','64');sub(margins,'right-margin','64');sub(margins,'top-margin','64');sub(margins,'bottom-margin','64')
