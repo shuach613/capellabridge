@@ -791,6 +791,14 @@ def serialize_musicxml(raw, layout='balanced'):
             f'{names}; explicitly selected accents and other articulations remain.'
         )
     boundaries,meter=compute_boundaries(parts,end)
+    # A time signature's written form is semantically significant: 2/4 is
+    # NOT displayed as 1/2, and 6/8 is NOT displayed as 3/4, even though
+    # both pairs have equal Fraction values.
+    opening_time=next((
+        event.node.get('time','4/4')
+        for event in parts[0].events
+        if event.kind=='timeSign' and event.time==0
+    ),str(meter.numerator)+'/'+str(meter.denominator))
     if len(boundaries)<2: raise CapellaError('Could not determine measures')
     # CapXML permits tuplets whose prime denominators (e.g. 11, 13)
     # cannot be represented by the old fixed 10080 divisions/quarter.
@@ -906,7 +914,7 @@ def serialize_musicxml(raw, layout='balanced'):
         slur_starts,slur_ends=make_slur_links(events)
         graphic_links=make_graphic_links(events)
         tuplet_links=make_tuplet_links(events)
-        state={'key':0,'time':str(meter.numerator)+'/'+str(meter.denominator),'clef':'treble','accidentals':{}}
+        state={'key':0,'time':opening_time,'clef':'treble','accidentals':{}}
         nnotes=0
         for mi in range(measure_count):
             start,stop=boundaries[mi],boundaries[mi+1]
@@ -925,7 +933,7 @@ def serialize_musicxml(raw, layout='balanced'):
             if pi==0 and start in variation_numbers:
                 add_variation_heading(measure,variation_numbers[start])
             if mi==0:
-                add_attributes(measure, key=0, time=str(meter.numerator)+'/'+str(meter.denominator),clef='treble',transpose=p.transpose,initial=True,divisions=active_divisions)
+                add_attributes(measure, key=0, time=opening_time,clef='treble',transpose=p.transpose,initial=True,divisions=active_divisions)
             # A staff which exists only in later Capella systems must not
             # appear throughout the entire score. MusicXML staff-details
             # controls its visibility independently of musical durations.
