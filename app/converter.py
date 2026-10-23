@@ -314,7 +314,7 @@ def extract_variation_numbers(parts):
     """
     markers = {}
     for event in parts[0].events:
-        if event.kind != 'chord' or event.voice != 1:
+        if event.kind not in ('chord','rest') or event.voice != 1:
             continue
         for draw in children(child(event.node, 'drawObjects'), 'drawObj'):
             element = child(draw, 'text')
@@ -799,6 +799,20 @@ def serialize_musicxml(raw, layout='balanced'):
             if volta is not None and volta.get('firstNumber'):
                 ending_starts[event.time]=volta.get('firstNumber')
 
+    # Staves introduced or removed later need a system boundary even when
+    # the user selected Balanced/Compact; otherwise a fourth part can appear
+    # halfway through an existing printed system.
+    indexed_system_starts = {
+        min(e.time for e in parts[0].events if e.system == si): si
+        for si in sorted({e.system for e in parts[0].events})
+    }
+    staff_transition_starts = {
+        t for t,si in indexed_system_starts.items()
+        if si > 0 and any(
+            (si in part.present_systems) != (si-1 in part.present_systems)
+            for part in parts
+        )
+    }
     measure_count=len(boundaries)-1
     # Record each source system's actual *first event*. Looking for any
     # event from a noninitial system marks every later bar as a line break.
@@ -824,14 +838,31 @@ def serialize_musicxml(raw, layout='balanced'):
             measure=sub(pr,'measure',number=mi+1)
             # Score-wide system breaks and bar numbers belong only to the
             # leading part. One print instruction per affected measure.
-            if pi == 0 and (mi == 0 or (layout == 'original' and start in valid_system_starts)):
-                layout_print = sub(measure, 'print', **({'new_system':'yes'} if mi > 0 else {}))
+            new_system = mi>0 and (
+                (layout == 'original' and start in valid_system_starts)
+                or start in staff_transition_starts
+            )
+            if pi == 0 and (mi == 0 or new_system):
+                layout_print = sub(measure, 'print',
+                                   **({'new_system':'yes'} if new_system else {}))
                 if mi == 0:
                     sub(layout_print, 'measure-numbering', 'system')
             if pi==0 and start in variation_numbers:
                 add_variation_heading(measure,variation_numbers[start])
             if mi==0:
                 add_attributes(measure, key=0, time=str(meter.numerator)+'/'+str(meter.denominator),clef='treble',transpose=p.transpose,initial=True,divisions=active_divisions)
+            # A staff which exists only in later Capella systems must not
+            # appear throughout the entire score. MusicXML staff-details
+            # controls its visibility independently of musical durations.
+            visibility = None
+            if mi==0 and 0 not in p.present_systems:
+                visibility='no'
+            elif start in indexed_system_starts:
+                si=indexed_system_starts[start]
+                if si>0 and (si in p.present_systems)!=(si-1 in p.present_systems):
+                    visibility='yes' if si in p.present_systems else 'no'
+            if visibility is not None:
+                sub(sub(measure,'attributes'),'staff-details',print_object=visibility)
             state['accidentals']={}
             vs=sorted({e.voice for e in events if start<=e.time<stop})
             if not vs:vs=[1]
@@ -909,6 +940,9 @@ def serialize_musicxml(raw, layout='balanced'):
             'notation_not_fully_interpreted':unsupported,
             'print_review_recommended':True,
             'normalized_uniform_strongbeat':sum(uniform_strongbeat.values()),
+            'variable_staff_systems':any(
+                len(p.present_systems)!=len(children(child(root,'systems'),'system'))
+                for p in parts),
             'repeat_boundaries':{
                 'forward':sum(repeat_start(p) for p in boundaries),
                 'backward':sum(repeat_end(p) for p in boundaries)
