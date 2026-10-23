@@ -429,8 +429,8 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends):
                     mapped={'staccato':'staccato','tenuto':'tenuto',
                         'staccatissimo':'staccatissimo','normalAccent':'accent',
                         'strongAccent':'strong-accent','accent':'accent',
-                        'marcato':'strong-accent','weakBeat':'detached-legato',
-                        'strongBeat':'staccato'}
+                        'marcato':'strong-accent','weakBeat':'unstress',
+                        'strongBeat':'stress'}
                     for typ in types:
                         tagname=mapped.get(typ)
                         if tagname:sub(articulations,tagname)
