@@ -64,7 +64,7 @@ jobs:
           chmod 700 /tmp/musescore4-runtime
           MU_QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORM=offscreen \
             XDG_RUNTIME_DIR=/tmp/musescore4-runtime \
-            /tmp/squashfs-root/AppRun -m -o /tmp/studio4-roundtrip.musicxml \
+            /tmp/squashfs-root/AppRun -o /tmp/studio4-roundtrip.musicxml \
             /tmp/capellabridge-studio4.mscz 2>&1 | tee /tmp/musescore4-validation.log
           test -s /tmp/studio4-roundtrip.musicxml
           if grep -Eiq 'file is corrupted|score is corrupt|measure .*incomplete' /tmp/musescore4-validation.log; then
