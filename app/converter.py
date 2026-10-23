@@ -627,7 +627,25 @@ def serialize_musicxml(raw, layout='balanced'):
         inst=sub(sp,'score-instrument',id=f'I{pi+1}');sub(inst,'instrument-name',p.name)
         midi=sub(sp,'midi-instrument',id=f'I{pi+1}');sub(midi,'midi-channel',(pi%15)+1);sub(midi,'midi-program',p.midi_program)
     if grouping:sub(plist,'part-group',type='stop',number='1')
-    primary_barlines={e.time:e.node.get('type','regular') for e in parts[0].events if e.kind=='barline' and e.voice==1}
+    # Boundary markers can be supplied twice at the same timestamp:
+    # a repeat end at the end of a system and a repeat begin at the next.
+    # Do NOT store them in a time->single-type dictionary: last-write-wins
+    # drops the backward repeat (seven times in Alte Schwytzer).
+    boundary_marks=collections.defaultdict(set)
+    for event in parts[0].events:
+        if event.kind=='barline' and event.voice==1:
+            boundary_marks[event.time].add(event.node.get('type','single'))
+    def repeat_start(position):
+        return bool(boundary_marks[position] &
+                    {'repBegin','repEndBegin'})
+    def repeat_end(position):
+        return bool(boundary_marks[position] &
+                    {'repEnd','repEndBegin'})
+    def other_barline(position):
+        types=boundary_marks[position]
+        return 'end' if 'end' in types else 'double' if 'double' in types else (
+            'dashed' if 'dashed' in types else None
+        )
     # Most Capella ending brackets are attached graphically to the first chord
     # of the ending measure. Their firstNumber is a semantic indicator.
     ending_starts={}
@@ -706,26 +724,28 @@ def serialize_musicxml(raw, layout='balanced'):
                         cursor=e.time+e.dur
                 if cursor<stop:
                     sub(sub(measure,'forward'),'duration',to_div(stop-cursor,active_divisions))
-            left_repeat=primary_barlines.get(start) in ('repBegin','repEndBegin')
+            left_repeat=repeat_start(start)
             if left_repeat or (pi==0 and start in ending_starts):
                 bl=sub(measure,'barline',location='left')
                 if pi==0 and start in ending_starts:
                     num=ending_starts[start]
                     sub(bl,'ending',f'{num}.',number=num,type='start')
                 if left_repeat:sub(bl,'repeat',direction='forward')
-            right_type=primary_barlines.get(stop)
-            if right_type in ('repEnd','repEndBegin','double','end') or (pi==0 and start in ending_starts):
+            right_type=other_barline(stop)
+            right_repeat=repeat_end(stop)
+            if right_repeat or right_type or (pi==0 and start in ending_starts):
                 bl=sub(measure,'barline',location='right')
-                if right_type in ('double','end'):
-                    sub(bl,'bar-style','light-light' if right_type=='double' else 'light-heavy')
+                if right_type:
+                    sub(bl,'bar-style',{'double':'light-light','end':'light-heavy',
+                                        'dashed':'dashed'}[right_type])
                 if pi==0 and start in ending_starts:
                     sub(bl,'ending',number=ending_starts[start],type='stop' if ending_starts[start]=='1' else 'discontinue')
-                if right_type in ('repEnd','repEndBegin'):sub(bl,'repeat',direction='backward')
+                if right_repeat:sub(bl,'repeat',direction='backward')
             if mi==0 and start==0 and stop<meter:
                 measure.set('implicit','yes')
     # Notation-level warnings: emphasize these instead of silently promising fidelity.
-    if root.xpath('//c:volta',namespaces=N):
-        warnings.append('Graphical ending brackets have been interpreted as 1st/2nd endings; verify playback order.')
+    if root.xpath('//c:systems//c:volta | //c:pageObjects//c:volta',namespaces=N):
+        warnings.append('Some graphical ending brackets may need layout review.')
     if root.xpath('//c:trill',namespaces=N):
         warnings.append('Some graphical trill spans are not yet semantically reconstructed.')
     if root.xpath('//c:drawObj/c:text[c:font[@face="capella3"]]',namespaces=N):
@@ -740,5 +760,9 @@ def serialize_musicxml(raw, layout='balanced'):
             'variation_numbers':list(variation_numbers.values()),
             'notation_features':features,
             'notation_not_fully_interpreted':unsupported,
-            'print_review_recommended':True}
+            'print_review_recommended':True,
+            'repeat_boundaries':{
+                'forward':sum(repeat_start(p) for p in boundaries),
+                'backward':sum(repeat_end(p) for p in boundaries)
+            }}
     return data,report
