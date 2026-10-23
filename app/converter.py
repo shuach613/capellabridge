@@ -136,6 +136,7 @@ class Part:
     events: list[Event] = field(default_factory=list)
     midi_program: int = 1
     transpose: int = 0
+    present_systems: set[int] = field(default_factory=set)
 
 
 class CapellaError(ValueError): pass
@@ -171,25 +172,47 @@ def parse_score(root):
     layout_map = {x.get('description', f'Part {i+1}'): x for i, x in enumerate(layouts)}
     first_staves = children(child(systems[0], 'staves'), 'staff')
     if not first_staves: raise CapellaError('No staves in score')
-    names = [x.get('layout') or f'Part {i+1}' for i, x in enumerate(first_staves)]
-    if len(names) != len(set(names)):
-        warnings.append('Duplicate staff names found; parts were disambiguated by staff position.')
+    # Capella may introduce or remove an instrumental staff on a later
+    # graphical system (Waggis adds Piccolo 4 only in its final system).
+    # Build a stable part list from ALL systems, not only the first.
+    names = []
+    repeated_names = False
+    for si,sys in enumerate(systems):
+        system_staves=children(child(sys,'staves'),'staff')
+        current=[staff.get('layout') or f'Part {i+1}' for i,staff in enumerate(system_staves)]
+        repeated_names |= len(set(current)) != len(current)
+        for name in current:
+            if name not in names:
+                names.append(name)
+    if repeated_names:
+        warnings.append('Duplicate staff layout names found; matching by position may need review.')
     parts = []
-    for i, name in enumerate(names):
+    for i,name in enumerate(names):
         layout = layout_map.get(name)
         sound = child(layout, 'sound')
         program = (int(sound.get('instr', '0')) + 1) if sound is not None else 1
         trans = int(sound.get('transpose', '0')) if sound is not None else 0
-        parts.append(Part(name=name or f'Part {i+1}', layout=name, midi_program=max(1, min(128, program)), transpose=trans))
+        parts.append(Part(name=name or f'Part {i+1}', layout=name,
+                          midi_program=max(1,min(128,program)), transpose=trans))
+    part_positions={p.layout:i for i,p in enumerate(parts)}
     clock = Fraction(0)
     current_meter = Fraction(1, 1)
-    for si, sys in enumerate(systems):
+    for si,sys in enumerate(systems):
         staves = children(child(sys, 'staves'), 'staff')
-        if len(staves) != len(parts):
-            raise CapellaError(f'System {si+1} has {len(staves)} staves; first system has {len(parts)}. Variable staff count requires a later importer.')
+        if repeated_names:
+            # Preserve old position-based behavior if source names are not unique.
+            selected=list(enumerate(staves))
+            if len(staves)>len(parts):
+                raise CapellaError(f'System {si+1} has ambiguous extra staves.')
+        else:
+            selected=[(part_positions[staff.get('layout') or f'Part {i+1}'],staff)
+                      for i,staff in enumerate(staves)]
+        if not selected:
+            raise CapellaError(f'System {si+1} contains no musical staves.')
         durations = []
         next_meter = current_meter
-        for pi, staff in enumerate(staves):
+        for pi, staff in selected:
+            parts[pi].present_systems.add(si)
             voices = children(child(staff, 'voices'), 'voice')
             if not voices: continue
             voice_lengths = []
@@ -219,6 +242,13 @@ def parse_score(root):
             warnings.append(f'Uneven staff durations in system {si+1}; original may have independent timing.')
         clock += max(durations) if durations else Fraction(0)
         current_meter = next_meter
+    for part in parts:
+        if len(part.present_systems)<len(systems):
+            warnings.append(
+                f'{part.name} appears in {len(part.present_systems)} of '
+                f'{len(systems)} Capella systems; the remaining staff measures '
+                'will be hidden where the target engraving engine supports it.'
+            )
     return parts, clock, sorted(set(warnings))
 
 
