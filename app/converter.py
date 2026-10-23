@@ -816,13 +816,31 @@ def capella_glyphs(event):
 
 
 def emit_grouped_metronome_direction(measure,event,voice):
-    """Recover a printed Capella3 quarter-note tempo inside a text group.
+    """Preserve Capella3 quarter tempo from grouped and inline glyphs.
 
-    Some scores (Fyyrvogel) draw the quarter-note symbol and '=95' as two
-    objects inside one group. Only a recognized glyph/value pair is treated
-    as a printed metronome mark; other decorative groups remain untouched.
+    Fyyrvogel draws the glyph and '=95' in a group; D'Preusse uses
+    one inline capella3 graphic containing "¢=100"/"¢=110". In both
+    cases this is an explicit *printed* metronome, not an implicit tempo.
     """
+    def write_metronome(bpm):
+        direction=sub(measure,'direction',placement='above')
+        dtype=sub(direction,'direction-type')
+        metronome=sub(dtype,'metronome',parentheses='no')
+        sub(metronome,'beat-unit','quarter')
+        sub(metronome,'per-minute',bpm)
+        sub(direction,'voice',voice)
+        sub(direction,'sound',tempo=bpm)
+
     for draw in children(child(event.node,'drawObjects'),'drawObj'):
+        words=child(draw,'text')
+        content=child(words,'content')
+        font=child(words,'font')
+        if content is not None and font is not None and (
+                font.get('face','').casefold() in ('capella3','capella')):
+            label=''.join(content.itertext()).strip()
+            matched=re.fullmatch(r'¢\s*=\s*(\d{2,3})',label)
+            if matched and 20<=int(matched.group(1))<=360:
+                write_metronome(int(matched.group(1)))
         group=child(draw,'group')
         if group is None:
             continue
@@ -848,13 +866,7 @@ def emit_grouped_metronome_direction(measure,event,voice):
             bpm=int(matched.group(1))
             if not 20<=bpm<=360:
                 continue
-            direction=sub(measure,'direction',placement='above')
-            dtype=sub(direction,'direction-type')
-            metronome=sub(dtype,'metronome',parentheses='no')
-            sub(metronome,'beat-unit','quarter')
-            sub(metronome,'per-minute',bpm)
-            sub(direction,'voice',voice)
-            sub(direction,'sound',tempo=bpm)
+            write_metronome(bpm)
 
 
 def emit_glyph_directions(measure,event,voice):
