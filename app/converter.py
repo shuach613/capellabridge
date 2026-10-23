@@ -776,6 +776,48 @@ def capella_glyphs(event):
     return result
 
 
+def emit_grouped_metronome_direction(measure,event,voice):
+    """Recover a printed Capella3 quarter-note tempo inside a text group.
+
+    Some scores (Fyyrvogel) draw the quarter-note symbol and '=95' as two
+    objects inside one group. Only a recognized glyph/value pair is treated
+    as a printed metronome mark; other decorative groups remain untouched.
+    """
+    for draw in children(child(event.node,'drawObjects'),'drawObj'):
+        group=child(draw,'group')
+        if group is None:
+            continue
+        glyphs=[]
+        labels=[]
+        for grouped in children(group,'drawObj'):
+            words=child(grouped,'text')
+            content=child(words,'content')
+            font=child(words,'font')
+            if content is None or font is None:
+                continue
+            value=''.join(content.itertext()).strip()
+            if font.get('face','').casefold() in ('capella3','capella'):
+                glyphs.append(value)
+            else:
+                labels.append(value)
+        if '¢' not in glyphs:
+            continue
+        for label in labels:
+            matched=re.fullmatch(r'=\s*(\d{2,3})',label)
+            if not matched:
+                continue
+            bpm=int(matched.group(1))
+            if not 20<=bpm<=360:
+                continue
+            direction=sub(measure,'direction',placement='above')
+            dtype=sub(direction,'direction-type')
+            metronome=sub(dtype,'metronome',parentheses='no')
+            sub(metronome,'beat-unit','quarter')
+            sub(metronome,'per-minute',bpm)
+            sub(direction,'voice',voice)
+            sub(direction,'sound',tempo=bpm)
+
+
 def emit_glyph_directions(measure,event,voice):
     for glyph in capella_glyphs(event):
         if glyph in CAPELLA_DYNAMICS:
@@ -1392,8 +1434,17 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 cursor=start
                 placed_directions=set()
                 for e in ve:
+                    if e.time>cursor:
+                        sub(sub(measure,'forward'),'duration',to_div(e.time-cursor,active_divisions))
+                        cursor=e.time
+                    if (e.kind in ('chord','rest') and e.time<cursor
+                            and not (e.kind=='rest' and e.time<start)):
+                        raise CapellaError(
+                            f'Overlapping notes in {p.name}, voice {voice}, measure {mi+1}'
+                        )
                     if e.kind in ('chord','rest') and e.time>=start:
                         emit_glyph_directions(measure,e,voice)
+                        emit_grouped_metronome_direction(measure,e,voice)
                         if pi>0:
                             emit_staff_solo_direction(measure,e,voice)
                         for no in wedge_stops.get(id(e),()):
@@ -1413,14 +1464,15 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                         for words in score_directions.get(e.time,()):
                             add_score_direction(measure,words)
                         placed_directions.add(e.time)
-                    if e.time>cursor:
-                        sub(sub(measure,'forward'),'duration',to_div(e.time-cursor,active_divisions))
-                        cursor=e.time
-                    if (e.kind in ('chord','rest') and e.time<cursor
-                            and not (e.kind=='rest' and e.time<start)):
-                        raise CapellaError(
-                            f'Overlapping notes in {p.name}, voice {voice}, measure {mi+1}'
-                        )
+                    # Capella's @tempo is a playback setting, not necessarily
+                    # a printed mark; keep it as an independent MusicXML
+                    # <sound> instruction without adding visible text.
+                    if e.kind=='chord' and e.node.get('tempo') is not None:
+                        tempo=e.node.get('tempo','')
+                        if re.fullmatch(r'\d{2,3}(?:\.\d+)?',tempo):
+                            if 20<=float(tempo)<=360:
+                                sub(measure,'sound',tempo=tempo)
+
                     if e.kind=='keySign':
                         fifths=int(e.node.get('fifths',0));prev_fifths=state['key'];state['key']=fifths
                         if mi==0 or fifths!=prev_fifths: add_attributes(measure,key=fifths)
