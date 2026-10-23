@@ -1338,6 +1338,32 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 children(child(event.node,'drawObjects'),'drawObj'))):
             boxed_sections.add(event.time)
     score_directions=extract_score_directions(parts,set(variation_numbers))
+    page_navigation_colors={}
+    # Some Capella scores put a visible D.C. instruction at the bottom
+    # of pageObjects (Vaudois), while the score carries a hidden white
+    # playback hint. Attach the *visible* instruction to the final event.
+    # Ignore title/header text and unrelated page decorations.
+    score_notes=[e for e in leading_voice_events(parts)
+                 if e.kind in ('chord','rest')]
+    if score_notes:
+        final_note_time=max(e.time for e in score_notes)
+        for item in root.xpath('./c:pageObjects/c:drawObj/c:text',namespaces=N):
+            font=child(item,'font')
+            content=child(item,'content')
+            if font is None or content is None:
+                continue
+            label=' '.join(''.join(content.itertext()).split())
+            try:
+                y=float(item.get('y','0'))
+            except ValueError:
+                continue
+            if (y>30 and font.get('color','').upper()=='FF0000' and
+                    re.fullmatch(
+                        r'(?i)d\.?\s*c\.?\s*al\s+(?:fine|coda)\.?',label)):
+                current=score_directions.setdefault(final_note_time,[])
+                if label not in current:
+                    current.append(label)
+                page_navigation_colors[(final_note_time,label)]='#FF0000'
     # Short standalone page-level introduction labels are not score credits.
     # Capella 3.0 scores such as Fyyrvogel place 'Intro' just above the
     # first system, rather than attaching it to a note.
@@ -1612,7 +1638,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                     if (pi==0 and voice==1 and e.kind in ('chord','rest')
                             and e.time not in placed_directions):
                         for words in score_directions.get(e.time,()):
-                            add_score_direction(measure,words)
+                            add_score_direction(measure,words,
+                                source_color=page_navigation_colors.get((e.time,words)))
                         placed_directions.add(e.time)
                     # Capella's @tempo is a playback setting, not necessarily
                     # a printed mark; keep it as an independent MusicXML
