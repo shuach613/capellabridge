@@ -392,7 +392,7 @@ def extract_score_directions(parts):
             if font is None or content is None:
                 continue
             label=' '.join(''.join(content.itertext()).split())
-            if not label or re.fullmatch(r'[1-9]\\d?',label):
+            if not label or re.fullmatch(r'(?i)(?:(?:no|nr|variation|vers)\\.?\\s*)?[1-9]\\d?',label):
                 continue
             if font.get('face','').casefold() in ('capella','capella3'):
                 continue
@@ -944,12 +944,25 @@ def serialize_musicxml(raw, layout='balanced'):
             for vsi,voice in enumerate(vs):
                 if vsi:
                     back=sub(measure,'backup');sub(back,'duration',to_div(stop-start,active_divisions))
-                ve=[e for e in events if e.voice==voice and start<=e.time<stop]
+                ve=[
+                    e for e in events if e.voice==voice and (
+                        start<=e.time<stop or (
+                            e.kind=='rest' and e.time<start and
+                            e.time+e.dur>start and
+                            re.fullmatch(r'[1-9]\\d*',
+                                (child(e.node,'duration').get('base','')
+                                 if child(e.node,'duration') is not None else ''))
+                        )
+                    )
+                ]
                 cursor=start
+                placed_directions=set()
                 for e in ve:
-                    if pi==0 and voice==1 and e.kind in ('chord','rest'):
+                    if (pi==0 and voice==1 and e.kind in ('chord','rest')
+                            and e.time not in placed_directions):
                         for words in score_directions.get(e.time,()):
                             add_score_direction(measure,words)
+                        placed_directions.add(e.time)
                     if e.time>cursor:
                         sub(sub(measure,'forward'),'duration',to_div(e.time-cursor,active_divisions))
                         cursor=e.time
@@ -969,15 +982,31 @@ def serialize_musicxml(raw, layout='balanced'):
                         if clef!=state['clef']:add_attributes(measure,clef=clef)
                         state['clef']=clef
                     elif e.kind in ('chord','rest'):
-                        if e.time+e.dur>stop:
+                        rest_duration=child(e.node,'duration')
+                        rest_base=(rest_duration.get('base','')
+                                   if rest_duration is not None else '')
+                        is_multi_rest=(e.kind=='rest'
+                                       and re.fullmatch(r'[2-9]\\d*',rest_base) is not None)
+                        event_for_note=e
+                        if is_multi_rest and e.time<=start and e.time+e.dur>=stop:
+                            # A source seven-/eight-measure rest must be
+                            # represented in each destination measure, not
+                            # treated as a giant single note crossing bars.
+                            event_for_note=Event(start,e.kind,e.node,e.system,
+                                                 e.voice,stop-start)
+                            if start==e.time:
+                                style=sub(sub(measure,'attributes'),'measure-style')
+                                sub(style,'multiple-rest',rest_base)
+                        elif e.time+e.dur>stop:
                             raise CapellaError(
                                 f'Note crosses a barline in {p.name}, voice {voice}, '
                                 f'measure {mi+1}; source measure boundaries need review.'
                             )
-                        nnotes+=make_note(measure,e,voice,state,slur_starts,slur_ends,active_divisions,
+                        nnotes+=make_note(measure,event_for_note,voice,state,
+                                          slur_starts,slur_ends,active_divisions,
                                           graphic_links,tuplet_links,
                                           suppress_uniform_strongbeat=pi in uniform_strongbeat)
-                        cursor=e.time+e.dur
+                        cursor=event_for_note.time+event_for_note.dur
                 if cursor<stop:
                     sub(sub(measure,'forward'),'duration',to_div(stop-cursor,active_divisions))
             left_repeat=repeat_start(start)
