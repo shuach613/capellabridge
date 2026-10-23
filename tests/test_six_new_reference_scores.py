@@ -140,3 +140,40 @@ def test_glaibasler_two_scores_keep_separate_instrument_layouts():
                                              meter='6/8',version='3.0'))
     assert len(report['parts'])==6
     assert report['title']=='Glaibasler Luft (mit Klavier)'
+
+
+def test_fyyrvogel_grouped_quarter_metronome_is_printed_with_playback_tempo():
+    group=('<drawObj><group>'
+           '<drawObj><text y="-7"><font face="capella3" height="18"/>'
+           '<content>¢</content></text></drawObj>'
+           '<drawObj><text y="-7"><font face="Times New Roman" height="10"/>'
+           '<content>=95</content></text></drawObj>'
+           '</group></drawObj>')
+    xml,report=serialize_musicxml(make_file({'Piccolo 1':chord(group)+chord()*3},
+                                            version='3.0'))
+    root=ET.fromstring(xml)
+    assert root.findtext('.//metronome/beat-unit')=='quarter'
+    assert root.findtext('.//metronome/per-minute')=='95'
+    assert root.find('.//direction/sound[@tempo="95"]') is not None
+
+
+def test_piano_playback_tempo_does_not_invent_printed_metronome():
+    first='<chord tempo="180"><duration base="1/4"/>' \
+          '<heads><head pitch="C5"/></heads></chord>'
+    xml,report=serialize_musicxml(make_file(
+        {'Klavier':first+chord()*3},version='3.0'))
+    root=ET.fromstring(xml)
+    assert root.find('./part/measure/sound[@tempo="180"]') is not None
+    assert root.find('.//metronome') is None
+    assert root.find('.//direction-type/words[.="180"]') is None
+
+
+def test_dynamic_on_later_note_does_not_move_to_beginning_of_measure():
+    second=chord(text('p',font='capella3',size=18,y=4.5))
+    xml,report=serialize_musicxml(make_file(
+        {'Piccolo 1':chord()+second+chord()*2},version='3.0'))
+    measure=ET.fromstring(xml).find('./part/measure')
+    tags=[ET.QName(c).localname for c in measure]
+    assert 'direction' in tags
+    assert tags.index('direction')>tags.index('note')
+    assert measure.find('.//direction-type/dynamics/p') is not None
