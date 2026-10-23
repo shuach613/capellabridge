@@ -331,7 +331,7 @@ def extract_metadata(root, filename=None):
     # A title in the upper margin is typographically larger than composer
     # credits; don't treat a nearby introductory section label as the title.
     titles=[box for box in page_boxes
-            if box[0]>=14 and box[2]<=9 and len(box[3][0])>=4
+            if box[0]>=14 and box[2]<=11 and len(box[3][0])>=4
             and box[3][0].casefold() not in ('intro','trommelsolo')]
     if titles:
         title_box=max(titles,key=lambda box:box[0])
@@ -340,6 +340,11 @@ def extract_metadata(root, filename=None):
         subtitle_lines=[]
         for size,x,y,lines in page_boxes:
             if (size,x,y,lines)==title_box: continue
+            # Dates and rights are page-header metadata, not an invented
+            # subtitle or a composer's name. They are printed separately.
+            if all(re.fullmatch(r'\d{1,2}\.\d{1,2}\.\d{4}\s+\w{2,8}',v)
+                   or v.startswith('©') for v in lines):
+                continue
             # Capella may combine a composer and arrangement credit in one
             # multiline page text (e.g. "von W. A. Mozart" followed by
             # "für 4 Piccolo arr. ..."). Preserve both semantic fields.
@@ -357,6 +362,19 @@ def extract_metadata(root, filename=None):
             contribution=bool(re.match(
                 r'(?i)^(?:arrangiert\b|arr\.|bearb\.|\d+\.\s*(?:schtimm|stimm))',
                 lines[0]))
+            # A printed byline can name both the original composer and
+            # an arranger. Preserve the complete source words *visibly*
+            # while writing semantically correct MusicXML creator metadata.
+            arr_credit=re.match(r'(?i)^(.+?),\s*arr\.\s+(.+)$',lines[0])
+            movement_credit=re.match(
+                r'(?i)^[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß -]{2,40}\s+v\.\s*'
+                r'(.+?),\s*([^,]+),\s*\d{1,2}\.\d{1,2}\.\d{4}$',
+                lines[0])
+            if (len(lines)==1 and not composer and byline_below
+                    and (arr_credit or movement_credit)):
+                composer=(arr_credit or movement_credit).group(1).strip()
+                subtitle_lines.append(lines[0])
+                continue
             if len(lines)==1 and not composer and not contribution and (
                     (x>=title_box[1]+23 and size>=10) or byline_below):
                 composer=lines[0]
@@ -1279,6 +1297,12 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     sub(score,'movement-title',title)
     identification=sub(score,'identification')
     if composer:sub(identification,'creator',composer,type='composer')
+    for item in root.xpath('./c:pageObjects/c:drawObj/c:text',namespaces=N):
+        content=child(item,'content')
+        if content is None:continue
+        raw=' '.join(''.join(content.itertext()).split())
+        if raw.startswith('©'):
+            sub(identification,'rights',raw)
     for credit_line in subtitle.splitlines():
         arranged=re.search(
             r'(?i)(?:^|[\s,])(?:arrangiert\s+(?:vom|von)|arr\.\s*(?:von)?|bearb\.\s*(?:von)?)\s+(.+)$',
@@ -1291,10 +1315,15 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     margins=sub(page,'page-margins',type='both');sub(margins,'left-margin','64');sub(margins,'right-margin','64');sub(margins,'top-margin','64');sub(margins,'bottom-margin','64')
     # Explicit page-one credits render on the score itself. Document metadata
     # alone does not reliably create visible MuseScore title frames on import.
+    # Don't print the composer twice when the original byline already
+    # contains the composer and arranger ("Mozart, arr. ...").
+    compact=lambda x: re.sub(r'[\W_]+','',x,flags=re.UNICODE).casefold()
+    display_composer=('' if composer and compact(composer) in compact(subtitle)
+                      else composer)
     for kind, value, y, size, weight in (
         ('title', title, 1580, 23, 'bold'),
         ('subtitle', subtitle, 1540, 12, 'normal'),
-        ('composer', composer, 1508, 11, 'normal'),
+        ('composer', display_composer, 1508, 11, 'normal'),
     ):
         if not value or (kind == 'title' and value == 'Converted score'):
             continue
@@ -1303,6 +1332,22 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         sub(credit, 'credit-words', value, default_x='595',
             default_y=y, justify='center', valign='top',
             font_size=size, font_weight=weight)
+    # Preserve source header timestamps and copyright in their own
+    # positions rather than as additional centered subtitle lines.
+    for item in root.xpath('./c:pageObjects/c:drawObj/c:text',namespaces=N):
+        content=child(item,'content')
+        if content is None:continue
+        raw=' '.join(''.join(content.itertext()).split())
+        if raw.startswith('©'):
+            x,y,align='64','1615','left'
+        elif re.fullmatch(r'\d{1,2}\.\d{1,2}\.\d{4}\s+\w{2,8}',raw):
+            x,y,align='1126','1615','right'
+        else:
+            continue
+        credit=sub(score,'credit',page='1')
+        sub(credit,'credit-type','rights' if raw.startswith('©') else 'other')
+        sub(credit,'credit-words',raw,default_x=x,default_y=y,
+            justify=align,valign='top',font_size='9')
     plist=sub(score,'part-list')
     # Respect Capella's multi-staff brace/bracket grouping. This is structural,
     # and avoids MuseScore displaying four unrelated solo parts.
