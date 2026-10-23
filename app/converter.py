@@ -962,6 +962,16 @@ def emit_glyph_directions(measure,event,voice):
             dynamics=sub(sub(direction,'direction-type'),'dynamics')
             sub(dynamics,CAPELLA_DYNAMICS[glyph])
             sub(direction,'voice',voice)
+        elif glyph in ('L','M'):
+            # A note-anchored Capella3 8th/16th rest glyph is a graphic,
+            # not an additional timed rest. Print its musical rest sign
+            # without changing meter, note durations or playback.
+            rest_char={'L':'\U0001D13E','M':'\U0001D13F'}[glyph]
+            direction=sub(measure,'direction',placement='above')
+            subtype=sub(direction,'direction-type')
+            sub(subtype,'words',rest_char,font_size='14',
+                font_family='FreeSerif')
+            sub(direction,'voice',voice)
         elif glyph in CAPELLA_NAVIGATION:
             label,sound=CAPELLA_NAVIGATION[glyph]
             direction=sub(measure,'direction',placement='above')
