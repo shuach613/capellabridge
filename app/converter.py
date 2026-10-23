@@ -185,6 +185,13 @@ def parse_score(root):
             if name not in names:
                 names.append(name)
     if repeated_names:
+        # Retain the historical positional fallback for overlapping layout
+        # names, rather than collapsing two identically named instruments
+        # into one part during the variable-staff discovery pass.
+        longest=max((children(child(sys,'staves'),'staff') for sys in systems),
+                    key=len)
+        names=[staff.get('layout') or f'Part {i+1}'
+               for i,staff in enumerate(longest)]
         warnings.append('Duplicate staff layout names found; matching by position may need review.')
     parts = []
     for i,name in enumerate(names):
