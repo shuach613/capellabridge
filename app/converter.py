@@ -383,6 +383,18 @@ def extract_metadata(root, filename=None):
                 composer=(arr_credit or movement_credit).group(1).strip()
                 subtitle_lines.append(lines[0])
                 continue
+            dedication_credit=re.fullmatch(
+                r'(?u)([A-ZÄÖÜ][A-Za-zÄÖÜäöüß-]+(?:\s+[A-ZÄÖÜ]'
+                r'[A-Za-zÄÖÜäöüß-]+){1,3}),\s*\d{1,2}\.\d{1,2}\.'
+                r'\d{4},\s*für\s+.+',lines[0])
+            if (len(lines)==1 and not composer and byline_below
+                    and dedication_credit):
+                # Preserve the *complete printed line* in the subtitle
+                # while keeping date and dedication out of composer metadata.
+                # Example source: "René Brielmann, 22.06.1983, für die Musketiere".
+                composer=dedication_credit.group(1).strip()
+                subtitle_lines.append(lines[0])
+                continue
             if len(lines)==1 and not composer and not contribution and (
                     (x>=title_box[1]+23 and size>=10) or byline_below):
                 composer=lines[0]
