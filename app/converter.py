@@ -826,11 +826,9 @@ def serialize_musicxml(raw, layout='balanced'):
     # Notation-level warnings: emphasize these instead of silently promising fidelity.
     if root.xpath('//c:systems//c:volta | //c:pageObjects//c:volta',namespaces=N):
         warnings.append('Some graphical ending brackets may need layout review.')
-    if root.xpath('//c:systems//c:trill',namespaces=N) and not any(
-        e.kind=='chord' and child(child(e.node,'drawObjects'),'trill') is not None
-        for p in parts for e in p.events):
-        warnings.append('Some graphical trill spans are not yet semantically reconstructed.')
-    if root.xpath('//c:drawObj/c:text[c:font[@face="capella3"]]',namespaces=N):
+    if root.xpath('//c:systems//c:drawObj[c:trill]/c:basic[number(@noteRange)>1]',namespaces=N):
+        warnings.append('Extended graphical trill lines were reduced to trill markings; review their endpoints.')
+    if root.xpath('//c:systems//c:drawObj/c:text[c:font[@face="capella3"]]',namespaces=N):
         warnings.append('Capella-specific music-font symbols may need manual correction.')
     data=ET.tostring(score,encoding='utf-8',xml_declaration=True,pretty_print=True,doctype='<!DOCTYPE score-partwise  PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">')
     for name,count in unsupported.items():
