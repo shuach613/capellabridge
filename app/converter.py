@@ -371,9 +371,13 @@ def extract_metadata(root, filename=None):
                 r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?', line
             ):
                 continue
-            match = re.match(r'^(?:von|by|composed by|composer:)\s+(.+)
+            match=re.match(r'^(?:von|by|composed by|composer:)\s+(.+)$',line,re.I)
+            credited=re.match(
+                r'^((?:[A-ZÄÖÜ][\wäöüß-]+\s+){1,3}[A-ZÄÖÜ][\wäöüß-]+)'
+                r'\s+(?=Arr\.?\b|Trommeltext:)',line
+            )
             if match:
-                composer = match.group(1).strip()
+                composer=match.group(1).strip()
             elif credited and not composer:
                 composer=credited.group(1).strip()
                 remaining=line[credited.end():].strip()
