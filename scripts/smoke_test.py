@@ -2,6 +2,8 @@
 """End-to-end smoke test against a built Docker image with real MuseScore CLI."""
 from __future__ import annotations
 import io
+import os
+from pathlib import Path
 import json
 import sys
 import time
@@ -119,6 +121,9 @@ def main():
         words=music_xml.findall('./part/measure/direction/direction-type/words')
         assert [x.text for x in words] == ['1'], [(x.text,x.attrib) for x in words]
         mscz=get(result['results'][0]['downloads']['mscz'])
+        if os.environ.get('STUDIO_COMPAT_OUTPUT') and ensemble_layout=='balanced':
+            Path(os.environ['STUDIO_COMPAT_OUTPUT']).write_bytes(mscz)
+
         with zipfile.ZipFile(io.BytesIO(mscz)) as z:
             from xml.etree import ElementTree as ET
             root=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
