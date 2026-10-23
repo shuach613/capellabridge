@@ -401,7 +401,7 @@ def note_type(dur_node):
     return DURATION_TYPES.get(Fraction(dur_node.get('base','1/4')), 'quarter')
 
 
-def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS):
+def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None):
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
     heads = children(child(ob,'heads'),'head') if event.kind=='chord' else [None]
@@ -457,13 +457,30 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             if direction in ('up','down'):sub(note,'stem',direction)
         if shape in ('diamond','cross','triangle','slash'):
             sub(note,'notehead','x' if shape=='cross' else shape)
-        has_notation=bool(marks or ties or id(event) in slur_starts or id(event) in slur_ends)
+        gliss_start, gliss_end = graphic_links if graphic_links else ({},{})
+        tuplet_start, tuplet_end = tuplet_links if tuplet_links else ({},{})
+        graphical_trill=any(child(d,'trill') is not None for d in
+                              children(child(ob,'drawObjects'),'drawObj'))
+        has_notation=bool(marks or ties or graphical_trill or id(event) in slur_starts
+                          or id(event) in slur_ends or id(event) in gliss_start
+                          or id(event) in gliss_end or id(event) in tuplet_start
+                          or id(event) in tuplet_end)
         if ties or (hi == 0 and has_notation):
             nt=sub(note,'notations')
             for tp in ties:sub(nt,'tied',type=tp)
             if hi == 0:
                 for sn in slur_ends.get(id(event),[]):sub(nt,'slur',type='stop',number=sn)
                 for sn in slur_starts.get(id(event),[]):sub(nt,'slur',type='start',number=sn)
+                for tn in tuplet_end.get(id(event),[]):
+                    sub(nt,'tuplet',type='stop',number=tn)
+                for tn in tuplet_start.get(id(event),[]):
+                    sub(nt,'tuplet',type='start',number=tn,bracket='no')
+                for sn in gliss_end.get(id(event),[]):
+                    sub(nt,'glissando',type='stop',number=sn,line_type='wavy')
+                for sn in gliss_start.get(id(event),[]):
+                    sub(nt,'glissando',type='start',number=sn,line_type='wavy')
+                if graphical_trill:
+                    sub(sub(nt,'ornaments'),'trill-mark')
             if marks and hi == 0:
                 articulations=sub(nt,'articulations')
                 for a in marks:
@@ -471,8 +488,8 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                     mapped={'staccato':'staccato','tenuto':'tenuto',
                         'staccatissimo':'staccatissimo','normalAccent':'accent',
                         'strongAccent':'strong-accent','accent':'accent',
-                        'marcato':'strong-accent','weakBeat':'unstress',
-                        'strongBeat':'stress'}
+                        'marcato':'strong-accent','weakBeat':'accent',
+                        'strongBeat':'strong-accent'}
                     for typ in types:
                         tagname=mapped.get(typ)
                         if tagname:sub(articulations,tagname)
@@ -537,13 +554,13 @@ def source_notation_audit(root):
     """Inventory notation features, including constructs requiring review."""
     annotations=collections.Counter()
     unsupported=collections.Counter()
-    for graphic in root.xpath('//c:drawObj',namespaces=N):
+    for graphic in root.xpath('//c:systems//c:drawObj | //c:pageObjects//c:drawObj',namespaces=N):
         for element in graphic:
             name=tag(element)
             if name=='basic':
                 continue
             annotations[name]+=1
-            if name not in ('text','slur','volta'):
+            if name not in ('text','slur','volta','trill'):
                 unsupported[name]+=1
     beams=root.xpath('//c:chord/c:beam',namespaces=N)
     custom_beams=[e for e in beams if e.get('group','auto')!='auto']
@@ -566,6 +583,66 @@ def source_notation_audit(root):
         'time_signatures':sorted(set(root.xpath('//c:timeSign/@time',namespaces=N))),
     }
     return feature_counts,dict(sorted(unsupported.items()))
+
+
+def make_graphic_links(events):
+    """Semantic glissandi only: explicit named Capella line objects.
+
+    Arbitrary drawn lines and wavy lines are NOT automatically glissandi.
+    A named line must also have a source noteRange referencing its target.
+    """
+    starts=collections.defaultdict(list)
+    ends=collections.defaultdict(list)
+    by_voice=collections.defaultdict(list)
+    for event in events:
+        if event.kind=='chord':
+            by_voice[event.voice].append(event)
+    for voice, chords in by_voice.items():
+        for index,event in enumerate(chords):
+            for graphic in children(child(event.node,'drawObjects'),'drawObj'):
+                name=(graphic.get('name') or '').casefold()
+                basic=child(graphic,'basic')
+                line=child(graphic,'line')
+                if line is None or 'gliss' not in name or basic is None:
+                    continue
+                span=int(basic.get('noteRange','0'))
+                if not 0<span or index+span>=len(chords):
+                    continue
+                identifier=1+len(starts[id(event)])
+                starts[id(event)].append(identifier)
+                ends[id(chords[index+span])].append(identifier)
+    return starts, ends
+
+
+def make_tuplet_links(events):
+    """MusicXML requires start and stop notations for engraved tuplet numbers."""
+    starts=collections.defaultdict(list)
+    stops=collections.defaultdict(list)
+    voices=collections.defaultdict(list)
+    for event in events:
+        if event.kind in ('chord','rest'):
+            voices[event.voice].append(event)
+    for voice,notes in voices.items():
+        i=0
+        while i<len(notes):
+            d=child(notes[i].node,'duration')
+            tuplet=child(d,'tuplet')
+            if tuplet is None:
+                i+=1
+                continue
+            count=int(tuplet.get('count','3'))
+            run=notes[i:i+count]
+            if (len(run)==count and all(
+                (child(child(x.node,'duration'),'tuplet') is not None
+                 and child(child(x.node,'duration'),'tuplet').get('count')==str(count))
+                for x in run
+            )):
+                starts[id(run[0])].append(1)
+                stops[id(run[-1])].append(1)
+                i+=count
+            else:
+                i+=1
+    return starts,stops
 
 
 def serialize_musicxml(raw, layout='balanced'):
@@ -627,7 +704,25 @@ def serialize_musicxml(raw, layout='balanced'):
         inst=sub(sp,'score-instrument',id=f'I{pi+1}');sub(inst,'instrument-name',p.name)
         midi=sub(sp,'midi-instrument',id=f'I{pi+1}');sub(midi,'midi-channel',(pi%15)+1);sub(midi,'midi-program',p.midi_program)
     if grouping:sub(plist,'part-group',type='stop',number='1')
-    primary_barlines={e.time:e.node.get('type','regular') for e in parts[0].events if e.kind=='barline' and e.voice==1}
+    # Boundary markers can be supplied twice at the same timestamp:
+    # a repeat end at the end of a system and a repeat begin at the next.
+    # Do NOT store them in a time->single-type dictionary: last-write-wins
+    # drops the backward repeat (seven times in Alte Schwytzer).
+    boundary_marks=collections.defaultdict(set)
+    for event in parts[0].events:
+        if event.kind=='barline' and event.voice==1:
+            boundary_marks[event.time].add(event.node.get('type','single'))
+    def repeat_start(position):
+        return bool(boundary_marks[position] &
+                    {'repBegin','repEndBegin'})
+    def repeat_end(position):
+        return bool(boundary_marks[position] &
+                    {'repEnd','repEndBegin'})
+    def other_barline(position):
+        types=boundary_marks[position]
+        return 'end' if 'end' in types else 'double' if 'double' in types else (
+            'dashed' if 'dashed' in types else None
+        )
     # Most Capella ending brackets are attached graphically to the first chord
     # of the ending measure. Their firstNumber is a semantic indicator.
     ending_starts={}
@@ -654,6 +749,8 @@ def serialize_musicxml(raw, layout='balanced'):
         pr=sub(score,'part',id=f'P{pi+1}')
         events=sorted(p.events,key=lambda x:(x.time,x.voice))
         slur_starts,slur_ends=make_slur_links(events)
+        graphic_links=make_graphic_links(events)
+        tuplet_links=make_tuplet_links(events)
         state={'key':0,'time':str(meter.numerator)+'/'+str(meter.denominator),'clef':'treble','accidentals':{}}
         nnotes=0
         for mi in range(measure_count):
@@ -702,33 +799,36 @@ def serialize_musicxml(raw, layout='balanced'):
                                 f'Note crosses a barline in {p.name}, voice {voice}, '
                                 f'measure {mi+1}; source measure boundaries need review.'
                             )
-                        nnotes+=make_note(measure,e,voice,state,slur_starts,slur_ends,active_divisions)
+                        nnotes+=make_note(measure,e,voice,state,slur_starts,slur_ends,active_divisions,
+                                          graphic_links,tuplet_links)
                         cursor=e.time+e.dur
                 if cursor<stop:
                     sub(sub(measure,'forward'),'duration',to_div(stop-cursor,active_divisions))
-            left_repeat=primary_barlines.get(start) in ('repBegin','repEndBegin')
+            left_repeat=repeat_start(start)
             if left_repeat or (pi==0 and start in ending_starts):
                 bl=sub(measure,'barline',location='left')
                 if pi==0 and start in ending_starts:
                     num=ending_starts[start]
                     sub(bl,'ending',f'{num}.',number=num,type='start')
                 if left_repeat:sub(bl,'repeat',direction='forward')
-            right_type=primary_barlines.get(stop)
-            if right_type in ('repEnd','repEndBegin','double','end') or (pi==0 and start in ending_starts):
+            right_type=other_barline(stop)
+            right_repeat=repeat_end(stop)
+            if right_repeat or right_type or (pi==0 and start in ending_starts):
                 bl=sub(measure,'barline',location='right')
-                if right_type in ('double','end'):
-                    sub(bl,'bar-style','light-light' if right_type=='double' else 'light-heavy')
+                if right_type:
+                    sub(bl,'bar-style',{'double':'light-light','end':'light-heavy',
+                                        'dashed':'dashed'}[right_type])
                 if pi==0 and start in ending_starts:
                     sub(bl,'ending',number=ending_starts[start],type='stop' if ending_starts[start]=='1' else 'discontinue')
-                if right_type in ('repEnd','repEndBegin'):sub(bl,'repeat',direction='backward')
+                if right_repeat:sub(bl,'repeat',direction='backward')
             if mi==0 and start==0 and stop<meter:
                 measure.set('implicit','yes')
     # Notation-level warnings: emphasize these instead of silently promising fidelity.
-    if root.xpath('//c:volta',namespaces=N):
-        warnings.append('Graphical ending brackets have been interpreted as 1st/2nd endings; verify playback order.')
-    if root.xpath('//c:trill',namespaces=N):
-        warnings.append('Some graphical trill spans are not yet semantically reconstructed.')
-    if root.xpath('//c:drawObj/c:text[c:font[@face="capella3"]]',namespaces=N):
+    if root.xpath('//c:systems//c:volta | //c:pageObjects//c:volta',namespaces=N):
+        warnings.append('Some graphical ending brackets may need layout review.')
+    if root.xpath('//c:systems//c:drawObj[c:trill]/c:basic[number(@noteRange)>1]',namespaces=N):
+        warnings.append('Extended graphical trill lines were reduced to trill markings; review their endpoints.')
+    if root.xpath('//c:systems//c:drawObj/c:text[c:font[@face="capella3"]]',namespaces=N):
         warnings.append('Capella-specific music-font symbols may need manual correction.')
     data=ET.tostring(score,encoding='utf-8',xml_declaration=True,pretty_print=True,doctype='<!DOCTYPE score-partwise  PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">')
     for name,count in unsupported.items():
@@ -740,5 +840,9 @@ def serialize_musicxml(raw, layout='balanced'):
             'variation_numbers':list(variation_numbers.values()),
             'notation_features':features,
             'notation_not_fully_interpreted':unsupported,
-            'print_review_recommended':True}
+            'print_review_recommended':True,
+            'repeat_boundaries':{
+                'forward':sum(repeat_start(p) for p in boundaries),
+                'backward':sum(repeat_end(p) for p in boundaries)
+            }}
     return data,report

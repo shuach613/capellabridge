@@ -89,7 +89,7 @@ def main():
                 '<drawObj><text x="0" y="-25"><font face="Lato" height="37"/>'
                 '<content>Concert Example</content></text></drawObj>'
                 '<drawObj><text x="0" y="-17"><font face="Lato" height="17"/>'
-                '<content>Four flutes&#10;von Example Composer</content></text></drawObj>'
+                '<content>Four flutes in an extended ensemble arrangement&#10;A second subtitle line for the quartet&#10;von Example Composer</content></text></drawObj>'
                 '<drawObj><text x="-3" y="-5"><font face="Lato" height="17"/>'
                 '<content>1</content></text></drawObj>'
                 '</drawObjects>'
@@ -149,7 +149,7 @@ def main():
             heads={
                 name:[fitz.Rect(span['bbox']) for span in spans
                       if name in unicodedata.normalize('NFKC',span['text'])]
-                for name in ('Concert Example','Four flutes','Example Composer')
+                for name in ('Concert Example','Four flutes','A second subtitle','Example Composer')
             }
             print('DEBUG_RENDERED_TITLES',
                   {key:[tuple(round(v,1) for v in r) for r in rects]
@@ -157,7 +157,9 @@ def main():
             print('DEBUG_FIRST_PAGE_TEXT',repr(page.get_text()[:800]),flush=True)
             assert all(heads.values()), heads
             assert heads['Concert Example'][0].y1 <= heads['Four flutes'][0].y0+1
-            assert heads['Four flutes'][0].y1 <= heads['Example Composer'][0].y0+1
+            assert heads['Four flutes'][0].y1 <= heads['A second subtitle'][0].y0+1
+            assert heads['A second subtitle'][0].y1 <= heads['Example Composer'][0].y0+1
+            assert '<br/>' not in page.get_text(), 'Literal linebreak markup printed in PDF'
             numbers=[(span['text'],hex(span['color'])) for span in spans
                      if span['text'].strip()=='1']
             print('DEBUG_RENDERED_NUMBERS',numbers[:20],flush=True)
@@ -208,6 +210,33 @@ def main():
             name for name in archive.namelist() if name.endswith('.mscx'))))
         assert len(native.findall('./Score/Staff'))==2
     print('Multi-meter, tuplets, grace notes and measure rests rendered by MuseScore',flush=True)
+
+    # Two repeat signs can occupy one instant: previous-system repEnd
+    # plus next-system repBegin. Verify both survive MuseScore round-trips.
+    def repeat_system(prefix, ending):
+        chord='<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>'
+        return ('<system><staves><staff layout="Flute"><voices><voice><noteObjects>'
+                +prefix+chord+chord+ending+
+                '</noteObjects></voice></voices></staff></staves></system>')
+    repeat_xml=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves><staffLayout description="Flute"/></staves></layout>'
+        '<systems>'
+        +repeat_system('<timeSign time="2/4"/>','<barline type="repEnd"/>')
+        +repeat_system('<barline type="repBegin"/>','<barline type="repEndBegin"/>')
+        +repeat_system('','')
+        +'</systems></score>'
+    ).encode()
+    body,ctype=make_upload(repeat_xml)
+    result=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert result['results'][0]['ok'],result
+    item=result['results'][0]
+    assert item['repeat_boundaries']=={'forward':2,'backward':2},item
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        native=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+        assert len(native.findall('.//startRepeat'))==2
+        assert len(native.findall('.//endRepeat'))==2
+    print('Joined backward+forward Capella repeats survived native MuseScore export')
 
     print('All three layout modes passed the live Docker conversion test')
 

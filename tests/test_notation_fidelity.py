@@ -163,4 +163,7 @@ def test_score_title_frame_multiline_is_single_subtitle(tmp_path):
         native = ET.fromstring(archive.read("score.mscx"))
     texts = native.findall("./Score/Staff/VBox/Text")
     assert [item.findtext("style") for item in texts] == ["Title", "Subtitle", "Composer"]
-    assert texts[1].findtext("text") == "Prepared by Karl Schell<br/>Arranged by René Brielmann"
+    rich = texts[1].find("text")
+    assert rich.text == "Prepared by Karl Schell\nArranged by René Brielmann"
+    assert len(rich.findall("br")) == 0
+    assert b"&lt;br/&gt;" not in ET.tostring(rich)
