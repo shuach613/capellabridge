@@ -289,8 +289,9 @@ def extract_metadata(root, filename=None):
             y=float(item.get('y','0'))
         except ValueError:
             continue
-        if (size<10 or y>25 or not lines or
+        if (size<8 or y>25 or not lines or
                 any('#' in v or re.search(r'\b(?:seite|page)\b',v,re.I)
+                    or re.match(r'^\d{1,2}\.\d{1,2}\.\d{4}\b',v)
                     for v in lines)):
             continue
         page_boxes.append((size,x,y,lines))
@@ -306,7 +307,10 @@ def extract_metadata(root, filename=None):
         subtitle_lines=[]
         for size,x,y,lines in page_boxes:
             if (size,x,y,lines)==title_box: continue
-            if len(lines)==1 and x>=title_box[1]+23 and size>=10 and not composer:
+            byline_below=(len(lines)==1 and size>=8 and
+                          y>title_box[2] and abs(x-title_box[1])<=15)
+            if len(lines)==1 and not composer and (
+                    (x>=title_box[1]+23 and size>=10) or byline_below):
                 composer=lines[0]
             elif len(lines)==1 and lines[0].casefold() in ('intro','trommelsolo'):
                 continue
@@ -367,9 +371,19 @@ def extract_metadata(root, filename=None):
                 r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?', line
             ):
                 continue
-            match = re.match(r'^(?:von|by|composed by|composer:)\s+(.+)$', line, re.I)
+            match=re.match(r'^(?:von|by|composed by|composer:)\s+(.+)$',line,re.I)
+            credited=re.match(
+                r'^((?:[A-ZÄÖÜ][\wäöüß-]+\s+){1,3}[A-ZÄÖÜ][\wäöüß-]+)'
+                r'\s+(?=Arr\.?\b|Trommeltext:)',line
+            )
             if match:
-                composer = match.group(1).strip()
+                composer=match.group(1).strip()
+            elif credited and not composer:
+                composer=credited.group(1).strip()
+                remaining=line[credited.end():].strip()
+                if remaining:
+                    remaining=re.sub(r'\s+(?=Trommeltext:|Arr\.)','\n',remaining)
+                    subtitle_lines.extend(remaining.splitlines())
             elif height >= 10 and len(line) > 3 and line not in subtitle_lines:
                 subtitle_lines.append(line)
     return title, '\n'.join(subtitle_lines), composer
@@ -410,9 +424,14 @@ def extract_variation_numbers(parts):
             if font is None or content is None:
                 continue
             label = ' '.join(''.join(content.itertext()).split())
-            if not re.fullmatch(
-                r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?(?:\s+[^\d].{1,35})?', label
-            ):
+            numbered=re.fullmatch(
+                r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?(?:\s+[^\d].{1,35})?',label
+            )
+            sectional=re.fullmatch(
+                r'(?i)(?:thema|var\.?\s*[1-9]\d?|finale)\b.{0,48}',label
+            )
+            letter=re.fullmatch(r'[A-Z]',label)
+            if not (numbered or sectional or letter):
                 continue
             if font.get('face', '').casefold() in ('capella', 'capella3'):
                 continue
@@ -459,11 +478,15 @@ def extract_score_directions(parts):
             performance=re.search(
                 r'(?i)(\bfine\b|\bcoda\b|\bsegno\b|'
                 r'\bd\.?\s*c\.?\b|\bd\.?\s*s\.?\b|'
-                r'\btrommelsolo\b|\btutti\b|\bsolo\b|'
+                r'\btrommelsolo\b|\btutti\b|\bsolo\b|\btrio\b|'
                 r'\britardando\b|\brit\.?\b|\ba tempo\b|'
                 r'\baccelerando\b|\baccel\.?\b)',
                 label)
-            if (performance and 10<=height<=20 and y<0
+            special=re.search(
+                r'(?i)^(?:glockeneffekt|gliss(?:ando)?|finale)\b',label
+            )
+            if (((performance and 10<=height<=20)
+                 or (special and 8<=height<=20))
                     and label not in out[event.time]):
                 out[event.time].append(label)
     return dict(out)
@@ -474,6 +497,23 @@ def add_score_direction(measure,label):
     kind=sub(direction,'direction-type')
     sub(kind,'words',label,font_size='10',font_weight='bold',
         relative_y='16',justify='left')
+    # MusicXML playback navigation, in addition to the visible label.
+    low=label.casefold()
+    sound={}
+    if re.search(r'\bd\.?\s*c\.?(?:\s|$)',low):
+        sound['dacapo']='yes'
+    if re.search(r'\bd\.?\s*s\.?(?:\s|$)',low):
+        sound['dalsegno']='segno'
+    if re.search(r'\b(?:to|al)\s+coda\b',low):
+        sound['tocoda']='coda'
+    elif re.search(r'\bcoda\b',low):
+        sound['coda']='coda'
+    if re.search(r'\bsegno\b',low) and 'dalsegno' not in sound:
+        sound['segno']='segno'
+    if re.fullmatch(r'fine\.?',low.strip()):
+        sound['fine']='yes'
+    if sound:
+        sub(direction,'sound',**sound)
 
 
 def add_variation_heading(measure, label):
@@ -568,6 +608,73 @@ def note_type(dur_node):
     return DURATION_TYPES.get(Fraction(dur_node.get('base','1/4')), 'quarter')
 
 
+# Single characters from capella3 are music glyph IDs, not literal text.
+# Use the same mapping as the MuseScore Capella legacy importer.
+CAPELLA_DYNAMICS={
+    'p':'p','q':'pp','r':'ppp','f':'f','g':'ff','h':'fff',
+    'i':'mp','j':'mf','s':'sf','z':'sfz','{':'fz','|':'fp',
+}
+CAPELLA_NAVIGATION={
+    'd':('D.C.',{'dacapo':'yes'}),
+    'e':('D.S.',{'dalsegno':'segno'}),
+    'y':('Segno',{'segno':'segno'}),
+    '$':('Segno',{'segno':'segno'}),
+    'n':('Coda',{'coda':'coda'}),
+    'o':('Coda',{'coda':'coda'}),
+}
+
+
+def capella_glyphs(event):
+    result=[]
+    for graphic in children(child(event.node,'drawObjects'),'drawObj'):
+        txt=child(graphic,'text')
+        font=child(txt,'font')
+        content=child(txt,'content')
+        if font is None or content is None:
+            continue
+        if font.get('face','').casefold() not in ('capella3','capella'):
+            continue
+        value=''.join(content.itertext()).strip()
+        if len(value)==1:
+            result.append(value)
+    return result
+
+
+def emit_glyph_directions(measure,event,voice):
+    for glyph in capella_glyphs(event):
+        if glyph in CAPELLA_DYNAMICS:
+            direction=sub(measure,'direction',placement='below')
+            dynamics=sub(sub(direction,'direction-type'),'dynamics')
+            sub(dynamics,CAPELLA_DYNAMICS[glyph])
+            sub(direction,'voice',voice)
+        elif glyph in CAPELLA_NAVIGATION:
+            label,sound=CAPELLA_NAVIGATION[glyph]
+            direction=sub(measure,'direction',placement='above')
+            dtyp=sub(direction,'direction-type')
+            if glyph in ('y','$'):sub(dtyp,'segno')
+            elif glyph in ('n','o'):sub(dtyp,'coda')
+            else:sub(dtyp,'words',label)
+            sub(direction,'voice',voice)
+            sub(direction,'sound',**sound)
+
+
+def emit_staff_solo_direction(measure,event,voice):
+    for graphic in children(child(event.node,'drawObjects'),'drawObj'):
+        txt=child(graphic,'text')
+        font=child(txt,'font')
+        content=child(txt,'content')
+        if font is None or content is None:
+            continue
+        if font.get('face','').casefold() in ('capella3','capella'):
+            continue
+        label=' '.join(''.join(content.itertext()).split())
+        if not re.match(r'(?i)^solo\b',label):
+            continue
+        direction=sub(measure,'direction',placement='below')
+        sub(sub(direction,'direction-type'),'words',label,font_size='11')
+        sub(direction,'voice',voice)
+
+
 def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False):
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
@@ -634,9 +741,13 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             sub(note,'notehead','x' if shape=='cross' else shape)
         gliss_start, gliss_end = graphic_links if graphic_links else ({},{})
         tuplet_start, tuplet_end = tuplet_links if tuplet_links else ({},{})
-        graphical_trill=any(child(d,'trill') is not None for d in
-                              children(child(ob,'drawObjects'),'drawObj'))
-        has_notation=bool(marks or ties or graphical_trill or id(event) in slur_starts
+        glyphs=capella_glyphs(event)
+        graphical_trill=(
+            't' in glyphs or any(child(d,'trill') is not None for d in
+                                  children(child(ob,'drawObjects'),'drawObj'))
+        )
+        fermata_glyph='u' if 'u' in glyphs else 'k' if 'k' in glyphs else None
+        has_notation=bool(marks or ties or graphical_trill or fermata_glyph or id(event) in slur_starts
                           or id(event) in slur_ends or id(event) in gliss_start
                           or id(event) in gliss_end or id(event) in tuplet_start
                           or id(event) in tuplet_end)
@@ -656,6 +767,8 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                     sub(nt,'glissando',type='start',number=sn,line_type='wavy')
                 if graphical_trill:
                     sub(sub(nt,'ornaments'),'trill-mark')
+                if fermata_glyph:
+                    sub(nt,'fermata',type=('upright' if fermata_glyph=='u' else 'inverted'))
             if marks and hi == 0:
                 articulations=sub(nt,'articulations')
                 for a in marks:
@@ -817,7 +930,20 @@ def make_graphic_links(events):
                 name=(graphic.get('name') or '').casefold()
                 basic=child(graphic,'basic')
                 line=child(graphic,'line')
-                if line is None or 'gliss' not in name or basic is None:
+                wavy=child(graphic,'wavyLine')
+                labeled_target=(
+                    index+1<len(chords) and any(
+                        re.search(r'\bgliss(?:ando)?\b',
+                                  ''.join(child(child(g,'text'),'content').itertext()),
+                                  re.I)
+                        for g in children(child(chords[index+1].node,'drawObjects'),'drawObj')
+                        if child(g,'text') is not None
+                        and child(child(g,'text'),'content') is not None
+                    )
+                )
+                if basic is None or not (
+                        (line is not None and 'gliss' in name)
+                        or (wavy is not None and labeled_target)):
                     continue
                 span=int(basic.get('noteRange','0'))
                 if not 0<span or index+span>=len(chords):
@@ -1092,6 +1218,9 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 placed_directions=set()
                 for e in ve:
                     if e.kind in ('chord','rest') and e.time>=start:
+                        emit_glyph_directions(measure,e,voice)
+                        if pi>0:
+                            emit_staff_solo_direction(measure,e,voice)
                         for no in wedge_stops.get(id(e),()):
                             direction=sub(measure,'direction',placement='below')
                             dtype=sub(direction,'direction-type')

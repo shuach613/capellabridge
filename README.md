@@ -77,7 +77,7 @@ Results are temporary and normally expire after 24 hours. Uploaded originals are
 
 ## Supported notation and fidelity
 
-CAPX files are interpreted from **CapXML 1.0, 2.0 and 3.0** into **MusicXML**, then converted by the installed MuseScore engine to native `.mscz`, PDF, and preview images. Supported features include standard notes and rests, chords, multiple voices, grace notes, ties, slurs, tuplets, written time signatures and changes, key changes, clefs, accidentals, articulation marks, repeat signs, first/second endings, variation numbers and page-one credits.
+CAPX files are interpreted from **CapXML 1.0, 2.0 and 3.0** into **MusicXML**, then converted by the installed MuseScore engine to native `.mscz`, PDF, and preview images. Supported features include notes and rests, chords, multiple voices, grace notes, ties, slurs, tuplets, written time signatures and changes, key changes, clefs, accidentals, staccato and accents, repeat signs, first/second endings, variation headings and first-page credits. Known Capella3-font symbols are translated into **editable dynamics** (p, pp, f, ff, mf, mp and related markings), **trills and fermatas**, plus D.C., D.S., Segno and Coda navigation where semantically identified in the source.
 
 The converter validates native MuseScore score structure and rhythmic measure lengths, then runs a **MuseScore Studio 4** cross-version reopen/export test during CI.
 
@@ -93,10 +93,13 @@ The following independently provided Capella scores were used to identify genera
 | **Fyyrvogel** | 5 | CapXML 3.0, changing meters, multipart notation, graphical title logo, four piccolos transitioning to a solo Zier staff |
 | **Nunnefirzli** | 4 | CapXML 1.0, multiple voices within staves, expression hairpins, slurs, dialect section headings and 2/4 |
 | **z'Basel am mym Rhy** | 3 | A fourth piccolo entering in later systems, staccato, ties, alternative endings, and triplets |
+| **Ai du scheene – 5 Variationen** | 6 | CapXML 3.0, four piccolos, changing time signatures, trills, fermatas, source-labeled glissando and thematic headings |
+| **Alte Kameraden 94** | 5 | CapXML 3.0, dynamically marked four-part score with p/f/mf glyphs, solo entries, ties and repeat endings |
+| **Alte Kameraden Tutti (Bajass)** | 5 | Older binary .cap file; parsed by MuseScore's legacy import engine, so results require comparison with the original PDF |
 
 The converter preserves part identities when staves appear, disappear, or are replaced; reads page-level titles and composers; maintains written meter notation (for example **2/4**, not **1/2**); and expands multimeasure rests across their actual spans. It also interprets common Capella graphical crescendo and diminuendo hairpins and keeps named variation headings above the relevant measures. Where a Capella title exists only as an embedded WMF graphic, it uses the uploaded filename as editable score text and retains readable composer/byline information.
 
-**Important:** A correctly generated MSCZ and valid MusicXML are not a guarantee of a facsimile engraving. Exact page counts, custom music fonts, beams, complex graphical objects and advanced ornaments may differ from the original PDF. Always compare the exported PDF and playback with the source before professional publication. Supported legacy `.cap` import uses MuseScore’s own older importer and is inherently best effort.
+**Important:** A correctly generated MSCZ and valid MusicXML are not a guarantee of a facsimile engraving. Dynamic playback markings, complex D.C./D.S. navigation, source-specific fonts, codas and editorial markings should be verified manually in MuseScore, especially in binary .cap files. Exact page counts, custom music fonts, beams, complex graphical objects and advanced ornaments may differ from the original PDF. Always compare the exported PDF and playback with the source before professional publication. Supported legacy `.cap` import uses MuseScore’s own older importer and is inherently best effort.
 
 ## Development and verification
 
