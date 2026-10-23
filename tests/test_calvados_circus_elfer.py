@@ -24,11 +24,11 @@ def note(*graphics):
             '<heads><head pitch="C5"/></heads></chord>')
 
 
-def fixture(notes, page='', ns=NS2):
+def fixture(notes, page='', ns=NS2, meter='4/4'):
     score=(f'<score xmlns="{ns}">{page}'
            '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
            '<systems><system><staves><staff layout="Piccolo"><voices>'
-           '<voice><noteObjects><timeSign time="4/4"/>'
+           f'<voice><noteObjects><timeSign time="{meter}"/>'
            +notes+'</noteObjects></voice></voices></staff></staves></system></systems>'
            '</score>')
     buf=io.BytesIO()
@@ -96,7 +96,8 @@ def test_elfer_capxml3_circled_digits_have_sibling_ellipse():
                  '<basic noAdjust="true"/></drawObj>')
         images.append(note(textbox(str(i),font='capella3',height=18,y=-8),
                            ellipse))
-    xml,report=serialize_musicxml(fixture(''.join(images),ns=NS3))
+    # Every circled variation begins a new 1/4 measure in this fixture.
+    xml,report=serialize_musicxml(fixture(''.join(images),ns=NS3,meter='1/4'))
     root=ET.fromstring(xml)
     assert report['variation_numbers']==['①','②','③','④']
     assert [n.text for n in root.findall('.//direction-type/words')]==[
