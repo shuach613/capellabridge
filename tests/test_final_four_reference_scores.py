@@ -89,7 +89,8 @@ def test_vaudois_red_page_level_da_capo_and_invisible_white_hint():
     assert report['composer']=='Gustave Doret 1922'
     assert report['printed_directions'].count('d.c.al fine')==1
     assert 'd. c. al fine con rep' not in report['printed_directions']
-    dc=xml.find('.//direction[sound[@dacapo="yes"]]')
+    found=xml.xpath('.//direction[sound[@dacapo="yes"]]')
+    dc=found[0] if found else None
     assert dc is not None
     words=dc.find('./direction-type/words')
     assert words is not None and words.text=='d.c.al fine'
