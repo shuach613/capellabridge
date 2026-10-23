@@ -556,11 +556,12 @@ def extract_variation_numbers(parts):
                         y=float(element.get('y','0'))
                     except ValueError:
                         continue
-                    results.append((label,height,y,is_circled))
+                    results.append((label,height,y,is_circled,
+                                    font.get('italic')=='true'))
             return results
 
         visible=annotations(event)
-        for label,height,y,circled in visible:
+        for label,height,y,circled,_ in visible:
             numbered=re.fullmatch(
                 r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?(?:\s+[^\d].{1,35})?',label
             )
@@ -588,8 +589,9 @@ def extract_variation_numbers(parts):
                     if (nxt.kind=='chord' and nxt.system==event.system
                             and Fraction(0)<nxt.time-event.time<=Fraction(1,16)):
                         nearby.extend(annotations(nxt))
-                captions=[text for text,size,cy,_ in nearby
-                          if text!=label and 8<=size<=12 and cy<0
+                captions=[text for text,size,cy,_,italic in nearby
+                          if text!=label and not italic and 8<=size<=12
+                          and cy<0 and abs(cy-y)<=5
                           and re.fullmatch(r'[A-Za-zÄÖÜäöüß][\wÄÖÜäöüß .,\'-]{3,55}',text)
                           and not re.search(r'(?i)\b(?:arr\.|von|seite|trommeltext)\b',text)
                           and not re.search(r'\b(?:18|19|20)\d{2}\b',text)
@@ -633,7 +635,7 @@ def extract_score_directions(parts, section_times=None):
             performance=re.search(
                 r'(?i)(\bfine\b|\bcoda\b|\bsegno\b|'
                 r'\bd\.?\s*c\.?\b|\bd\.?\s*s\.?\b|'
-                r'\bda\s+capo\b|\btrommelsolo\b|\btutti\b|\bsolo\b|\btrio\b|'
+                r'\bda\s+capo\b|\bintro\b|\btrommelsolo\b|\btutti\b|\bsolo\b|\btrio\b|'
                 r'\britardando\b|\brit\.?\b|\ba tempo\b|'
                 r'\baccelerando\b|\baccel\.?\b)',
                 label)
