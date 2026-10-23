@@ -735,7 +735,7 @@ def source_notation_audit(root):
             if name=='basic':
                 continue
             annotations[name]+=1
-            if name not in ('text','slur','volta','trill'):
+            if name not in ('text','slur','volta','trill','wedge'):
                 unsupported[name]+=1
     beams=root.xpath('//c:chord/c:beam',namespaces=N)
     custom_beams=[e for e in beams if e.get('group','auto')!='auto']
@@ -749,6 +749,7 @@ def source_notation_audit(root):
         'rests':len(root.xpath('//c:rest',namespaces=N)),
         'ties':len(root.xpath('//c:tie',namespaces=N)),
         'slurs':annotations['slur'],
+        'hairpins':annotations['wedge'],
         'tuplets':len(root.xpath('//c:tuplet',namespaces=N)),
         'grace_notes':len(root.xpath('//c:duration[@noDuration="true"]',namespaces=N)),
         'lyrics':len(root.xpath('//c:lyric/c:verse',namespaces=N)),
@@ -758,6 +759,44 @@ def source_notation_audit(root):
         'time_signatures':sorted(set(root.xpath('//c:timeSign/@time',namespaces=N))),
     }
     return feature_counts,dict(sorted(unsupported.items()))
+
+
+def make_wedge_links(events):
+    """Attach Capella graphical crescendo/diminuendo hairpins to note times.
+
+    Wedge noteRange addresses subsequent rhythmic events in the same voice.
+    Keep distinct numbers for overlapping wedges; do not infer ornaments
+    from unrelated graphic lines.
+    """
+    starts=collections.defaultdict(list)
+    stops=collections.defaultdict(list)
+    per_voice=collections.defaultdict(list)
+    for event in events:
+        if event.kind in ('chord','rest'):
+            per_voice[event.voice].append(event)
+    serial=0
+    for voice,notes in per_voice.items():
+        for index,event in enumerate(notes):
+            for draw in children(child(event.node,'drawObjects'),'drawObj'):
+                wedge=child(draw,'wedge')
+                basic=child(draw,'basic')
+                if wedge is None or basic is None:continue
+                try:
+                    span=int(basic.get('noteRange','0'))
+                except ValueError:
+                    continue
+                if span<1 or index+span>=len(notes):
+                    continue
+                serial+=1
+                number=1+((serial-1)%16)
+                kind=('diminuendo' if wedge.get('decrescendo')=='true'
+                      else 'crescendo')
+                raw_color=wedge.get('color','')
+                color=('#'+raw_color if re.fullmatch(r'[A-Fa-f0-9]{6}',raw_color)
+                       else None)
+                starts[id(event)].append((number,kind,color))
+                stops[id(notes[index+span])].append(number)
+    return starts,stops
 
 
 def make_graphic_links(events):
@@ -981,6 +1020,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         events=sorted(p.events,key=lambda x:(x.time,x.voice))
         slur_starts,slur_ends=make_slur_links(events)
         graphic_links=make_graphic_links(events)
+        wedge_starts,wedge_stops=make_wedge_links(events)
         tuplet_links=make_tuplet_links(events)
         state={'key':0,'time':opening_time,'clef':'treble','accidentals':{}}
         nnotes=0
@@ -1034,6 +1074,19 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 cursor=start
                 placed_directions=set()
                 for e in ve:
+                    if e.kind in ('chord','rest') and e.time>=start:
+                        for no in wedge_stops.get(id(e),()):
+                            direction=sub(measure,'direction',placement='below')
+                            dtype=sub(direction,'direction-type')
+                            sub(dtype,'wedge',number=no,type='stop')
+                            sub(direction,'voice',voice)
+                        for no,kind,color in wedge_starts.get(id(e),()):
+                            direction=sub(measure,'direction',placement='below')
+                            dtype=sub(direction,'direction-type')
+                            props={'number':no,'type':kind}
+                            if color:props['color']=color
+                            sub(dtype,'wedge',**props)
+                            sub(direction,'voice',voice)
                     if (pi==0 and voice==1 and e.kind in ('chord','rest')
                             and e.time not in placed_directions):
                         for words in score_directions.get(e.time,()):
