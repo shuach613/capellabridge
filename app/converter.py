@@ -159,8 +159,20 @@ def read_capx(raw: bytes):
         root = ET.fromstring(xml, parser=ET.XMLParser(resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False))
     except ET.XMLSyntaxError as exc:
         raise CapellaError('Invalid score XML') from exc
-    if tag(root) != 'score' or ET.QName(root).namespace != CAP_NS:
-        raise CapellaError('Only CapXML 2.0 scores are supported by the native converter')
+    source_namespace=ET.QName(root).namespace
+    allowed={f'http://www.capella.de/CapXML/{v}.0' for v in (1,2,3)}
+    if tag(root)!='score' or source_namespace not in allowed:
+        raise CapellaError('Unsupported CapXML format: expected CapXML 1.0, 2.0 or 3.0')
+    if source_namespace != CAP_NS:
+        # The notation primitives in these CapXML versions share element
+        # names. Normalize element namespaces in-memory, not the raw XML
+        # bytes, to avoid accidentally altering text, URLs or attributes.
+        # Unknown elements remain subject to the normal notation audit.
+        for element in root.iter():
+            if isinstance(element.tag,str) and ET.QName(element).namespace==source_namespace:
+                element.tag='{'+CAP_NS+'}'+ET.QName(element).localname
+        ET.cleanup_namespaces(root)
+    root.set('source-capxml-version',source_namespace.rsplit('/',1)[-1])
     return root
 
 
@@ -801,6 +813,12 @@ def serialize_musicxml(raw, layout='balanced'):
     if layout not in ('balanced','compact','original'):raise CapellaError('Invalid layout mode')
     root=read_capx(raw)
     parts,end,warnings=parse_score(root)
+    original_capxml=root.get('source-capxml-version','2.0')
+    if original_capxml!='2.0':
+        warnings.append(
+            f'CapXML {original_capxml} source normalized to the common '
+            'notation model; review proprietary graphics and advanced symbols.'
+        )
     uniform_strongbeat=uniformly_marked_voices(parts)
     if uniform_strongbeat:
         names=', '.join(parts[i].name for i in sorted(uniform_strongbeat))
@@ -1069,6 +1087,7 @@ def serialize_musicxml(raw, layout='balanced'):
             'measures':measure_count,'notes':sum(1 for p in parts for e in p.events if e.kind=='chord'),
             'warnings':sorted(set(warnings)),'layout':layout,'source_format':'capx',
             'source_systems':len(children(child(root, 'systems'), 'system')),
+            'capxml_version':original_capxml,
             'variation_numbers':list(variation_numbers.values()),
             'printed_directions':[word for words in score_directions.values() for word in words],
             'notation_features':features,
