@@ -238,6 +238,34 @@ def main():
         assert len(native.findall('.//endRepeat'))==2
     print('Joined backward+forward Capella repeats survived native MuseScore export')
 
+    # Cross-file safeguard: source-wide strongBeat markers should not
+    # become marcato accents on literally every note in MuseScore.
+    marked_notes=''.join(
+        '<chord><duration base="1/4"/><articulation type="strongBeat"/>'
+        '<heads><head pitch="C5"/></heads></chord>' for _ in range(40)
+    )
+    marked_xml=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves><staffLayout description="Flute"/></staves></layout>'
+        '<systems><system><staves><staff layout="Flute"><voices><voice><noteObjects>'
+        '<timeSign time="4/4"/>'+marked_notes+
+        '</noteObjects></voice></voices></staff></staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(marked_xml)
+    response=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert response['results'][0]['ok'],response
+    entry=response['results'][0]
+    assert entry['normalized_uniform_strongbeat']==40,entry
+    with zipfile.ZipFile(io.BytesIO(get(entry['downloads']['mscz']))) as z:
+        from xml.etree import ElementTree as ET
+        native=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+        assert len(native.findall('.//Chord'))==40
+        assert not any(
+            a.findtext('subtype')=='articMarcatoAbove'
+            for a in native.findall('.//Articulation')
+        ),'Uniform accents were reintroduced during MuseScore conversion'
+    print('Uniform strongBeat marks suppressed in final editable MSCZ',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
