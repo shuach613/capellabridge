@@ -276,7 +276,7 @@ def extract_metadata(root):
         except ValueError:
             continue
         if (size<10 or y>25 or not value or '#' in value
-                or re.search(r'\\b(?:seite|page)\\b',value,re.I)):
+                or re.search(r'\b(?:seite|page)\b',value,re.I)):
             continue
         page_boxes.append((size,x,y,value))
     if page_boxes:
@@ -291,7 +291,7 @@ def extract_metadata(root):
                 composer=value
             elif value not in subtitle_lines:
                 subtitle_lines.append(value)
-        return title,'\\n'.join(subtitle_lines),composer
+        return title,'\n'.join(subtitle_lines),composer
 
     text_boxes = []
     for item in root.xpath('//c:systems/c:system[1]//c:drawObj/c:text', namespaces=N):
