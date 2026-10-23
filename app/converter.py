@@ -289,8 +289,9 @@ def extract_metadata(root, filename=None):
             y=float(item.get('y','0'))
         except ValueError:
             continue
-        if (size<10 or y>25 or not lines or
+        if (size<8 or y>25 or not lines or
                 any('#' in v or re.search(r'\b(?:seite|page)\b',v,re.I)
+                    or re.match(r'^\d{1,2}\.\d{1,2}\.\d{4}\b',v)
                     for v in lines)):
             continue
         page_boxes.append((size,x,y,lines))
@@ -306,7 +307,10 @@ def extract_metadata(root, filename=None):
         subtitle_lines=[]
         for size,x,y,lines in page_boxes:
             if (size,x,y,lines)==title_box: continue
-            if len(lines)==1 and x>=title_box[1]+23 and size>=10 and not composer:
+            byline_below=(len(lines)==1 and size>=8 and
+                          y>title_box[2] and abs(x-title_box[1])<=15)
+            if len(lines)==1 and not composer and (
+                    (x>=title_box[1]+23 and size>=10) or byline_below):
                 composer=lines[0]
             elif len(lines)==1 and lines[0].casefold() in ('intro','trommelsolo'):
                 continue
@@ -367,9 +371,19 @@ def extract_metadata(root, filename=None):
                 r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?', line
             ):
                 continue
-            match = re.match(r'^(?:von|by|composed by|composer:)\s+(.+)$', line, re.I)
+            match=re.match(r'^(?:von|by|composed by|composer:)\s+(.+)$',line,re.I)
+            credited=re.match(
+                r'^((?:[A-ZÄÖÜ][\wäöüß-]+\s+){1,3}[A-ZÄÖÜ][\wäöüß-]+)'
+                r'\s+(?=Arr\.?\b|Trommeltext:)',line
+            )
             if match:
-                composer = match.group(1).strip()
+                composer=match.group(1).strip()
+            elif credited and not composer:
+                composer=credited.group(1).strip()
+                remaining=line[credited.end():].strip()
+                if remaining:
+                    remaining=re.sub(r'\s+(?=Trommeltext:|Arr\.)','\n',remaining)
+                    subtitle_lines.extend(remaining.splitlines())
             elif height >= 10 and len(line) > 3 and line not in subtitle_lines:
                 subtitle_lines.append(line)
     return title, '\n'.join(subtitle_lines), composer
