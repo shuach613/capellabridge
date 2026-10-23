@@ -385,7 +385,7 @@ def extract_metadata(root, filename=None):
                 if remaining:
                     remaining=re.sub(r'\s+(?=Trommeltext:|Arr\.)','\n',remaining)
                     subtitle_lines.extend(remaining.splitlines())
-            elif (not composer and 8 <= height < title_height and
+            elif (not composer and 8 <= height <= 10 and
                   title_y < y <= title_y + 8 and
                   re.fullmatch(r'(?u)[A-ZÄÖÜ][A-Za-zÄÖÜäöüß. ]{3,45}',line)
                   and not re.search(r'(?i)\b(?:trio|intro|solo|tutti)\b',line)):
