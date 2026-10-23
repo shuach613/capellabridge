@@ -48,6 +48,8 @@ jobs:
       - name: Install official MuseScore Studio 4.7.5 for cross-version check
         timeout-minutes: 12
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libegl1 libopengl0 libgl1 libjack-jackd2-0
           curl --fail --location --retry 3 --silent --show-error \
             https://github.com/musescore/MuseScore/releases/download/v4.7.5/MuseScore-Studio-4.7.5.260831071-x86_64.AppImage \
             --output /tmp/studio4.AppImage
