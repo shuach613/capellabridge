@@ -19,8 +19,9 @@ from fastapi.staticfiles import StaticFiles
 from .converter import CapellaError, serialize_musicxml
 from .musescore import ConversionFailure, convert, create_preview, musescore_path
 from .engraving import prepare_print_ready
+from .score_validation import audit_mscz, ScoreIntegrityError
 
-VERSION='1.5.0'
+VERSION='1.6.0'
 BASE=Path(os.environ.get('CAPELLABRIDGE_DATA','/data')).resolve()
 JOBS=BASE/'jobs'
 STATIC=Path(__file__).parent/'static'
@@ -113,6 +114,28 @@ def pdf_page_count(path: Path) -> int | None:
         return None
 
 
+def save_validated_mscz(source_xml: Path, final_mscz: Path,
+                        report: dict | None, warnings: list[str]) -> None:
+    """Round-trip native score via MuseScore and verify all timed measures.
+
+    MuseScore 3 can emit a readable MSCZ ZIP containing slightly incomplete
+    measures; MuseScore Studio 4 then flags those scores as corrupted. A
+    successful PDF export alone cannot verify score integrity.
+    """
+    convert(source_xml, final_mscz)
+    prepare_print_ready(final_mscz, report)
+    warnings.extend(audit_mscz(final_mscz, repair=True))
+    canonical = final_mscz.with_name(final_mscz.stem + '-canonical.mscz')
+    try:
+        convert(final_mscz, canonical)
+        prepare_print_ready(canonical, report)
+        warnings.extend(audit_mscz(canonical, repair=True))
+        os.replace(canonical, final_mscz)
+    finally:
+        canonical.unlink(missing_ok=True)
+    audit_mscz(final_mscz, repair=False)
+
+
 def process_score(name,ext,raw,work,layout):
     stem=Path(name).stem
     prefix=safe_filename(stem)
@@ -131,8 +154,7 @@ def process_score(name,ext,raw,work,layout):
         report={'title':stem,'source_format':'cap','parts':[],'measures':None,'warnings':[],'layout':'musescore-import'}
         warnings.append('Legacy .cap uses MuseScore’s import engine, not the CAPX native parser. Review layout and voices.')
     mscz=work/(prefix+'.mscz')
-    convert(xml_path,mscz)
-    prepare_print_ready(mscz,report if ext=='.capx' else None)
+    save_validated_mscz(xml_path, mscz, report if ext=='.capx' else None, warnings)
     pdf=work/(prefix+'.pdf')
     convert(mscz,pdf)
     # Restore a readable layout if an exact Capella system arrangement
@@ -144,8 +166,7 @@ def process_score(name,ext,raw,work,layout):
         if pages is not None and pages>reasonable_pages:
             xml,balanced_report=serialize_musicxml(raw,'balanced')
             xml_path.write_bytes(xml)
-            convert(xml_path,mscz)
-            prepare_print_ready(mscz,balanced_report)
+            save_validated_mscz(xml_path, mscz, balanced_report, warnings)
             convert(mscz,pdf)
             report['layout']='balanced-fallback'
             warnings.append(
@@ -190,7 +211,7 @@ async def upload(files: Annotated[list[UploadFile],File(...)],layout: str='balan
                 result=await asyncio.to_thread(process_score,name,ext,raw,out,layout)
                 result['downloads']={k:f'/api/files/{job_id}/{index+1:02d}/{v}' for k,v in result['files'].items()}
                 results.append({'ok':True,**result})
-            except (CapellaError,ConversionFailure,ValueError,zipfile.BadZipFile) as exc:
+            except (CapellaError,ConversionFailure,ScoreIntegrityError,ValueError,zipfile.BadZipFile) as exc:
                 shutil.rmtree(out,ignore_errors=True)
                 results.append({'ok':False,'source_filename':name,'error':str(exc)[:500]})
             except Exception:
