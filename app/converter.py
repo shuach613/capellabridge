@@ -142,6 +142,44 @@ class Part:
 class CapellaError(ValueError): pass
 
 
+def _capella_rtf_direction(data):
+    """Extract score-direction text from a small Capella-embedded RTF object.
+
+    This deliberately interprets only a plaintext paragraph and the
+    documented Capella3 navigation glyphs. It does not guess the musical
+    meaning of arbitrary proprietary font glyphs or import RTF styling.
+    """
+    rtf=data.decode('cp1252','replace')
+    capella_fonts={int(n) for n in re.findall(
+        r'\{\\f(\d+)[^{}]{0,160}\bcapella3\s*;',rtf,re.I)}
+    para=re.search(r'\\pard\b(.*?)(?=\\par\b|$)',rtf,re.S)
+    if para is None:
+        return ''
+    out=[]
+    active_font=-1
+    for match in re.finditer(
+            r"\\'[0-9a-fA-F]{2}|\\[a-zA-Z]+-?\d* ?|\\[^a-zA-Z]|[^\\{}]+",
+            para.group(1)):
+        token=match.group()
+        font_switch=re.fullmatch(r'\\f(\d+) ?',token)
+        if font_switch:
+            active_font=int(font_switch.group(1))
+        elif token.startswith("\\'"):
+            out.append(bytes.fromhex(token[2:]).decode('cp1252','replace'))
+        elif token=='\\~':
+            out.append(' ')
+        elif token.startswith('\\'):
+            continue
+        elif active_font in capella_fonts:
+            # Display semantic names instead of raw Capella font IDs.
+            names={'e':'D.S.','d':'D.C.','$':'Segno','y':'Segno',
+                   'n':'Coda','o':'Coda'}
+            out.append(''.join(names.get(c,c) for c in token))
+        else:
+            out.append(token)
+    return ' '.join(''.join(out).split())[:500]
+
+
 def read_capx(raw: bytes):
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
@@ -151,6 +189,13 @@ def read_capx(raw: bytes):
             info = archive.getinfo(xml_name)
             if info.file_size > MAX_XML: raise CapellaError('score.xml is too large')
             xml = archive.read(xml_name)
+            # Keep short, referenced rich-text score directions available
+            # while rejecting huge or unrelated archive attachments.
+            rich_assets={}
+            for info in archive.infolist():
+                if (len(rich_assets)<24 and info.filename.endswith('.rtf')
+                        and 0<info.file_size<=65536):
+                    rich_assets[info.filename]=archive.read(info.filename)
     except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
         raise CapellaError('Not a valid CAPX ZIP archive') from exc
     if b'<!DOCTYPE' in xml.upper() or b'<!ENTITY' in xml.upper():
@@ -160,9 +205,9 @@ def read_capx(raw: bytes):
     except ET.XMLSyntaxError as exc:
         raise CapellaError('Invalid score XML') from exc
     source_namespace=ET.QName(root).namespace
-    allowed={f'http://www.capella.de/CapXML/{v}.0' for v in (1,2,3)}
+    allowed={f'http://www.capella.de/CapXML/{v}.0' for v in (1,2,3,4)}
     if tag(root)!='score' or source_namespace not in allowed:
-        raise CapellaError('Unsupported CapXML format: expected CapXML 1.0, 2.0 or 3.0')
+        raise CapellaError('Unsupported CapXML format: expected CapXML 1.0, 2.0, 3.0 or 4.0')
     if source_namespace != CAP_NS:
         # The notation primitives in these CapXML versions share element
         # names. Normalize element namespaces in-memory, not the raw XML
@@ -173,6 +218,19 @@ def read_capx(raw: bytes):
                 element.tag='{'+CAP_NS+'}'+ET.QName(element).localname
         ET.cleanup_namespaces(root)
     root.set('source-capxml-version',source_namespace.rsplit('/',1)[-1])
+    for item in root.xpath('//c:drawObj/c:richText',namespaces=N):
+        data=rich_assets.get(item.get('file',''))
+        if not data:
+            continue
+        caption=_capella_rtf_direction(data)
+        if not caption:
+            continue
+        parent=item.getparent()
+        text=ET.SubElement(parent,'{'+CAP_NS+'}text',
+                           x=item.get('x','0'),y=item.get('y','-7'))
+        ET.SubElement(text,'{'+CAP_NS+'}font',
+                      face='Arial',height='12',color='FF0000')
+        ET.SubElement(text,'{'+CAP_NS+'}content').text=caption
     return root
 
 
@@ -271,6 +329,47 @@ def parse_score(root):
     return parts, clock, sorted(set(warnings))
 
 
+def first_system_named_credits(root):
+    """Recover unambiguous year-tagged authors and additional-voice credits.
+
+    Some scores have a page-level title but keep the author and arranger on
+    note-attached text. The narrow author pattern avoids guessing that a
+    movement heading or arbitrary first-system text is a composer.
+    """
+    composer=''
+    supplementary=[]
+    unambiguous_byline=[]
+    for item in root.xpath('//c:systems/c:system[1]//c:drawObj/c:text',namespaces=N):
+        font=child(item,'font')
+        content=child(item,'content')
+        if font is None or content is None:
+            continue
+        if font.get('face','').casefold() in ('capella','capella3'):
+            continue
+        label=' '.join(''.join(content.itertext()).split())
+        try:
+            height=float(font.get('height','0'))
+            y=float(item.get('y','0'))
+        except ValueError:
+            continue
+        if not (8<=height<=12 and y<0):
+            continue
+        if not composer and re.fullmatch(
+                r'(?u)(?:[A-ZÄÖÜ][A-Za-zÄÖÜäöüß-]+\s+){1,3}\d{4}',label):
+            composer=label
+        elif re.match(r'(?i)^\d+\.\s*(?:schtimm|stimm|stimme)\b',label):
+            if label not in supplementary:
+                supplementary.append(label)
+        elif (y <= -11 and 9 <= height <= 13 and re.fullmatch(
+                r'(?u)(?:(?:[A-ZÄÖÜ]\.|[A-ZÄÖÜ][a-zäöüß-]+)\s+){1,3}'
+                r'[A-ZÄÖÜ][a-zäöüß-]+',label)):
+            # Score authors may be attached to the first staff rather than
+            # pageObjects, e.g. "H. Weber" or "Karl Roth". The strict name,
+            # size and height rules exclude dates, tune headings and digits.
+            unambiguous_byline.append(label)
+    return composer or (unambiguous_byline[0] if unambiguous_byline else ''),supplementary
+
+
 def extract_metadata(root, filename=None):
     """Read Capella page-level credits, falling back to note-attached titles.
 
@@ -298,7 +397,7 @@ def extract_metadata(root, filename=None):
     # A title in the upper margin is typographically larger than composer
     # credits; don't treat a nearby introductory section label as the title.
     titles=[box for box in page_boxes
-            if box[0]>=15 and box[2]<=9 and len(box[3][0])>=4
+            if box[0]>=14 and box[2]<=11 and len(box[3][0])>=4
             and box[3][0].casefold() not in ('intro','trommelsolo')]
     if titles:
         title_box=max(titles,key=lambda box:box[0])
@@ -307,28 +406,93 @@ def extract_metadata(root, filename=None):
         subtitle_lines=[]
         for size,x,y,lines in page_boxes:
             if (size,x,y,lines)==title_box: continue
+            # Dates and rights are page-header metadata, not an invented
+            # subtitle or a composer's name. They are printed separately.
+            if all(re.fullmatch(r'\d{1,2}\.\d{1,2}\.\d{4}\s+\w{2,8}',v)
+                   or v.startswith('©') for v in lines):
+                continue
+            # Capella may combine a composer and arrangement credit in one
+            # multiline page text (e.g. "von W. A. Mozart" followed by
+            # "für 4 Piccolo arr. ..."). Preserve both semantic fields.
+            if len(lines)>1:
+                first=lines[0]
+                explicit=re.match(r'(?i)^(?:von|by)\s+(.+)$',first)
+                if explicit and not composer:
+                    composer=explicit.group(1).strip()
+                    subtitle_lines.extend(lines[1:])
+                else:
+                    subtitle_lines.extend(v for v in lines if v not in subtitle_lines)
+                continue
             byline_below=(len(lines)==1 and size>=8 and
                           y>title_box[2] and abs(x-title_box[1])<=15)
-            if len(lines)==1 and not composer and (
+            contribution=bool(re.match(
+                r'(?i)^(?:arrangiert\b|arr\.|bearb\.|\d+\.\s*(?:schtimm|stimm))',
+                lines[0]))
+            # A parenthesized arranger credit, such as "(arr. R. Brielmann
+            # 1988)", must never become the composer.
+            if (len(lines)==1 and re.fullmatch(
+                    r'(?i)\(\s*(?:arr\.?|arrangiert)\s+[^()]{3,80}\s*\)',
+                    lines[0])):
+                if lines[0] not in subtitle_lines:
+                    subtitle_lines.append(lines[0])
+                continue
+            # A printed byline can name both the original composer and
+            # an arranger. Preserve the complete source words *visibly*
+            # while writing semantically correct MusicXML creator metadata.
+            arr_credit=re.match(r'(?i)^(.+?),\s*arr\.\s+(.+)$',lines[0])
+            movement_credit=re.match(
+                r'(?i)^[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß -]{2,40}\s+v\.\s*'
+                r'(.+?),\s*([^,]+),\s*\d{1,2}\.\d{1,2}\.\d{4}$',
+                lines[0])
+            if (len(lines)==1 and not composer and byline_below
+                    and (arr_credit or movement_credit)):
+                composer=(arr_credit or movement_credit).group(1).strip()
+                subtitle_lines.append(lines[0])
+                continue
+            dedication_credit=re.fullmatch(
+                r'(?u)([A-ZÄÖÜ][^\W\d_]+(?:\s+[A-ZÄÖÜ]'
+                r'[^\W\d_]+){1,3}),\s*\d{1,2}\.\d{1,2}\.'
+                r'\d{4},\s*für\s+.+',lines[0])
+            if (len(lines)==1 and not composer and byline_below
+                    and dedication_credit):
+                # Preserve the *complete printed line* in the subtitle
+                # while keeping date and dedication out of composer metadata.
+                # Example source: "René Brielmann, 22.06.1983, für die Musketiere".
+                composer=dedication_credit.group(1).strip()
+                subtitle_lines.append(lines[0])
+                continue
+            if len(lines)==1 and not composer and not contribution and (
                     (x>=title_box[1]+23 and size>=10) or byline_below):
                 composer=lines[0]
             elif len(lines)==1 and lines[0].casefold() in ('intro','trommelsolo'):
                 continue
             else:
                 subtitle_lines.extend(v for v in lines if v not in subtitle_lines)
+        extra_composer,extra_lines=first_system_named_credits(root)
+        if not composer:
+            composer=extra_composer
+        for line in extra_lines:
+            if line not in subtitle_lines:
+                subtitle_lines.append(line)
         return title,'\n'.join(subtitle_lines),composer
     # Capella may store the heading as a graphical metafile. In that case
     # the upload filename is the only reliable machine-readable title.
     has_graphical_title=bool(root.xpath(
         './c:pageObjects/c:drawObj/c:metafile',namespaces=N))
     if has_graphical_title and filename:
-        title=Path(filename).stem.replace('_',' ').strip() or 'Converted score'
+        title=re.sub(r'\s*\(\d+\)$','',
+                     Path(filename).stem.replace('_',' ').strip()) or 'Converted score'
         composer=''
         subtitles=[]
         for size,x,y,lines in page_boxes:
             if x>=70 and size>=10 and not composer:
                 composer=lines[0]
                 subtitles.extend(lines[1:])
+                break
+        if 'Trommeltext:' in composer:
+            lead,drums=composer.split('Trommeltext:',1)
+            composer=lead.strip()
+            subtitles.append('Trommeltext: '+drums.strip())
         return title,'\n'.join(subtitles),composer
 
     text_boxes = []
@@ -360,6 +524,7 @@ def extract_metadata(root, filename=None):
     title = title_box[2][0]
     subtitle_lines = []
     composer = ''
+    title_height,title_y,_ = title_box
     for height, y, lines in sorted(text_boxes, key=lambda box: box[1]):
         if (height, y, lines) == title_box:
             # Some Capella documents combine title and byline in one box.
@@ -384,8 +549,29 @@ def extract_metadata(root, filename=None):
                 if remaining:
                     remaining=re.sub(r'\s+(?=Trommeltext:|Arr\.)','\n',remaining)
                     subtitle_lines.extend(remaining.splitlines())
-            elif height >= 10 and len(line) > 3 and line not in subtitle_lines:
-                subtitle_lines.append(line)
+            elif (not composer and len(lines)==1 and 8 <= height <= 10 and
+                  title_y < y <= title_y + 8 and
+                  re.fullmatch(r'(?u)[A-ZÄÖÜ][A-Za-zÄÖÜäöüß. ]{3,45}',line)
+                  and not re.search(r'(?i)\b(?:trio|intro|solo|tutti)\b',line)):
+                # A compact Capella first-system credit (e.g. W. E. Saladin)
+                # can use a 9-point font, while the main title uses 16.
+                composer=line
+            elif (height >= 10 or (height >= 8 and len(lines)>1
+                    and title_y <= y <= title_y + 10)) and len(line)>3:
+                if line not in subtitle_lines:
+                    subtitle_lines.append(line)
+    extra_composer,extra_lines=first_system_named_credits(root)
+    if not composer:
+        composer=extra_composer
+    if not composer:
+        title_byline=re.search(
+            r'(?iu),\s*(?:vom|von)\s+([A-ZÄÖÜ][a-zäöüß-]+\s+'
+            r'[A-ZÄÖÜ][a-zäöüß-]+)$',title)
+        if title_byline:
+            composer=title_byline.group(1)
+    for line in extra_lines:
+        if line not in subtitle_lines:
+            subtitle_lines.append(line)
     return title, '\n'.join(subtitle_lines), composer
 
 
@@ -408,22 +594,52 @@ def leading_voice_events(parts):
 
 
 def extract_variation_numbers(parts):
-    """Capella stores section/variation headings as graphical text on chords.
+    """Preserve printed section numbers and captions, including grouped graphics.
 
-    Keep only prominent, negative-Y numbered annotations in the leading staff,
-    not tiny tuplet digits or unrelated score metadata.
+    Capella stores circled section digits inside a group/ellipse with a
+    capella3 digit, whereas some multipart marches place a small movement
+    caption on the same chord or on the next short upbeat note.
+    Neither should be confused with tuplets, music-font dynamics or credits.
     """
-    markers = {}
-    for event in leading_voice_events(parts):
-        if event.kind not in ('chord','rest') or event.voice != 1:
+    markers={}
+    first=leading_voice_events(parts)
+    for index,event in enumerate(first):
+        if event.kind not in ('chord','rest') or event.voice!=1:
             continue
-        for draw in children(child(event.node, 'drawObjects'), 'drawObj'):
-            element = child(draw, 'text')
-            font = child(element, 'font')
-            content = child(element, 'content')
-            if font is None or content is None:
-                continue
-            label = ' '.join(''.join(content.itertext()).split())
+
+        def annotations(source):
+            results=[]
+            graphics=children(child(source.node,'drawObjects'),'drawObj')
+            sibling_ellipse=any(child(obj,'ellipse') is not None for obj in graphics)
+            for draw in graphics:
+                is_circled=sibling_ellipse or bool(
+                    draw.xpath('.//c:group/c:drawObj/c:ellipse',namespaces=N))
+                for element in draw.xpath('.//c:text',namespaces=N):
+                    font=child(element,'font')
+                    content=child(element,'content')
+                    if font is None or content is None:
+                        continue
+                    label=' '.join(''.join(content.itertext()).split())
+                    if not label:
+                        continue
+                    face=font.get('face','').casefold()
+                    if face in ('capella','capella3') and not (
+                            (is_circled and re.fullmatch(r'[1-9]',label))
+                            or (face=='capella3' and re.fullmatch(r'[1-9]\d?',label)
+                                and float(font.get('height','0'))>=20
+                                and float(element.get('y','0'))<0)):
+                        continue
+                    try:
+                        height=float(font.get('height','0'))
+                        y=float(element.get('y','0'))
+                    except ValueError:
+                        continue
+                    results.append((label,height,y,is_circled,
+                                    font.get('italic')=='true'))
+            return results
+
+        visible=annotations(event)
+        for label,height,y,circled,_ in visible:
             numbered=re.fullmatch(
                 r'(?i)(?:(?:no|nr|variation|vers)\.?\s*)?[1-9]\d?(?:\s+[^\d].{1,35})?',label
             )
@@ -433,19 +649,37 @@ def extract_variation_numbers(parts):
             letter=re.fullmatch(r'[A-Z]',label)
             if not (numbered or sectional or letter):
                 continue
-            if font.get('face', '').casefold() in ('capella', 'capella3'):
+            # Circus Märschli uses 12pt letters in real rectangle graphics.
+            threshold=(12 if letter and any(
+                child(obj,'rectangle') is not None for obj in
+                children(child(event.node,'drawObjects'),'drawObj'))
+                       else 10 if ' ' in label else 13)
+            if height<threshold or y>=0:
                 continue
-            try:
-                height = int(font.get('height', 0))
-                y = float(element.get('y', '0'))
-            except ValueError:
-                continue
-            if height >= (10 if ' ' in label else 13) and y < 0:
-                markers.setdefault(event.time, label)
+            if circled and re.fullmatch(r'[1-9]',label):
+                # Use a printable Unicode circled number rather than silently
+                # throwing away the Capella group/ellipse graphic.
+                label=chr(0x245f+int(label))
+            elif re.fullmatch(r'[1-9]\d?',label):
+                nearby=list(visible)
+                if index+1<len(first):
+                    nxt=first[index+1]
+                    if (nxt.kind=='chord' and nxt.system==event.system
+                            and Fraction(0)<nxt.time-event.time<=Fraction(1,16)):
+                        nearby.extend(annotations(nxt))
+                captions=[text for text,size,cy,_,italic in nearby
+                          if text!=label and not italic and 8<=size<=12
+                          and cy<0 and abs(cy-y)<=5
+                          and re.fullmatch(r'[A-Za-zÄÖÜäöüß][\wÄÖÜäöüß .,\'-]{3,55}',text)
+                          and not re.search(r'(?i)\b(?:arr\.|von|seite|trommeltext)\b',text)
+                          and not re.search(r'\b(?:18|19|20)\d{2}\b',text)
+                          and not re.match(r'(?i)^\d+\.\s*(?:schtimm|stimm)',text)]
+                if captions:
+                    label=f'{label} {captions[0]}'
+            markers.setdefault(event.time,label)
     return markers
 
-
-def extract_score_directions(parts):
+def extract_score_directions(parts, section_times=None):
     """Keep printed words attached to musical notes or rests.
 
     Capella stores navigation and performance text such as 'fine' and
@@ -453,6 +687,7 @@ def extract_score_directions(parts):
     Avoid music-font glyphs, section numbers and small copyright text.
     """
     out=collections.defaultdict(list)
+    section_times=section_times or set()
     for event in leading_voice_events(parts):
         if event.voice!=1 or event.kind not in ('chord','rest'):
             continue
@@ -467,6 +702,8 @@ def extract_score_directions(parts):
                 continue
             if font.get('face','').casefold() in ('capella','capella3'):
                 continue
+            if font.get('color','').upper()=='FFFFFF':
+                continue  # Hidden source annotation, not a printed direction.
             try:
                 height=int(font.get('height','0'))
                 y=float(text.get('y','0'))
@@ -477,7 +714,9 @@ def extract_score_directions(parts):
             # adding it as a direction would print the credits twice.
             performance=re.search(
                 r'(?i)(\bfine\b|\bcoda\b|\bsegno\b|'
-                r'\bd\.?\s*c\.?\b|\bd\.?\s*s\.?\b|'
+                r'\bd\.?\s*c\.?\s*(?=al\b|\s|$)|'
+                r'\bd\.?\s*s\.?\s*(?=al\b|\s|$)|'
+                r'\bda\s+capo\b|\bintro\b|\bmaestoso\b|\blively\b|\bmarcial\b|'
                 r'\btrommelsolo\b|\btutti\b|\bsolo\b|\btrio\b|'
                 r'\britardando\b|\brit\.?\b|\ba tempo\b|'
                 r'\baccelerando\b|\baccel\.?\b)',
@@ -485,26 +724,47 @@ def extract_score_directions(parts):
             special=re.search(
                 r'(?i)^(?:glockeneffekt|gliss(?:ando)?|finale)\b',label
             )
-            if (((performance and 10<=height<=20)
-                 or (special and 8<=height<=20))
+            # Medleys often use a small italic tune caption such as
+            # "The chimes of Liberty (Goldman)" on each new theme.
+            tune_caption=(y<0 and re.fullmatch(
+                r"(?u)[^()\n]{4,65}\s+\([A-Za-zÄÖÜäöüß][\wÄÖÜäöüß .'-]{2,35}\)",
+                label) is not None)
+            # A march caption is drawn in italic text beside a numbered
+            # section (D'Preusse), not always with an author in parentheses.
+            section_caption=(event.time in section_times and 8<=height<=13
+                             and y<0 and font.get('italic')=='true'
+                             and len(label)>=5 and any(c.isalpha() for c in label))
+            if (((performance and (10<=height<=20 or
+                                  (label.casefold()=='trio' and 7<=height<=20)))
+                 or (special and 8<=height<=20)
+                 or (tune_caption and 8<=height<=15)
+                 or section_caption)
                     and label not in out[event.time]):
                 out[event.time].append(label)
     return dict(out)
 
 
-def add_score_direction(measure,label):
+def add_score_direction(measure,label,source_color=None):
     direction=sub(measure,'direction',placement='above')
     kind=sub(direction,'direction-type')
-    sub(kind,'words',label,font_size='10',font_weight='bold',
-        relative_y='16',justify='left')
+    is_tune=bool(re.fullmatch(
+        r"(?u)[^()\n]{4,65}\s+\([A-Za-zÄÖÜäöüß][\wÄÖÜäöüß .'-]{2,35}\)",label))
+    if is_tune:
+        sub(kind,'words',label,font_size='9',font_style='italic',
+            color=source_color or '#008000',relative_y='16',justify='left')
+    else:
+        attrs={'font_size':'10','font_weight':'bold',
+               'relative_y':'16','justify':'left'}
+        if source_color: attrs['color']=source_color
+        sub(kind,'words',label,**attrs)
     # MusicXML playback navigation, in addition to the visible label.
     low=label.casefold()
     sound={}
-    if re.search(r'\bd\.?\s*c\.?(?:\s|$)',low):
+    if re.search(r'\bd\.?\s*c\.?\s*(?=al\b|\s|$)|\bda\s+capo\b',low):
         sound['dacapo']='yes'
-    if re.search(r'\bd\.?\s*s\.?(?:\s|$)',low):
+    if re.search(r'\bd\.?\s*s\.?\s*(?=al\b|\s|$)',low):
         sound['dalsegno']='segno'
-    if re.search(r'\b(?:to|al)\s+coda\b',low):
+    if re.search(r'\b(?:to|al|poi)\s+coda\b',low):
         sound['tocoda']='coda'
     elif re.search(r'\bcoda\b',low):
         sound['coda']='coda'
@@ -516,13 +776,14 @@ def add_score_direction(measure,label):
         sub(direction,'sound',**sound)
 
 
-def add_variation_heading(measure, label):
-    """Place a readable, printable Capella variation number on the top staff."""
+def add_variation_heading(measure, label, boxed=False):
+    """Render numbered sections and boxed rehearsal letters."""
     direction = sub(measure, 'direction', placement='above')
     direction_type = sub(direction, 'direction-type')
-    sub(direction_type, 'words', label, font_size='14',
-        font_weight='bold', color='#193B87', default_y='46',
-        relative_y='6', justify='left')
+    props={'font_size':'14','font_weight':'bold','color':'#193B87',
+           'default_y':'46','relative_y':'6','justify':'left'}
+    if boxed:props['enclosure']='rectangle'
+    sub(direction_type,'words',label,**props)
 
 
 def compute_boundaries(parts, end):
@@ -640,12 +901,76 @@ def capella_glyphs(event):
     return result
 
 
+def emit_grouped_metronome_direction(measure,event,voice):
+    """Preserve Capella3 quarter tempo from grouped and inline glyphs.
+
+    Fyyrvogel draws the glyph and '=95' in a group; D'Preusse uses
+    one inline capella3 graphic containing "¢=100"/"¢=110". In both
+    cases this is an explicit *printed* metronome, not an implicit tempo.
+    """
+    def write_metronome(bpm):
+        direction=sub(measure,'direction',placement='above')
+        dtype=sub(direction,'direction-type')
+        metronome=sub(dtype,'metronome',parentheses='no')
+        sub(metronome,'beat-unit','quarter')
+        sub(metronome,'per-minute',bpm)
+        sub(direction,'voice',voice)
+        sub(direction,'sound',tempo=bpm)
+
+    for draw in children(child(event.node,'drawObjects'),'drawObj'):
+        words=child(draw,'text')
+        content=child(words,'content')
+        font=child(words,'font')
+        if content is not None and font is not None and (
+                font.get('face','').casefold() in ('capella3','capella')):
+            label=''.join(content.itertext()).strip()
+            matched=re.fullmatch(r'¢\s*=\s*(\d{2,3})',label)
+            if matched and 20<=int(matched.group(1))<=360:
+                write_metronome(int(matched.group(1)))
+        group=child(draw,'group')
+        if group is None:
+            continue
+        glyphs=[]
+        labels=[]
+        for grouped in children(group,'drawObj'):
+            words=child(grouped,'text')
+            content=child(words,'content')
+            font=child(words,'font')
+            if content is None or font is None:
+                continue
+            value=''.join(content.itertext()).strip()
+            if font.get('face','').casefold() in ('capella3','capella'):
+                glyphs.append(value)
+            else:
+                labels.append(value)
+        if '¢' not in glyphs:
+            continue
+        for label in labels:
+            matched=re.fullmatch(r'=\s*(\d{2,3})',label)
+            if not matched:
+                continue
+            bpm=int(matched.group(1))
+            if not 20<=bpm<=360:
+                continue
+            write_metronome(bpm)
+
+
 def emit_glyph_directions(measure,event,voice):
     for glyph in capella_glyphs(event):
         if glyph in CAPELLA_DYNAMICS:
             direction=sub(measure,'direction',placement='below')
             dynamics=sub(sub(direction,'direction-type'),'dynamics')
             sub(dynamics,CAPELLA_DYNAMICS[glyph])
+            sub(direction,'voice',voice)
+        elif glyph in ('L','M'):
+            # A note-anchored Capella3 8th/16th rest glyph is a graphic,
+            # not an additional timed rest. Print its musical rest sign
+            # without changing meter, note durations or playback.
+            rest_char={'L':'\U0001D13E','M':'\U0001D13F'}[glyph]
+            direction=sub(measure,'direction',placement='above')
+            subtype=sub(direction,'direction-type')
+            sub(subtype,'words',rest_char,font_size='14',
+                font_family='FreeSerif')
             sub(direction,'voice',voice)
         elif glyph in CAPELLA_NAVIGATION:
             label,sound=CAPELLA_NAVIGATION[glyph]
@@ -681,6 +1006,12 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
     heads = children(child(ob,'heads'),'head') if event.kind=='chord' else [None]
     dnode=child(ob,'duration')
     marks=children(ob,'articulation')
+    # Capella's 0xCA music-font symbol (Ê) is a printed accent,
+    # distinct from the source's generic strongBeat playback convention.
+    glyphs=capella_glyphs(event)
+    if event.kind=='chord' and 'Ê' in glyphs and not any(
+            'normalAccent' in m.get('type','').split() for m in marks):
+        marks=marks+[ET.Element('articulation',type='normalAccent')]
     if suppress_uniform_strongbeat:
         # Widespread strongBeat markers are commonly a source-wide playback/
         # formatting convention, not thousands of individual marcato marks.
@@ -693,12 +1024,17 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
     is_full_measure_rest = (event.kind == 'rest' and dnode is not None
         and re.fullmatch(r'[1-9]\d*',dnode.get('base','')) is not None)
     tuplet = child(dnode, 'tuplet')
+    display=child(ob,'display')
+    invisible=display is not None and display.get('invisible')=='true'
     for hi,head in enumerate(heads):
-        note=sub(meas,'note')
+        note=sub(meas,'note',**({'print_object':'no'} if invisible else {}))
         if is_grace:sub(note,'grace',slash='yes')
         if hi>0:sub(note,'chord')
         accidental=None; shape=None; ties=[]
-        if head is None:
+        if head is None or (invisible and head.get('silent')=='true'):
+            # Silent placeholder heads in older Capella scores are visual
+            # spacing/rhythm events, not audible pitched notes. Keep their
+            # duration, but don't synthesize a sounding pitch.
             sub(note,'rest', **({'measure':'yes'} if is_full_measure_rest else {}))
         else:
             raw=head.get('pitch','C5')
@@ -707,12 +1043,23 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             step,cap_oct=match.groups()
             octave=int(cap_oct)-1
             alteration=child(head,'alter')
-            if alteration is not None:
-                alter=int(alteration.get('step','0'))
+            prev=state['accidentals'].get(
+                (step,octave),key_fifths_map(state['key'])[step])
+            if alteration is not None and alteration.get('step') is not None:
+                alter=int(alteration.get('step'))
                 state['accidentals'][(step,octave)]=alter
-                accidental={-2:'flat-flat',-1:'flat',0:'natural',1:'sharp',2:'double-sharp'}.get(alter)
+                # Capella frequently writes the key-signature sharp on
+                # every F note. A semantic pitch alteration is not always a
+                # printed accidental, especially when it is already in force.
+                display=alteration.get('display','')
+                if display!='suppress' and (
+                        alter!=prev or display in ('force','cautionary')):
+                    accidental={-2:'flat-flat',-1:'flat',0:'natural',
+                                1:'sharp',2:'double-sharp'}.get(alter)
             else:
-                alter=state['accidentals'].get((step,octave),key_fifths_map(state['key'])[step])
+                # <alter display="suppress"/> explicitly means no new
+                # accidental, not a natural sign or a pitch change.
+                alter=prev
             pitch=sub(note,'pitch');sub(pitch,'step',step)
             if alter:sub(pitch,'alter',alter)
             sub(pitch,'octave',octave)
@@ -741,13 +1088,13 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             sub(note,'notehead','x' if shape=='cross' else shape)
         gliss_start, gliss_end = graphic_links if graphic_links else ({},{})
         tuplet_start, tuplet_end = tuplet_links if tuplet_links else ({},{})
-        glyphs=capella_glyphs(event)
         graphical_trill=(
-            't' in glyphs or any(child(d,'trill') is not None for d in
+            't' in glyphs or '¿' in glyphs or any(child(d,'trill') is not None for d in
                                   children(child(ob,'drawObjects'),'drawObj'))
         )
         fermata_glyph='u' if 'u' in glyphs else 'k' if 'k' in glyphs else None
-        has_notation=bool(marks or ties or graphical_trill or fermata_glyph or id(event) in slur_starts
+        upper_mordent='l' in glyphs
+        has_notation=bool(marks or ties or graphical_trill or upper_mordent or fermata_glyph or id(event) in slur_starts
                           or id(event) in slur_ends or id(event) in gliss_start
                           or id(event) in gliss_end or id(event) in tuplet_start
                           or id(event) in tuplet_end)
@@ -765,8 +1112,10 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                     sub(nt,'glissando',type='stop',number=sn,line_type='wavy')
                 for sn in gliss_start.get(id(event),[]):
                     sub(nt,'glissando',type='start',number=sn,line_type='wavy')
-                if graphical_trill:
-                    sub(sub(nt,'ornaments'),'trill-mark')
+                if graphical_trill or upper_mordent:
+                    ornaments=sub(nt,'ornaments')
+                    if graphical_trill:sub(ornaments,'trill-mark')
+                    if upper_mordent:sub(ornaments,'mordent')
                 if fermata_glyph:
                     sub(nt,'fermata',type=('upright' if fermata_glyph=='u' else 'inverted'))
             if marks and hi == 0:
@@ -1050,7 +1399,54 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     features,unsupported=source_notation_audit(root)
     title,subtitle,composer=extract_metadata(root, filename)
     variation_numbers=extract_variation_numbers(parts)
-    score_directions=extract_score_directions(parts)
+    boxed_sections=set()
+    for event in leading_voice_events(parts):
+        label=variation_numbers.get(event.time)
+        if (label and re.fullmatch(r'[A-Z]',label) and any(
+                child(obj,'rectangle') is not None for obj in
+                children(child(event.node,'drawObjects'),'drawObj'))):
+            boxed_sections.add(event.time)
+    score_directions=extract_score_directions(parts,set(variation_numbers))
+    page_navigation_colors={}
+    for event in leading_voice_events(parts):
+        if event.kind not in ('chord','rest'):
+            continue
+        for graphic in children(child(event.node,'drawObjects'),'drawObj'):
+            node=child(graphic,'text')
+            font=child(node,'font')
+            content=child(node,'content')
+            if font is None or content is None:
+                continue
+            label=' '.join(''.join(content.itertext()).split())
+            rgb=font.get('color','')
+            if (label in score_directions.get(event.time,())
+                    and re.fullmatch(r'[A-Fa-f0-9]{6}',rgb)):
+                page_navigation_colors[(event.time,label)]='#'+rgb.upper()
+    # Some Capella scores put a visible D.C. instruction at the bottom
+    # of pageObjects (Vaudois), while the score carries a hidden white
+    # playback hint. Attach the *visible* instruction to the final event.
+    # Ignore title/header text and unrelated page decorations.
+    score_notes=[e for e in leading_voice_events(parts)
+                 if e.kind in ('chord','rest')]
+    if score_notes:
+        final_note_time=max(e.time for e in score_notes)
+        for item in root.xpath('./c:pageObjects/c:drawObj/c:text',namespaces=N):
+            font=child(item,'font')
+            content=child(item,'content')
+            if font is None or content is None:
+                continue
+            label=' '.join(''.join(content.itertext()).split())
+            try:
+                y=float(item.get('y','0'))
+            except ValueError:
+                continue
+            if (y>30 and font.get('color','').upper()=='FF0000' and
+                    re.fullmatch(
+                        r'(?i)d\.?\s*c\.?\s*al\s+(?:fine|coda)\.?',label)):
+                current=score_directions.setdefault(final_note_time,[])
+                if label not in current:
+                    current.append(label)
+                page_navigation_colors[(final_note_time,label)]='#FF0000'
     # Short standalone page-level introduction labels are not score credits.
     # Capella 3.0 scores such as Fyyrvogel place 'Intro' just above the
     # first system, rather than attaching it to a note.
@@ -1070,15 +1466,36 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     sub(score,'movement-title',title)
     identification=sub(score,'identification')
     if composer:sub(identification,'creator',composer,type='composer')
+    for item in root.xpath('./c:pageObjects/c:drawObj/c:text',namespaces=N):
+        content=child(item,'content')
+        if content is None:continue
+        raw=' '.join(''.join(content.itertext()).split())
+        if raw.startswith('©'):
+            sub(identification,'rights',raw)
+    for credit_line in subtitle.splitlines():
+        arranged=re.search(
+            r'(?i)(?:^|[(\s,])(?:arrangiert\s+(?:vom|von)|arr\.\s*(?:von)?|bearb\.\s*(?:von)?)\s+(.+)$',
+            credit_line.strip())
+        if arranged:
+            name=arranged.group(1).strip().rstrip(')').strip()
+            name=re.sub(r'(?:,\s*|\s+)(?:18|19|20)\d{2}\s*$','',name)
+            sub(identification,'creator',name,type='arranger')
     defaults=sub(score,'defaults');scaling=sub(defaults,'scaling');sub(scaling,'millimeters',{'balanced':'6.4','compact':'5.8','original':'6.0'}[layout]);sub(scaling,'tenths','40')
     page=sub(defaults,'page-layout');sub(page,'page-height','1683.78');sub(page,'page-width','1190.55')
     margins=sub(page,'page-margins',type='both');sub(margins,'left-margin','64');sub(margins,'right-margin','64');sub(margins,'top-margin','64');sub(margins,'bottom-margin','64')
     # Explicit page-one credits render on the score itself. Document metadata
     # alone does not reliably create visible MuseScore title frames on import.
+    # Don't print the composer twice when the original byline already
+    # contains the composer and arranger ("Mozart, arr. ...").
+    compact=lambda x: re.sub(r'[\W_]+','',x,flags=re.UNICODE).casefold()
+    display_composer=('' if composer and
+                      (compact(composer) in compact(subtitle)
+                       or compact(composer) in compact(title))
+                      else composer)
     for kind, value, y, size, weight in (
         ('title', title, 1580, 23, 'bold'),
         ('subtitle', subtitle, 1540, 12, 'normal'),
-        ('composer', composer, 1508, 11, 'normal'),
+        ('composer', display_composer, 1508, 11, 'normal'),
     ):
         if not value or (kind == 'title' and value == 'Converted score'):
             continue
@@ -1087,6 +1504,64 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         sub(credit, 'credit-words', value, default_x='595',
             default_y=y, justify='center', valign='top',
             font_size=size, font_weight=weight)
+    # Preserve source header timestamps and copyright in their own
+    # positions rather than as additional centered subtitle lines.
+    for item in root.xpath('./c:pageObjects/c:drawObj/c:text',namespaces=N):
+        content=child(item,'content')
+        if content is None:continue
+        raw=' '.join(''.join(content.itertext()).split())
+        if raw.startswith('©'):
+            x,y,align='64','1615','left'
+        elif re.fullmatch(r'\d{1,2}\.\d{1,2}\.\d{4}\s+\w{2,8}',raw):
+            x,y,align='1126','1615','right'
+        else:
+            continue
+        credit=sub(score,'credit',page='1')
+        sub(credit,'credit-type','rights' if raw.startswith('©') else 'other')
+        sub(credit,'credit-words',raw,default_x=x,default_y=y,
+            justify=align,valign='top',font_size='9')
+    # Preserve closing attribution/dedication text that Capella anchors
+    # to the last system, rather than to the first-page pageObjects.
+    # Olymper and several Basel marches otherwise lose their final credits.
+    source_page_count=None
+    for box in root.xpath('./c:pageObjects/c:drawObj/c:text',namespaces=N):
+        content=child(box,'content')
+        if content is None:continue
+        pagination=' '.join(''.join(content.itertext()).split())
+        count_match=re.search(r'#\s*/\s*(\d{1,3})\b',pagination)
+        if count_match:
+            source_page_count=int(count_match.group(1))
+            break
+    if source_page_count and 1<=source_page_count<=200:
+        last_systems=root.xpath('./c:systems/c:system[last()]',namespaces=N)
+        if last_systems:
+            closing_credits=[]
+            for words in last_systems[0].xpath('.//c:drawObj/c:text',
+                                                 namespaces=N):
+                font=child(words,'font')
+                content=child(words,'content')
+                if font is None or content is None:continue
+                if font.get('face','').casefold() in ('capella','capella3'):
+                    continue
+                label=' '.join(''.join(content.itertext()).split())
+                try:
+                    size=float(font.get('height','0'))
+                    y=float(words.get('y','0'))
+                except ValueError:
+                    continue
+                if (6<=size<=12 and (size>=7 or re.search(r'\b(?:19|20)\d{2}\b',label))
+                        and y>=4.5 and len(label)>=10 and
+                        any(ch.isalpha() for ch in label) and
+                        label not in closing_credits):
+                    closing_credits.append(label)
+            for i,label in enumerate(closing_credits):
+                credit=sub(score,'credit',page=source_page_count)
+                sub(credit,'credit-type','other')
+                sub(credit,'credit-words',label,
+                    default_x=('64' if i%2==0 else '1126'),
+                    default_y=str(64+(i//2)*20),
+                    justify=('left' if i%2==0 else 'right'),
+                    valign='bottom',font_size='8')
     plist=sub(score,'part-list')
     # Respect Capella's multi-staff brace/bracket grouping. This is structural,
     # and avoids MuseScore displaying four unrelated solo parts.
@@ -1182,7 +1657,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 if mi == 0:
                     sub(layout_print, 'measure-numbering', 'system')
             if pi==0 and start in variation_numbers:
-                add_variation_heading(measure,variation_numbers[start])
+                add_variation_heading(measure,variation_numbers[start],
+                                      boxed=start in boxed_sections)
             if mi==0:
                 add_attributes(measure, key=0, time=opening_time,clef='treble',transpose=p.transpose,initial=True,divisions=active_divisions)
             # A staff which exists only in later Capella systems must not
@@ -1217,8 +1693,17 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 cursor=start
                 placed_directions=set()
                 for e in ve:
+                    if e.time>cursor:
+                        sub(sub(measure,'forward'),'duration',to_div(e.time-cursor,active_divisions))
+                        cursor=e.time
+                    if (e.kind in ('chord','rest') and e.time<cursor
+                            and not (e.kind=='rest' and e.time<start)):
+                        raise CapellaError(
+                            f'Overlapping notes in {p.name}, voice {voice}, measure {mi+1}'
+                        )
                     if e.kind in ('chord','rest') and e.time>=start:
                         emit_glyph_directions(measure,e,voice)
+                        emit_grouped_metronome_direction(measure,e,voice)
                         if pi>0:
                             emit_staff_solo_direction(measure,e,voice)
                         for no in wedge_stops.get(id(e),()):
@@ -1236,16 +1721,18 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                     if (pi==0 and voice==1 and e.kind in ('chord','rest')
                             and e.time not in placed_directions):
                         for words in score_directions.get(e.time,()):
-                            add_score_direction(measure,words)
+                            add_score_direction(measure,words,
+                                source_color=page_navigation_colors.get((e.time,words)))
                         placed_directions.add(e.time)
-                    if e.time>cursor:
-                        sub(sub(measure,'forward'),'duration',to_div(e.time-cursor,active_divisions))
-                        cursor=e.time
-                    if (e.kind in ('chord','rest') and e.time<cursor
-                            and not (e.kind=='rest' and e.time<start)):
-                        raise CapellaError(
-                            f'Overlapping notes in {p.name}, voice {voice}, measure {mi+1}'
-                        )
+                    # Capella's @tempo is a playback setting, not necessarily
+                    # a printed mark; keep it as an independent MusicXML
+                    # <sound> instruction without adding visible text.
+                    if e.kind=='chord' and e.node.get('tempo') is not None:
+                        tempo=e.node.get('tempo','')
+                        if re.fullmatch(r'\d{2,3}(?:\.\d+)?',tempo):
+                            if 20<=float(tempo)<=360:
+                                sub(measure,'sound',tempo=tempo)
+
                     if e.kind=='keySign':
                         fifths=int(e.node.get('fifths',0));prev_fifths=state['key'];state['key']=fifths
                         if mi==0 or fifths!=prev_fifths: add_attributes(measure,key=fifths)

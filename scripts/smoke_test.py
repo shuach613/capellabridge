@@ -34,10 +34,12 @@ def main():
     </noteObjects></voice></voices></staff></staves></system></systems></score>'''
 
 
-    def make_upload(xml_bytes=xml, filename='Smoke.capx'):
+    def make_upload(xml_bytes=xml, filename='Smoke.capx', extras=None):
         score=io.BytesIO()
         with zipfile.ZipFile(score,'w') as z:
             z.writestr('score.xml', xml_bytes)
+            for name,content in (extras or {}).items():
+                z.writestr(name,content)
         boundary='CAPELLABRIDGE_SMOKE_BOUNDARY'
         body=(f'--{boundary}\r\nContent-Disposition: form-data; name="files"; filename="{filename}"\r\n'
               'Content-Type: application/octet-stream\r\n\r\n').encode()+score.getvalue()+f'\r\n--{boundary}--\r\n'.encode()
@@ -432,6 +434,248 @@ def main():
         assert len(native.findall('.//Dynamic'))>=4, 'MuseScore dropped Capella dynamics'
     assert get(dynamic_entry['downloads']['pdf']).startswith(b'%PDF-')
     print('Legacy Capella p, f, mf, mp survived native MuseScore/PDF export',flush=True)
+
+    # New reference scores: real MuseScore rendering of a boxed rehearsal
+    # mark, a circled Capella3 number, and a credited arranger.
+    # This is synthetic and does not publish private user-owned scores.
+    rehearsal=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/3.0">'
+        '<pageObjects><drawObj><text x="60" y="5"><font face="Arial" height="20"/>'
+        '<content>CIRCUS Märschli</content></text></drawObj>'
+        '<drawObj><text x="130" y="5"><font face="Arial" height="11"/>'
+        '<content>arrangiert vom Thomas Heid</content></text></drawObj></pageObjects>'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices>'
+        '<voice><noteObjects><timeSign time="1/4"/>'
+        '<chord><duration base="1/4"/>'
+        '<drawObjects><drawObj><rectangle x1="-4" y1="-9" x2="0" y2="-5"/>'
+        '<basic noAdjust="true"/></drawObj><drawObj>'
+        '<text y="-6"><font face="Arial" height="12"/><content>A</content>'
+        '</text></drawObj></drawObjects><heads><head pitch="C5"/></heads></chord>'
+        '<chord><duration base="1/4"/>'
+        '<drawObjects><drawObj><text y="-8"><font face="capella3" height="18"/>'
+        '<content>2</content></text></drawObj><drawObj>'
+        '<ellipse x1="-5" y1="-10" x2="0" y2="-5"/><basic noAdjust="true"/>'
+        '</drawObj></drawObjects><heads><head pitch="D5"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="E5"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="F5"/></heads></chord>'
+        '</noteObjects></voice></voices></staff></staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(rehearsal,filename='Circus-Marks.capx')
+    reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    record=reply['results'][0]
+    assert record['variation_numbers']==['A','②'],record
+    from xml.etree import ElementTree as ET
+    xmltree=ET.fromstring(get(record['downloads']['musicxml']))
+    assert xmltree.findtext('./identification/creator[@type="arranger"]')=='Thomas Heid'
+    boxed=xmltree.find('.//direction-type/words[.="A"]')
+    assert boxed is not None and boxed.get('enclosure')=='rectangle'
+    assert xmltree.find('.//direction-type/words[.="②"]') is not None
+    mscz=get(record['downloads']['mscz'])
+    with zipfile.ZipFile(io.BytesIO(mscz)) as z:
+        assert any(name.endswith('.mscx') for name in z.namelist())
+    assert get(record['downloads']['pdf']).startswith(b'%PDF-')
+    print('Circus/Elfer boxed and circled headings rendered by native MuseScore',flush=True)
+
+    # Two distinct tempo encodings from the new source references:
+    # a printed Fyyrvogel quarter-note=95 grouped graphic and a Glaibasler
+    # playback-only tempo=180. Both must import into real MuseScore.
+    metronome_xml=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/3.0">'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices>'
+        '<voice><noteObjects><timeSign time="4/4"/>'
+        '<chord><duration base="1/4"/><drawObjects><drawObj><group>'
+        '<drawObj><text y="-7"><font face="capella3" height="18"/>'
+        '<content>¢</content></text></drawObj>'
+        '<drawObj><text y="-7"><font face="Times New Roman" height="10"/>'
+        '<content>=95</content></text></drawObj>'
+        '</group></drawObj></drawObjects>'
+        '<heads><head pitch="C5"/></heads></chord>'
+        '<chord tempo="180"><duration base="1/4"/>'
+        '<heads><head pitch="D5"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="E5"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="F5"/></heads></chord>'
+        '</noteObjects></voice></voices></staff></staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(metronome_xml,filename='TempoPrintAndPlayback.capx')
+    reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    record=reply['results'][0]
+    from xml.etree import ElementTree as ET
+    parsed=ET.fromstring(get(record['downloads']['musicxml']))
+    assert parsed.findtext('.//metronome/per-minute')=='95'
+    assert parsed.find('.//direction/sound[@tempo="95"]') is not None
+    assert parsed.find('./part/measure/sound[@tempo="180"]') is not None
+    with zipfile.ZipFile(io.BytesIO(get(record['downloads']['mscz']))) as z:
+        assert any(x.endswith('.mscx') for x in z.namelist())
+    assert get(record['downloads']['pdf']).startswith(b'%PDF-')
+    print('Printed 95 BPM and playback-only 180 BPM survived live MuseScore export',flush=True)
+
+    # Verify that the actual native MuseScore CLI accepts the repaired
+    # first-page title and separate metadata/rights credit. Regression
+    # modelled after a low-positioned Capella title, without publishing
+    # the original Hanswurscht score.
+    byline_xml=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<pageObjects>'
+        '<drawObj><text x="55" y="9.3125"><font face="Arial" height="28"/>'
+        '<content>Dr Hanswurscht</content></text></drawObj>'
+        '<drawObj><text x="0" y="6.125"><font face="Arial" height="12"/>'
+        '<content>© Znynibigger</content></text></drawObj>'
+        '<drawObj><text x="96.46875" y="6.125">'
+        '<font face="Arial" height="12"/><content>René Brielmann 1982'
+        '</content></text></drawObj></pageObjects>'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices>'
+        '<voice><noteObjects><timeSign time="2/4"/>'
+        '<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>'
+        '</noteObjects></voice></voices></staff></staves></system></systems>'
+        '</score>'
+    ).encode()
+    body,ctype=make_upload(byline_xml,filename='Dr Hanswurscht.capx')
+    reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    item=reply['results'][0]
+    assert item['title']=='Dr Hanswurscht'
+    assert item['composer']=='René Brielmann 1982'
+    xmltree=ET.fromstring(get(item['downloads']['musicxml']))
+    assert xmltree.findtext('./identification/rights')=='© Znynibigger'
+    assert xmltree.findtext('./identification/creator[@type="composer"]')=='René Brielmann 1982'
+    assert get(item['downloads']['pdf']).startswith(b'%PDF-')
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        assert any(x.endswith('.mscx') for x in z.namelist())
+    print('Low title and separate rights/composer survived native MuseScore export',flush=True)
+
+    # D'Preusse uses compact capella3 inline glyphs "¢=100"/"¢=110"
+    # rather than Fyyrvogel's grouped metronome. Check the real output
+    # pipeline without publishing user-owned CAPX or copyrighted notes.
+    source=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/3.0">'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices>'
+        '<voice><noteObjects><timeSign time="1/4"/>'
+        '<chord><duration base="1/4"/><drawObjects><drawObj>'
+        '<text y="-5"><font face="capella3" height="18"/>'
+        '<content>¢=100</content></text></drawObj></drawObjects>'
+        '<heads><head pitch="C5"/></heads></chord>'
+        '<chord><duration base="1/4"/><drawObjects><drawObj>'
+        '<text y="-5"><font face="capella3" height="24"/>'
+        '<content>14</content></text></drawObj><drawObj>'
+        '<text y="-7"><font face="Bookman Old Style" height="9" italic="true"/>'
+        '<content>Der Königsgrätzer</content></text></drawObj><drawObj>'
+        '<text y="-4"><font face="capella3" height="18"/>'
+        '<content>¢=110</content></text></drawObj></drawObjects>'
+        '<heads><head pitch="D5"/></heads></chord>'
+        '</noteObjects></voice></voices></staff></staves></system></systems>'
+        '</score>'
+    ).encode('utf-8')
+    body,ctype=make_upload(source,filename='Preusse-tempo.capx')
+    reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    item=reply['results'][0]
+    assert item['variation_numbers']==['14']
+    assert 'Der Königsgrätzer' in item['printed_directions']
+    xmltree=ET.fromstring(get(item['downloads']['musicxml']))
+    assert [x.text for x in xmltree.findall('.//metronome/per-minute')]==['100','110']
+    assert get(item['downloads']['pdf']).startswith(b'%PDF-')
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        assert any(x.endswith('.mscx') for x in z.namelist())
+    print('Preusse inline 100/110 BPM and multi-digit section survived MuseScore export',flush=True)
+
+    # A source-shaped four-part Sperber fixture: the visible author, date
+    # and dedication stay together, while composer metadata is name-only.
+    # The full original score is private and not stored in this test.
+    page=(
+        '<pageObjects>'
+        '<drawObj><text x="49.90625" y="3"><font face="Bookman Old Style" height="16"/>'
+        '<content>Sperber</content></text></drawObj>'
+        '<drawObj><text x="49.96875" y="6.0625">'
+        '<font face="Bookman Old Style" height="9"/>'
+        '<content>René Brielmann, 22.06.1983, für die Musketiere</content>'
+        '</text></drawObj></pageObjects>'
+    )
+    staves=[]
+    layouts=[]
+    for number in range(4):
+        name='Piccolo-'+str(number+1)
+        layouts.append('<staffLayout description="'+name+'"/>')
+        score_marks=(
+            '<drawObjects><drawObj><text x="-2" y="-5">'
+            '<font face="capella3" height="22"/>'
+            '<content>1</content></text></drawObj></drawObjects>'
+            if number==0 else '')
+        staves.append(
+            '<staff layout="'+name+'"><voices><voice><noteObjects>'
+            '<timeSign time="2/4"/><chord><duration base="1/4"/>'
+            +score_marks+'<heads><head pitch="C5"/></heads></chord>'
+            '<chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>'
+            '</noteObjects></voice></voices></staff>')
+    mini=(
+        '<score xmlns="http://www.capella.de/CapXML/3.0">'+page
+        +'<layout><staves>'+''.join(layouts)+'</staves></layout>'
+        '<systems><system><staves>'+''.join(staves)
+        +'</staves></system></systems></score>'
+    ).encode('utf-8')
+    body,ctype=make_upload(mini,filename='Sperber.capx')
+    reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    item=reply['results'][0]
+    assert item['title']=='Sperber'
+    assert item['composer']=='René Brielmann'
+    assert item['subtitle']=='René Brielmann, 22.06.1983, für die Musketiere'
+    xmltree=ET.fromstring(get(item['downloads']['musicxml']))
+    assert len(xmltree.findall('./part'))==4
+    assert xmltree.findtext('./identification/creator[@type="composer"]')=='René Brielmann'
+    visible=[v.text for v in xmltree.findall('./credit/credit-words')]
+    assert visible.count('René Brielmann, 22.06.1983, für die Musketiere')==1
+    assert get(item['downloads']['pdf']).startswith(b'%PDF-')
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        assert any(n.endswith('.mscx') for n in z.namelist())
+    print('Sperber composer and full printed dedication survived native MuseScore export',flush=True)
+
+    # Native MuseScore smoke: final source-pair navigation, including an
+    # embedded RTF D.S. al Segno / Coda instruction. Synthetic only.
+    rtf_content=(
+        r'{\rtf1\ansi{\fonttbl{\f0 capella3;}{\f1 Arial;}}'
+        r'\pard\f0 e\f1  al \f0 $\f1  con rep. et poi Coda\par}'
+    ).encode('cp1252')
+    rtf_xml=(
+        '<score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<pageObjects><drawObj><text x="49" y="4">'
+        '<font face="Arial" height="18"/><content>Uncle Sam</content>'
+        '</text></drawObj></pageObjects>'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices>'
+        '<voice><noteObjects><timeSign time="2/4"/>'
+        '<chord><duration base="1/4"/><drawObjects><drawObj>'
+        '<text x="0" y="-5"><font face="capella3" height="18"/>'
+        '<content>M</content></text></drawObj></drawObjects>'
+        '<heads><head pitch="C5"/></heads></chord>'
+        '<rest><duration base="1/4"/><drawObjects><drawObj>'
+        '<text x="0" y="-5"><font face="capella3" height="18"/>'
+        '<content>L</content></text></drawObj><drawObj>'
+        '<richText file="obj____1.rtf" x="-5.5" y="-14" width="22"/>'
+        '</drawObj></drawObjects></rest>'
+        '</noteObjects></voice></voices></staff></staves></system></systems>'
+        '</score>'
+    ).encode('utf-8')
+    body,ctype=make_upload(rtf_xml,filename='Uncle Sam.capx',
+                            extras={'obj____1.rtf':rtf_content})
+    reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    item=reply['results'][0]
+    xmltree=ET.fromstring(get(item['downloads']['musicxml']))
+    words=[d.text for d in xmltree.findall('.//direction-type/words')]
+    assert 'D.S. al Segno con rep. et poi Coda' in words,words
+    assert '\U0001D13E' in words and '\U0001D13F' in words,words
+    assert xmltree.find('.//direction/sound[@dalsegno="segno"][@tocoda="coda"]') is not None
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        assert any(n.endswith('.mscx') for n in z.namelist())
+    assert get(item['downloads']['pdf']).startswith(b'%PDF-')
+    print('Embedded RTF D.S. al Segno navigation survived native MSCZ/PDF export',flush=True)
 
     print('All three layout modes passed the live Docker conversion test')
 
