@@ -299,7 +299,13 @@ def main():
     assert last.find('./measure[1]/attributes/staff-details').get('print-object')=='no'
     assert last.find('./measure[2]/attributes/staff-details').get('print-object')=='yes'
     assert get(score['downloads']['pdf']).startswith(b'%PDF-')
-    print('Later-appearing fourth staff and page-level credits rendered by MuseScore',flush=True)
+    # The cross-version CI run must reopen the challenging Waggis-like
+    # score, not merely a stable four-part score without staff transitions.
+    if os.environ.get('STUDIO_COMPAT_OUTPUT'):
+        Path(os.environ['STUDIO_COMPAT_OUTPUT']).write_bytes(
+            get(score['downloads']['mscz'])
+        )
+\n    print('Later-appearing fourth staff and page-level credits rendered by MuseScore',flush=True)
 
     old_rest='<rest><duration base="7"/></rest>'
     solo='<rest><duration base="1/4"/><drawObjects><drawObj><text y="-4">'
