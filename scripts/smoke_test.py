@@ -398,6 +398,41 @@ def main():
     assert get(record['downloads']['pdf']).startswith(b'%PDF-')
     print('CapXML 1.0 polyphony and crescendo/diminuendo graphics rendered',flush=True)
 
+    # Legacy Capella3 font symbols must round-trip through real MuseScore,
+    # not only through the Python-to-MusicXML parser.
+    def glyph_note(pitch, glyph):
+        return (
+            '<chord><duration base="1/4"/>'
+            '<drawObjects><drawObj><text x="0" y="5">'
+            '<font face="capella3" height="18"/><content>'+glyph+
+            '</content></text></drawObj></drawObjects>'
+            '<heads><head pitch="'+pitch+'"/></heads></chord>'
+        )
+    dynamic_capxml=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/3.0">'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices>'
+        '<voice><noteObjects><timeSign time="4/4"/>'
+        +glyph_note('C5','p')+glyph_note('D5','f')
+        +glyph_note('E5','j')+glyph_note('F5','i')
+        +'</noteObjects></voice></voices></staff></staves></system></systems></score>'
+    ).encode()
+    body,content_type=make_upload(dynamic_capxml)
+    dynamic_reply=json.loads(get('/api/convert?layout=balanced',body,content_type))
+    assert dynamic_reply['results'][0]['ok'],dynamic_reply
+    dynamic_entry=dynamic_reply['results'][0]
+    from xml.etree import ElementTree as ET
+    exported=ET.fromstring(get(dynamic_entry['downloads']['musicxml']))
+    dynamic_values=[child.tag for d in exported.findall('.//direction-type/dynamics')
+                    for child in d]
+    assert dynamic_values==['p','f','mf','mp'],dynamic_values
+    archive=get(dynamic_entry['downloads']['mscz'])
+    with zipfile.ZipFile(io.BytesIO(archive)) as z:
+        native=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+        assert len(native.findall('.//Dynamic'))>=4, 'MuseScore dropped Capella dynamics'
+    assert get(dynamic_entry['downloads']['pdf']).startswith(b'%PDF-')
+    print('Legacy Capella p, f, mf, mp survived native MuseScore/PDF export',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
