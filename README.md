@@ -177,3 +177,32 @@ CAPX conversion now derives measures from **time-signature changes and explicit 
 
 The automated tests exercise mixed 2/4 and 6/8, whole-measure rests, tuplets, grace notes, and both repeat directions, across all three layout choices; the Docker smoke test renders a mixed-meter score with MuseScore. The converter's report still identifies unsupported ornaments and source-format features—do not assume that any notation converter can guarantee exact facsimile rendering of arbitrary CAPX files.
 
+
+## MuseScore Studio compatibility and notation validation (v1.6.0)
+
+The native MSCZ score is **validated and canonically re-saved** before PDF
+generation or distribution. Every staff, measure, and voice is checked using
+exact rational note durations, tuplets and rests; a small rounding discrepancy
+in an *existing invisible terminal rest* may be repaired automatically. Larger
+or ambiguous defects **fail conversion explicitly** rather than distributing
+a potentially corrupted MSCZ. CI also checks that a four-staff score produced
+by the engine reopens and exports with **MuseScore Studio 4.7.5**, in
+addition to MuseScore 3.
+
+The conversion engine accounts for ordinary notes and rests, chords, separate
+voices on a staff, duplets/triplets and other CapXML tuplets (including
+tripartite/prolong attributes), uncommon exact subdivisions, grace notes,
+multiple lyric verses, ties, voice-local slurs, articulations, repeats,
+6/8, 2/4, 4/4 and other numeric, common and cut time changes, clefs,
+accidentals, transposing instruments, section labels and score titles.
+
+Every CAPX conversion report now includes **notation_features** and
+**notation_not_fully_interpreted**. Graphical trills, brackets, arbitrary rich
+text, customized beams, complex cross-staff notation and other proprietary
+drawing objects can require manual attention. No notation converter can
+promise that every Capella file exactly matches its source PDF. Review the
+PDF and playback when the report warns about partially interpreted features.
+
+If MuseScore Studio reports a corrupted score, use **Show Details** to identify
+the exact measure/staff defect, or open the companion MusicXML and save a new
+native file. Do not assume ZIP validity implies notation validity.

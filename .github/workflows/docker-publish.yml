@@ -42,7 +42,44 @@ jobs:
         run: |
           docker run -d --name capellabridge-smoke --memory=2g -p 127.0.0.1:18765:8080 capellabridge:ci
       - name: Test conversion and outputs
+        env:
+          STUDIO_COMPAT_OUTPUT: /tmp/capellabridge-studio4.mscz
         run: python scripts/smoke_test.py http://127.0.0.1:18765
+      - name: Install official MuseScore Studio 4.7.5 for cross-version check
+        timeout-minutes: 12
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libegl1 libopengl0 libgl1 libjack-jackd2-0
+          curl --fail --location --retry 3 --silent --show-error \
+            https://github.com/musescore/MuseScore/releases/download/v4.7.5/MuseScore-Studio-4.7.5.260831071-x86_64.AppImage \
+            --output /tmp/studio4.AppImage
+          echo "a31b2da2dbcc2191bcc98beb7be5c15f2f517bedb3444def96fe3088b74d3a1e  /tmp/studio4.AppImage" | sha256sum --check
+          chmod +x /tmp/studio4.AppImage
+          cd /tmp
+          ./studio4.AppImage --appimage-extract >/dev/null
+      - name: Validate MuseScore Studio 4 can reopen exported MSCZ
+        timeout-minutes: 7
+        run: |
+          mkdir -p /tmp/musescore4-runtime
+          chmod 700 /tmp/musescore4-runtime
+          MU_QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORM=offscreen \
+            XDG_RUNTIME_DIR=/tmp/musescore4-runtime \
+            /tmp/squashfs-root/AppRun -o /tmp/studio4-roundtrip.musicxml \
+            /tmp/capellabridge-studio4.mscz 2>&1 | tee /tmp/musescore4-validation.log
+          test -s /tmp/studio4-roundtrip.musicxml
+          if grep -Eiq 'file is corrupted|score is corrupt|measure .*incomplete' /tmp/musescore4-validation.log; then
+            echo "MuseScore Studio reported a corrupted score"
+            exit 1
+          fi
+          python - <<'PY'
+          from lxml import etree as E
+          root=E.parse('/tmp/studio4-roundtrip.musicxml').getroot()
+          parts=root.findall('./part')
+          assert len(parts)==4, f'Lost instrumental parts on MuseScore 4 import: {len(parts)}'
+          assert all(len(p.findall('measure'))>=1 for p in parts)
+          assert sum(len(p.findall('.//note')) for p in parts)>=8
+          print('MuseScore Studio 4: native MSCZ reopened and exported successfully')
+          PY
       - name: Show logs on failure
         if: failure()
         run: docker logs capellabridge-smoke || true

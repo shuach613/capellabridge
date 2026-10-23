@@ -9,6 +9,7 @@ import io
 import re
 import zipfile
 import collections
+from math import lcm
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -44,6 +45,44 @@ def sub(parent, name, text=None, **attrs):
     return el
 
 
+
+def tuplet_normal_notes(tuplet):
+    """CapXML tuplet semantics, including tripartite and prolonged groups.
+
+    See CapXML's Tuplet specification: choose powers of 2, or 3*power-of-2
+    when tripartite. 'prolong' chooses the smallest *greater* grouping.
+    """
+    count = int(tuplet.get('count', '3'))
+    if count < 2 or count > 32:
+        raise CapellaError(f'Unsupported tuplet count: {count}')
+    tripartite = tuplet.get('tripartite', 'false').lower() == 'true'
+    prolong = tuplet.get('prolong', 'false').lower() == 'true'
+    candidates = sorted({(3 if tripartite else 1) * (2 ** exponent)
+                         for exponent in range(12)})
+    eligible = [n for n in candidates if n > count] if prolong else [
+        n for n in candidates if n < count
+    ]
+    if not eligible:
+        raise CapellaError(f'Unrepresentable CapXML tuplet: count={count}')
+    return min(eligible) if prolong else max(eligible)
+
+
+def meter_fraction(raw):
+    """Normalize CapXML numeric, common-time and cut-time meters exactly."""
+    names={'C':Fraction(4,4),'allaBreve':Fraction(2,2),
+           'longAllaBreve':Fraction(4,2)}
+    if raw == 'infinite':
+        raise CapellaError('Unmetered CapXML requires an explicit-barlines '
+                           'importer; cannot infer safe measure durations.')
+    try:
+        value=names.get(raw) if raw in names else Fraction(raw)
+    except (ValueError,ZeroDivisionError) as exc:
+        raise CapellaError(f'Unsupported CapXML meter: {raw!r}') from exc
+    if value <= 0:
+        raise CapellaError(f'Invalid CapXML meter: {raw!r}')
+    return value
+
+
 def duration_of(node, meter=None):
     """Read CapXML time values as sounding fractions of a whole note.
 
@@ -62,14 +101,12 @@ def duration_of(node, meter=None):
     tuplet = child(d, 'tuplet')
     if tuplet is not None:
         actual = int(tuplet.get('count', '3'))
-        if actual < 2 or actual > 32:
-            raise CapellaError(f'Unsupported tuplet ratio: {actual}')
-        duration *= Fraction(2 ** (actual.bit_length() - 1), actual)
+        duration *= Fraction(tuplet_normal_notes(tuplet), actual)
     return duration
 
 
-def to_div(f):
-    value = f * DIVISIONS * 4
+def to_div(f, divisions=DIVISIONS):
+    value = f * divisions * 4
     if value.denominator != 1:
         raise ValueError(f'Unsupported rhythmic subdivision: {f}')
     return value.numerator
@@ -166,8 +203,7 @@ def parse_score(root):
                         continue
                     if kind == 'timeSign':
                         try:
-                            local_meter = Fraction(ob.get('time', '4/4'))
-                            if local_meter <= 0: raise ValueError()
+                            local_meter = meter_fraction(ob.get('time', '4/4'))
                         except (ValueError, ZeroDivisionError):
                             raise CapellaError(f'Invalid time signature in system {si+1}')
                         if pi == 0 and vi == 0:
@@ -293,8 +329,7 @@ def compute_boundaries(parts, end):
     for event in first:
         if event.kind == 'timeSign':
             try:
-                meter = Fraction(event.node.get('time', '4/4'))
-                if meter <= 0: raise ValueError()
+                meter = meter_fraction(event.node.get('time', '4/4'))
             except (ValueError, ZeroDivisionError):
                 raise CapellaError('Invalid time signature in source score')
             signatures.append((event.time,meter))
@@ -319,27 +354,54 @@ def compute_boundaries(parts, end):
     return sorted(bars),opening
 
 
-def add_attributes(measure, key=None, time=None, clef=None, transpose=0, initial=False):
+def add_attributes(measure, key=None, time=None, clef=None, transpose=0, initial=False, divisions=DIVISIONS):
     if not initial and key is None and time is None and clef is None:return
     attrs = sub(measure, 'attributes')
-    if initial:sub(attrs, 'divisions', DIVISIONS)
+    if initial:sub(attrs, 'divisions', divisions)
     if key is not None:sub(sub(attrs,'key'), 'fifths',key)
     if time is not None:
         times = sub(attrs,'time')
-        numerator,denominator = time.split('/')
-        sub(times,'beats',numerator);sub(times,'beat-type',denominator)
+        if time in ('C','allaBreve','longAllaBreve'):
+            times.set('symbol','common' if time=='C' else 'cut')
+        if '/' in time:
+            numerator, denominator=time.split('/',1)
+        else:
+            named={'C':('4','4'),'allaBreve':('2','2'),
+                   'longAllaBreve':('4','2')}
+            numerator, denominator=named[time]
+        sub(times,'beats',numerator)
+        sub(times,'beat-type',denominator)
     if clef is not None:
-        c=sub(attrs,'clef'); mapping = {'treble':('G',2),'bass':('F',4),'alto':('C',3),'tenor':('C',4),'percussion':('percussion',2)}
-        sign,line = mapping.get(clef, ('G',2));sub(c,'sign',sign);sub(c,'line',line)
+        mapping={'treble':('G',2,0),'bass':('F',4,0),
+                 'alto':('C',3,0),'tenor':('C',4,0),
+                 'percussion':('percussion',2,0)}
+        if clef in mapping:
+            sign,line,octave_change=mapping[clef]
+        else:
+            match=re.fullmatch(r'([GFC])([1-5])([+-]?)',clef)
+            if not match:
+                raise CapellaError(f'Unsupported source clef: {clef!r}')
+            sign,line,octave=match.groups()
+            line=int(line)
+            octave_change={'':0,'+':1,'-':-1}[octave]
+        c=sub(attrs,'clef')
+        sub(c,'sign',sign);sub(c,'line',line)
+        if octave_change:sub(c,'clef-octave-change',octave_change)
     if initial and transpose:
-        tr=sub(attrs,'transpose');sub(tr,'diatonic',0);sub(tr,'chromatic',0);sub(tr,'octave-change',int(transpose/12))
+        octaves=int(transpose/12)
+        semitones=transpose-(12*octaves)
+        scale={0:0,1:0,2:1,3:2,4:2,5:3,6:3,7:4,8:5,9:5,10:6,11:6}
+        tr=sub(attrs,'transpose')
+        sub(tr,'diatonic',scale[abs(semitones)]*(1 if semitones>=0 else -1))
+        sub(tr,'chromatic',semitones)
+        if octaves:sub(tr,'octave-change',octaves)
 
 
 def note_type(dur_node):
     return DURATION_TYPES.get(Fraction(dur_node.get('base','1/4')), 'quarter')
 
 
-def make_note(meas, event, voice, state, slur_starts, slur_ends):
+def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS):
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
     heads = children(child(ob,'heads'),'head') if event.kind=='chord' else [None]
@@ -377,7 +439,7 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends):
             if ti is not None:
                 if ti.get('end')=='true':ties.append('stop')
                 if ti.get('begin')=='true':ties.append('start')
-        if not is_grace:sub(note,'duration',to_div(event.dur))
+        if not is_grace:sub(note,'duration',to_div(event.dur, divisions))
         for tp in ties:sub(note,'tie',type=tp)
         sub(note,'voice',voice)
         if dnode is not None and not is_full_measure_rest:
@@ -388,46 +450,122 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends):
             actual=int(tuplet.get('count','3'))
             modified=sub(note,'time-modification')
             sub(modified,'actual-notes',actual)
-            sub(modified,'normal-notes',2**(actual.bit_length()-1))
+            sub(modified,'normal-notes',tuplet_normal_notes(tuplet))
         stem=child(ob,'stem')
         if stem is not None:
             direction=stem.get('dir')
             if direction in ('up','down'):sub(note,'stem',direction)
         if shape in ('diamond','cross','triangle','slash'):
             sub(note,'notehead','x' if shape=='cross' else shape)
-        has_notation=bool(marks or ties or (event.time,voice) in slur_starts or (event.time,voice) in slur_ends)
-        if has_notation and hi == 0:
+        has_notation=bool(marks or ties or id(event) in slur_starts or id(event) in slur_ends)
+        if ties or (hi == 0 and has_notation):
             nt=sub(note,'notations')
             for tp in ties:sub(nt,'tied',type=tp)
-            for sn in slur_ends.get((event.time,voice),[]):sub(nt,'slur',type='stop',number=sn)
-            for sn in slur_starts.get((event.time,voice),[]):sub(nt,'slur',type='start',number=sn)
-            if marks:
+            if hi == 0:
+                for sn in slur_ends.get(id(event),[]):sub(nt,'slur',type='stop',number=sn)
+                for sn in slur_starts.get(id(event),[]):sub(nt,'slur',type='start',number=sn)
+            if marks and hi == 0:
                 articulations=sub(nt,'articulations')
                 for a in marks:
-                    typ=a.get('type','')
-                    tagname={'staccato':'staccato','tenuto':'tenuto','accent':'accent', 'staccatissimo':'staccatissimo','marcato':'strong-accent'}.get(typ)
-                    if tagname:sub(articulations,tagname)
+                    types=a.get('type','').split()
+                    mapped={'staccato':'staccato','tenuto':'tenuto',
+                        'staccatissimo':'staccatissimo','normalAccent':'accent',
+                        'strongAccent':'strong-accent','accent':'accent',
+                        'marcato':'strong-accent','weakBeat':'unstress',
+                        'strongBeat':'stress'}
+                    for typ in types:
+                        tagname=mapped.get(typ)
+                        if tagname:sub(articulations,tagname)
+        if hi==0 and not is_grace:
+            lyric=child(ob,'lyric')
+            for verse in children(lyric,'verse'):
+                words=''.join(verse.itertext()).strip()
+                if not words:
+                    continue
+                number=verse.get('i','0')
+                lyric_node=sub(note,'lyric',number=str(int(number)+1))
+                sub(lyric_node,'syllabic','begin' if verse.get('hyphen')=='true' else 'single')
+                sub(lyric_node,'text',words)
     return len(heads)
 
 
 def make_slur_links(events):
-    starts=collections.defaultdict(list);ends=collections.defaultdict(list)
-    chords=[e for e in events if e.kind=='chord']
-    # A graphical slur with basic noteRange=N begins at the anchoring chord
-    # and ends N subsequent chords later (CapXML note ranges are not XML IDs).
-    for i,e in enumerate(chords):
-        draw=child(e.node,'drawObjects')
-        for obj in children(draw,'drawObj'):
-            if child(obj,'slur') is None:continue
-            basic=child(obj,'basic')
-            if basic is None:continue
-            span=int(basic.get('noteRange','0'))
-            if not (0 < span and i+span < len(chords)):continue
-            target=chords[i+span]
-            if target.voice!=e.voice:continue
-            sn=1 + len(starts[(e.time,e.voice)]) % 6
-            starts[(e.time,e.voice)].append(sn);ends[(target.time,e.voice)].append(sn)
+    """Link graphical slurs within their OWN voice, not across other voices.
+
+    CapXML's noteRange indexes subsequent chords, not absolute score note
+    indexes. Overlapping slurs need distinct MusicXML numbers.
+    """
+    starts=collections.defaultdict(list)
+    ends=collections.defaultdict(list)
+    by_voice=collections.defaultdict(list)
+    for event in events:
+        if event.kind == 'chord':
+            by_voice[event.voice].append(event)
+    for voice, chords in by_voice.items():
+        candidates=[]
+        seen=set()
+        for i,event in enumerate(chords):
+            for draw in children(child(event.node,'drawObjects'),'drawObj'):
+                if child(draw,'slur') is None:
+                    continue
+                basic=child(draw,'basic')
+                if basic is None:
+                    continue
+                distance=int(basic.get('noteRange','0'))
+                end_index=i+distance
+                if not 0<distance or end_index>=len(chords):
+                    continue
+                key=(i,end_index)
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(key)
+        active={}
+        for i,j in sorted(candidates):
+            # Reclaim numbers for slurs that have already ended.
+            active={number:end for number,end in active.items() if end>=i}
+            free=next((n for n in range(1,17) if n not in active),None)
+            if free is None:
+                raise CapellaError(f'More than 16 overlapping slurs in voice {voice}')
+            active[free]=j
+            starts[id(chords[i])].append(free)
+            ends[id(chords[j])].append(free)
     return starts,ends
+
+
+def source_notation_audit(root):
+    """Inventory notation features, including constructs requiring review."""
+    annotations=collections.Counter()
+    unsupported=collections.Counter()
+    for graphic in root.xpath('//c:drawObj',namespaces=N):
+        for element in graphic:
+            name=tag(element)
+            if name=='basic':
+                continue
+            annotations[name]+=1
+            if name not in ('text','slur','volta'):
+                unsupported[name]+=1
+    beams=root.xpath('//c:chord/c:beam',namespaces=N)
+    custom_beams=[e for e in beams if e.get('group','auto')!='auto']
+    tempos=root.xpath('//c:chord[@tempo]',namespaces=N)
+    if custom_beams:
+        unsupported['custom_beaming']+=len(custom_beams)
+    if tempos:
+        unsupported['tempo_changes']+=len(tempos)
+    feature_counts={
+        'chords':len(root.xpath('//c:chord',namespaces=N)),
+        'rests':len(root.xpath('//c:rest',namespaces=N)),
+        'ties':len(root.xpath('//c:tie',namespaces=N)),
+        'slurs':annotations['slur'],
+        'tuplets':len(root.xpath('//c:tuplet',namespaces=N)),
+        'grace_notes':len(root.xpath('//c:duration[@noDuration="true"]',namespaces=N)),
+        'lyrics':len(root.xpath('//c:lyric/c:verse',namespaces=N)),
+        'repeat_barlines':len(root.xpath(
+            '//c:barline[starts-with(@type,"rep")]',namespaces=N
+        )),
+        'time_signatures':sorted(set(root.xpath('//c:timeSign/@time',namespaces=N))),
+    }
+    return feature_counts,dict(sorted(unsupported.items()))
 
 
 def serialize_musicxml(raw, layout='balanced'):
@@ -437,6 +575,20 @@ def serialize_musicxml(raw, layout='balanced'):
     parts,end,warnings=parse_score(root)
     boundaries,meter=compute_boundaries(parts,end)
     if len(boundaries)<2: raise CapellaError('Could not determine measures')
+    # CapXML permits tuplets whose prime denominators (e.g. 11, 13)
+    # cannot be represented by the old fixed 10080 divisions/quarter.
+    # Select exact divisions for this score; never round note timings.
+    active_divisions = DIVISIONS
+    for part in parts:
+        for event in part.events:
+            if event.dur:
+                active_divisions = lcm(active_divisions,(event.dur*4).denominator)
+    for begin, finish in zip(boundaries, boundaries[1:]):
+        active_divisions = lcm(active_divisions,((finish-begin)*4).denominator)
+    if active_divisions > 5_000_000:
+        raise CapellaError('Score requires an impractically fine rhythmic grid; '
+                           'cannot safely encode it in MusicXML.')
+    features,unsupported=source_notation_audit(root)
     title,subtitle,composer=extract_metadata(root)
     variation_numbers=extract_variation_numbers(parts)
     score=ET.Element('score-partwise',version='4.0')
@@ -516,15 +668,23 @@ def serialize_musicxml(raw, layout='balanced'):
             if pi==0 and start in variation_numbers:
                 add_variation_heading(measure,variation_numbers[start])
             if mi==0:
-                add_attributes(measure, key=0, time=str(meter.numerator)+'/'+str(meter.denominator),clef='treble',transpose=p.transpose,initial=True)
+                add_attributes(measure, key=0, time=str(meter.numerator)+'/'+str(meter.denominator),clef='treble',transpose=p.transpose,initial=True,divisions=active_divisions)
             state['accidentals']={}
             vs=sorted({e.voice for e in events if start<=e.time<stop})
             if not vs:vs=[1]
             for vsi,voice in enumerate(vs):
                 if vsi:
-                    back=sub(measure,'backup');sub(back,'duration',to_div(stop-start))
+                    back=sub(measure,'backup');sub(back,'duration',to_div(stop-start,active_divisions))
                 ve=[e for e in events if e.voice==voice and start<=e.time<stop]
+                cursor=start
                 for e in ve:
+                    if e.time>cursor:
+                        sub(sub(measure,'forward'),'duration',to_div(e.time-cursor,active_divisions))
+                        cursor=e.time
+                    if e.kind in ('chord','rest') and e.time<cursor:
+                        raise CapellaError(
+                            f'Overlapping notes in {p.name}, voice {voice}, measure {mi+1}'
+                        )
                     if e.kind=='keySign':
                         fifths=int(e.node.get('fifths',0));prev_fifths=state['key'];state['key']=fifths
                         if mi==0 or fifths!=prev_fifths: add_attributes(measure,key=fifths)
@@ -537,9 +697,15 @@ def serialize_musicxml(raw, layout='balanced'):
                         if clef!=state['clef']:add_attributes(measure,clef=clef)
                         state['clef']=clef
                     elif e.kind in ('chord','rest'):
-                        nnotes+=make_note(measure,e,voice,state,slur_starts,slur_ends)
                         if e.time+e.dur>stop:
-                            warnings.append(f'A note crosses a barline in {p.name} at measure {mi+1}.')
+                            raise CapellaError(
+                                f'Note crosses a barline in {p.name}, voice {voice}, '
+                                f'measure {mi+1}; source measure boundaries need review.'
+                            )
+                        nnotes+=make_note(measure,e,voice,state,slur_starts,slur_ends,active_divisions)
+                        cursor=e.time+e.dur
+                if cursor<stop:
+                    sub(sub(measure,'forward'),'duration',to_div(stop-cursor,active_divisions))
             left_repeat=primary_barlines.get(start) in ('repBegin','repEndBegin')
             if left_repeat or (pi==0 and start in ending_starts):
                 bl=sub(measure,'barline',location='left')
@@ -565,9 +731,14 @@ def serialize_musicxml(raw, layout='balanced'):
     if root.xpath('//c:drawObj/c:text[c:font[@face="capella3"]]',namespaces=N):
         warnings.append('Capella-specific music-font symbols may need manual correction.')
     data=ET.tostring(score,encoding='utf-8',xml_declaration=True,pretty_print=True,doctype='<!DOCTYPE score-partwise  PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">')
+    for name,count in unsupported.items():
+        warnings.append(f'{count} source {name} elements require manual notation review.')
     report={'title':title,'subtitle':subtitle,'composer':composer,'parts':[p.name for p in parts],
             'measures':measure_count,'notes':sum(1 for p in parts for e in p.events if e.kind=='chord'),
             'warnings':sorted(set(warnings)),'layout':layout,'source_format':'capx',
             'source_systems':len(children(child(root, 'systems'), 'system')),
-            'variation_numbers':list(variation_numbers.values())}
+            'variation_numbers':list(variation_numbers.values()),
+            'notation_features':features,
+            'notation_not_fully_interpreted':unsupported,
+            'print_review_recommended':True}
     return data,report
