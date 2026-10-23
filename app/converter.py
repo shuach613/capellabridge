@@ -416,13 +416,13 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             if direction in ('up','down'):sub(note,'stem',direction)
         if shape in ('diamond','cross','triangle','slash'):
             sub(note,'notehead','x' if shape=='cross' else shape)
-        has_notation=bool(marks or ties or (event.time,voice) in slur_starts or (event.time,voice) in slur_ends)
+        has_notation=bool(marks or ties or id(event) in slur_starts or id(event) in slur_ends)
         if ties or (hi == 0 and has_notation):
             nt=sub(note,'notations')
             for tp in ties:sub(nt,'tied',type=tp)
             if hi == 0:
-                for sn in slur_ends.get((event.time,voice),[]):sub(nt,'slur',type='stop',number=sn)
-                for sn in slur_starts.get((event.time,voice),[]):sub(nt,'slur',type='start',number=sn)
+                for sn in slur_ends.get(id(event),[]):sub(nt,'slur',type='stop',number=sn)
+                for sn in slur_starts.get(id(event),[]):sub(nt,'slur',type='start',number=sn)
             if marks and hi == 0:
                 articulations=sub(nt,'articulations')
                 for a in marks:
@@ -435,26 +435,60 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                     for typ in types:
                         tagname=mapped.get(typ)
                         if tagname:sub(articulations,tagname)
+        if hi==0 and not is_grace:
+            lyric=child(ob,'lyric')
+            for verse in children(lyric,'verse'):
+                words=''.join(verse.itertext()).strip()
+                if not words:
+                    continue
+                number=verse.get('i','0')
+                lyric_node=sub(note,'lyric',number=str(int(number)+1))
+                sub(lyric_node,'syllabic','begin' if verse.get('hyphen')=='true' else 'single')
+                sub(lyric_node,'text',words)
     return len(heads)
 
 
 def make_slur_links(events):
-    starts=collections.defaultdict(list);ends=collections.defaultdict(list)
-    chords=[e for e in events if e.kind=='chord']
-    # A graphical slur with basic noteRange=N begins at the anchoring chord
-    # and ends N subsequent chords later (CapXML note ranges are not XML IDs).
-    for i,e in enumerate(chords):
-        draw=child(e.node,'drawObjects')
-        for obj in children(draw,'drawObj'):
-            if child(obj,'slur') is None:continue
-            basic=child(obj,'basic')
-            if basic is None:continue
-            span=int(basic.get('noteRange','0'))
-            if not (0 < span and i+span < len(chords)):continue
-            target=chords[i+span]
-            if target.voice!=e.voice:continue
-            sn=1 + len(starts[(e.time,e.voice)]) % 6
-            starts[(e.time,e.voice)].append(sn);ends[(target.time,e.voice)].append(sn)
+    """Link graphical slurs within their OWN voice, not across other voices.
+
+    CapXML's noteRange indexes subsequent chords, not absolute score note
+    indexes. Overlapping slurs need distinct MusicXML numbers.
+    """
+    starts=collections.defaultdict(list)
+    ends=collections.defaultdict(list)
+    by_voice=collections.defaultdict(list)
+    for event in events:
+        if event.kind == 'chord':
+            by_voice[event.voice].append(event)
+    for voice, chords in by_voice.items():
+        candidates=[]
+        seen=set()
+        for i,event in enumerate(chords):
+            for draw in children(child(event.node,'drawObjects'),'drawObj'):
+                if child(draw,'slur') is None:
+                    continue
+                basic=child(draw,'basic')
+                if basic is None:
+                    continue
+                distance=int(basic.get('noteRange','0'))
+                end_index=i+distance
+                if not 0<distance or end_index>=len(chords):
+                    continue
+                key=(i,end_index)
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(key)
+        active={}
+        for i,j in sorted(candidates):
+            # Reclaim numbers for slurs that have already ended.
+            active={number:end for number,end in active.items() if end>=i}
+            free=next((n for n in range(1,17) if n not in active),None)
+            if free is None:
+                raise CapellaError(f'More than 16 overlapping slurs in voice {voice}')
+            active[free]=j
+            starts[id(chords[i])].append(free)
+            ends[id(chords[j])].append(free)
     return starts,ends
 
 
