@@ -823,7 +823,7 @@ def uniformly_marked_voices(parts, articulation='strongBeat', minimum_chords=32)
     return affected
 
 
-def serialize_musicxml(raw, layout='balanced'):
+def serialize_musicxml(raw, layout='balanced', filename=None):
     """Returns (MusicXML bytes, report dict)."""
     if layout not in ('balanced','compact','original'):raise CapellaError('Invalid layout mode')
     root=read_capx(raw)
@@ -865,7 +865,7 @@ def serialize_musicxml(raw, layout='balanced'):
         raise CapellaError('Score requires an impractically fine rhythmic grid; '
                            'cannot safely encode it in MusicXML.')
     features,unsupported=source_notation_audit(root)
-    title,subtitle,composer=extract_metadata(root)
+    title,subtitle,composer=extract_metadata(root, filename)
     variation_numbers=extract_variation_numbers(parts)
     score_directions=extract_score_directions(parts)
     score=ET.Element('score-partwise',version='4.0')
