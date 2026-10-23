@@ -305,7 +305,8 @@ def main():
         Path(os.environ['STUDIO_COMPAT_OUTPUT']).write_bytes(
             get(score['downloads']['mscz'])
         )
-\n    print('Later-appearing fourth staff and page-level credits rendered by MuseScore',flush=True)
+
+    print('Later-appearing fourth staff and page-level credits rendered by MuseScore',flush=True)
 
     old_rest='<rest><duration base="7"/></rest>'
     solo='<rest><duration base="1/4"/><drawObjects><drawObj><text y="-4">'
