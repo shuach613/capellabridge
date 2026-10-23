@@ -271,46 +271,61 @@ def parse_score(root):
     return parts, clock, sorted(set(warnings))
 
 
-def extract_metadata(root):
-    """Extract title, subtitle and author from first-system Capella text.
+def extract_metadata(root, filename=None):
+    """Read Capella page-level credits, falling back to note-attached titles.
 
-    Capella often combines subtitle and composer in one multiline text box.
-    Preserve those line breaks before selecting the prominent heading.
+    A logo is sometimes embedded as WMF rather than searchable text.
+    Avoid mistaking adjacent Intro or copyright strings for a work title.
     """
-    # Some Capella scores put the title and composer in *pageObjects*
-    # rather than on notes in the first system (Vaudois, Waggis, Calvados).
-    # These credits are separate from headers showing "# / 4" page numbers
-    # and from bottom-of-page D.C./Fine instructions.
     page_boxes=[]
     for item in root.xpath('./c:pageObjects/c:drawObj/c:text',namespaces=N):
         font=child(item,'font')
         content=child(item,'content')
-        if font is None or content is None:
-            continue
-        value=' '.join(''.join(content.itertext()).split())
+        if font is None or content is None: continue
+        lines=[v.strip() for v in ''.join(content.itertext()).splitlines() if v.strip()]
         try:
             size=int(font.get('height','0'))
             x=float(item.get('x','0'))
             y=float(item.get('y','0'))
         except ValueError:
             continue
-        if (size<10 or y>25 or not value or '#' in value
-                or re.search(r'\b(?:seite|page)\b',value,re.I)):
+        if (size<10 or y>25 or not lines or
+                any('#' in v or re.search(r'\b(?:seite|page)\b',v,re.I)
+                    for v in lines)):
             continue
-        page_boxes.append((size,x,y,value))
-    if page_boxes:
-        title_box=max(page_boxes,key=lambda box:box[0])
-        title=title_box[3]
+        page_boxes.append((size,x,y,lines))
+    # A title in the upper margin is typographically larger than composer
+    # credits; don't treat a nearby introductory section label as the title.
+    titles=[box for box in page_boxes
+            if box[0]>=15 and box[2]<=9 and len(box[3][0])>=4
+            and box[3][0].casefold() not in ('intro','trommelsolo')]
+    if titles:
+        title_box=max(titles,key=lambda box:box[0])
+        title=title_box[3][0]
         composer=''
         subtitle_lines=[]
-        for size,x,y,value in page_boxes:
-            if (size,x,y,value)==title_box:
+        for size,x,y,lines in page_boxes:
+            if (size,x,y,lines)==title_box: continue
+            if len(lines)==1 and x>=title_box[1]+23 and size>=10 and not composer:
+                composer=lines[0]
+            elif len(lines)==1 and lines[0].casefold() in ('intro','trommelsolo'):
                 continue
-            if x>=title_box[1]+23 and size>=10 and not composer:
-                composer=value
-            elif value not in subtitle_lines:
-                subtitle_lines.append(value)
+            else:
+                subtitle_lines.extend(v for v in lines if v not in subtitle_lines)
         return title,'\n'.join(subtitle_lines),composer
+    # Capella may store the heading as a graphical metafile. In that case
+    # the upload filename is the only reliable machine-readable title.
+    has_graphical_title=bool(root.xpath(
+        './c:pageObjects/c:drawObj/c:metafile',namespaces=N))
+    if has_graphical_title and filename:
+        title=Path(filename).stem.replace('_',' ').strip() or 'Converted score'
+        composer=''
+        subtitles=[]
+        for size,x,y,lines in page_boxes:
+            if x>=70 and size>=10 and not composer:
+                composer=lines[0]
+                subtitles.extend(lines[1:])
+        return title,'\n'.join(subtitles),composer
 
     text_boxes = []
     for item in root.xpath('//c:systems/c:system[1]//c:drawObj/c:text', namespaces=N):
