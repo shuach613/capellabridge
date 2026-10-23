@@ -433,6 +433,49 @@ def main():
     assert get(dynamic_entry['downloads']['pdf']).startswith(b'%PDF-')
     print('Legacy Capella p, f, mf, mp survived native MuseScore/PDF export',flush=True)
 
+    # New reference scores: real MuseScore rendering of a boxed rehearsal
+    # mark, a circled Capella3 number, and a credited arranger.
+    # This is synthetic and does not publish private user-owned scores.
+    rehearsal=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/3.0">'
+        '<pageObjects><drawObj><text x="60" y="5"><font face="Arial" height="20"/>'
+        '<content>CIRCUS Märschli</content></text></drawObj>'
+        '<drawObj><text x="130" y="5"><font face="Arial" height="11"/>'
+        '<content>arrangiert vom Thomas Heid</content></text></drawObj></pageObjects>'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices>'
+        '<voice><noteObjects><timeSign time="1/4"/>'
+        '<chord><duration base="1/4"/>'
+        '<drawObjects><drawObj><rectangle x1="-4" y1="-9" x2="0" y2="-5"/>'
+        '<basic noAdjust="true"/></drawObj><drawObj>'
+        '<text y="-6"><font face="Arial" height="12"/><content>A</content>'
+        '</text></drawObj></drawObjects><heads><head pitch="C5"/></heads></chord>'
+        '<chord><duration base="1/4"/>'
+        '<drawObjects><drawObj><text y="-8"><font face="capella3" height="18"/>'
+        '<content>2</content></text></drawObj><drawObj>'
+        '<ellipse x1="-5" y1="-10" x2="0" y2="-5"/><basic noAdjust="true"/>'
+        '</drawObj></drawObjects><heads><head pitch="D5"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="E5"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="F5"/></heads></chord>'
+        '</noteObjects></voice></voices></staff></staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(rehearsal,filename='Circus-Marks.capx')
+    reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    record=reply['results'][0]
+    assert record['variation_numbers']==['A','②'],record
+    from xml.etree import ElementTree as ET
+    xmltree=ET.fromstring(get(record['downloads']['musicxml']))
+    assert xmltree.findtext('./identification/creator[@type="arranger"]')=='Thomas Heid'
+    boxed=xmltree.find('.//direction-type/words[.="A"]')
+    assert boxed is not None and boxed.get('enclosure')=='rectangle'
+    assert xmltree.find('.//direction-type/words[.="②"]') is not None
+    mscz=get(record['downloads']['mscz'])
+    with zipfile.ZipFile(io.BytesIO(mscz)) as z:
+        assert any(name.endswith('.mscx') for name in z.namelist())
+    assert get(record['downloads']['pdf']).startswith(b'%PDF-')
+    print('Circus/Elfer boxed and circled headings rendered by native MuseScore',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
