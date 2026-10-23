@@ -46,7 +46,7 @@ def test_uniform_strongbeat_does_not_put_marcato_on_every_note():
     assert report['normalized_uniform_strongbeat'] == 40
     assert len(root.findall('.//articulations/strong-accent')) == 0
     assert len(root.findall('.//articulations/staccato')) == 1
-    assert len(root.findall('./part/measure/note')) == 4
+    assert len(root.findall('./part/measure[1]/note')) == 4
     assert len(root.findall('.//part/measure/note')) == 40
     assert report['warnings'], 'Document selective articulation normalization'
 
@@ -78,7 +78,6 @@ def test_uniform_nineteen_note_passage_is_not_silently_normalized():
     first = xml.index('<chord>')
     last = xml.rfind('</chord>')+len('</chord>')
     passage = xml[first:last]
-    twenty_first = passage.find('<chord>', passage.find('</chord>')+len('</chord>'))
     # Keep the first eight chords, and use a time signature that fits 2 measures.
     end_marker = '</chord>'
     cursor = 0
