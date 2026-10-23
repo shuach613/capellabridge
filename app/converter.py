@@ -374,6 +374,45 @@ def extract_variation_numbers(parts):
     return markers
 
 
+def extract_score_directions(parts):
+    """Keep printed words attached to musical notes or rests.
+
+    Capella stores navigation and performance text such as 'fine' and
+    'Trommelsolo' in drawObjects, rather than as dedicated semantic events.
+    Avoid music-font glyphs, section numbers and small copyright text.
+    """
+    out=collections.defaultdict(list)
+    for event in parts[0].events:
+        if event.voice!=1 or event.kind not in ('chord','rest'):
+            continue
+        for draw in children(child(event.node,'drawObjects'),'drawObj'):
+            text=child(draw,'text')
+            font=child(text,'font')
+            content=child(text,'content')
+            if font is None or content is None:
+                continue
+            label=' '.join(''.join(content.itertext()).split())
+            if not label or re.fullmatch(r'[1-9]\\d?',label):
+                continue
+            if font.get('face','').casefold() in ('capella','capella3'):
+                continue
+            try:
+                height=int(font.get('height','0'))
+                y=float(text.get('y','0'))
+            except ValueError:
+                continue
+            if height>=10 and y<0 and len(label)>=4 and label not in out[event.time]:
+                out[event.time].append(label)
+    return dict(out)
+
+
+def add_score_direction(measure,label):
+    direction=sub(measure,'direction',placement='above')
+    kind=sub(direction,'direction-type')
+    sub(kind,'words',label,font_size='10',font_weight='bold',
+        relative_y='16',justify='left')
+
+
 def add_variation_heading(measure, label):
     """Place a readable, printable Capella variation number on the top staff."""
     direction = sub(measure, 'direction', placement='above')
@@ -769,6 +808,7 @@ def serialize_musicxml(raw, layout='balanced'):
     features,unsupported=source_notation_audit(root)
     title,subtitle,composer=extract_metadata(root)
     variation_numbers=extract_variation_numbers(parts)
+    score_directions=extract_score_directions(parts)
     score=ET.Element('score-partwise',version='4.0')
     work=sub(score,'work');sub(work,'work-title',title)
     sub(score,'movement-title',title)
@@ -907,6 +947,9 @@ def serialize_musicxml(raw, layout='balanced'):
                 ve=[e for e in events if e.voice==voice and start<=e.time<stop]
                 cursor=start
                 for e in ve:
+                    if pi==0 and voice==1 and e.kind in ('chord','rest'):
+                        for words in score_directions.get(e.time,()):
+                            add_score_direction(measure,words)
                     if e.time>cursor:
                         sub(sub(measure,'forward'),'duration',to_div(e.time-cursor,active_divisions))
                         cursor=e.time
@@ -971,6 +1014,7 @@ def serialize_musicxml(raw, layout='balanced'):
             'warnings':sorted(set(warnings)),'layout':layout,'source_format':'capx',
             'source_systems':len(children(child(root, 'systems'), 'system')),
             'variation_numbers':list(variation_numbers.values()),
+            'printed_directions':[word for words in score_directions.values() for word in words],
             'notation_features':features,
             'notation_not_fully_interpreted':unsupported,
             'print_review_recommended':True,
