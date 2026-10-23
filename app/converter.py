@@ -966,7 +966,8 @@ def serialize_musicxml(raw, layout='balanced'):
                     if e.time>cursor:
                         sub(sub(measure,'forward'),'duration',to_div(e.time-cursor,active_divisions))
                         cursor=e.time
-                    if e.kind in ('chord','rest') and e.time<cursor:
+                    if (e.kind in ('chord','rest') and e.time<cursor
+                            and not (e.kind=='rest' and e.time<start)):
                         raise CapellaError(
                             f'Overlapping notes in {p.name}, voice {voice}, measure {mi+1}'
                         )
