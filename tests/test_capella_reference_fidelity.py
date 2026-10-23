@@ -165,6 +165,8 @@ def test_capxml_3_namespace_replacement_staff_and_logo_title(layout):
     assert report['title']=='Fyyrvogel'
     assert report['composer']=='Michael Robertson'
     assert report['subtitle']=='Trommeltext: Andri Obrist'
+    assert 'Intro' in report['printed_directions']
+    assert tree.find('.//direction-type/words[.="Intro"]') is not None
     assert report['variable_staff_systems']
     assert len(tree.findall('./part'))==5
     assert tree.find('./part[5]/measure[1]/attributes/staff-details').get('print-object')=='no'
