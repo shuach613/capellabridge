@@ -44,6 +44,28 @@ def sub(parent, name, text=None, **attrs):
     return el
 
 
+
+def tuplet_normal_notes(tuplet):
+    """CapXML tuplet semantics, including tripartite and prolonged groups.
+
+    See CapXML's Tuplet specification: choose powers of 2, or 3*power-of-2
+    when tripartite. 'prolong' chooses the smallest *greater* grouping.
+    """
+    count = int(tuplet.get('count', '3'))
+    if count < 2 or count > 32:
+        raise CapellaError(f'Unsupported tuplet count: {count}')
+    tripartite = tuplet.get('tripartite', 'false').lower() == 'true'
+    prolong = tuplet.get('prolong', 'false').lower() == 'true'
+    candidates = sorted({(3 if tripartite else 1) * (2 ** exponent)
+                         for exponent in range(12)})
+    eligible = [n for n in candidates if n > count] if prolong else [
+        n for n in candidates if n < count
+    ]
+    if not eligible:
+        raise CapellaError(f'Unrepresentable CapXML tuplet: count={count}')
+    return min(eligible) if prolong else max(eligible)
+
+
 def duration_of(node, meter=None):
     """Read CapXML time values as sounding fractions of a whole note.
 
@@ -62,9 +84,7 @@ def duration_of(node, meter=None):
     tuplet = child(d, 'tuplet')
     if tuplet is not None:
         actual = int(tuplet.get('count', '3'))
-        if actual < 2 or actual > 32:
-            raise CapellaError(f'Unsupported tuplet ratio: {actual}')
-        duration *= Fraction(2 ** (actual.bit_length() - 1), actual)
+        duration *= Fraction(tuplet_normal_notes(tuplet), actual)
     return duration
 
 
@@ -388,7 +408,7 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends):
             actual=int(tuplet.get('count','3'))
             modified=sub(note,'time-modification')
             sub(modified,'actual-notes',actual)
-            sub(modified,'normal-notes',2**(actual.bit_length()-1))
+            sub(modified,'normal-notes',tuplet_normal_notes(tuplet))
         stem=child(ob,'stem')
         if stem is not None:
             direction=stem.get('dir')
@@ -396,17 +416,24 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends):
         if shape in ('diamond','cross','triangle','slash'):
             sub(note,'notehead','x' if shape=='cross' else shape)
         has_notation=bool(marks or ties or (event.time,voice) in slur_starts or (event.time,voice) in slur_ends)
-        if has_notation and hi == 0:
+        if ties or (hi == 0 and has_notation):
             nt=sub(note,'notations')
             for tp in ties:sub(nt,'tied',type=tp)
-            for sn in slur_ends.get((event.time,voice),[]):sub(nt,'slur',type='stop',number=sn)
-            for sn in slur_starts.get((event.time,voice),[]):sub(nt,'slur',type='start',number=sn)
-            if marks:
+            if hi == 0:
+                for sn in slur_ends.get((event.time,voice),[]):sub(nt,'slur',type='stop',number=sn)
+                for sn in slur_starts.get((event.time,voice),[]):sub(nt,'slur',type='start',number=sn)
+            if marks and hi == 0:
                 articulations=sub(nt,'articulations')
                 for a in marks:
-                    typ=a.get('type','')
-                    tagname={'staccato':'staccato','tenuto':'tenuto','accent':'accent', 'staccatissimo':'staccatissimo','marcato':'strong-accent'}.get(typ)
-                    if tagname:sub(articulations,tagname)
+                    types=a.get('type','').split()
+                    mapped={'staccato':'staccato','tenuto':'tenuto',
+                        'staccatissimo':'staccatissimo','normalAccent':'accent',
+                        'strongAccent':'strong-accent','accent':'accent',
+                        'marcato':'strong-accent','weakBeat':'detached-legato',
+                        'strongBeat':'staccato'}
+                    for typ in types:
+                        tagname=mapped.get(typ)
+                        if tagname:sub(articulations,tagname)
     return len(heads)
 
 
@@ -524,7 +551,15 @@ def serialize_musicxml(raw, layout='balanced'):
                 if vsi:
                     back=sub(measure,'backup');sub(back,'duration',to_div(stop-start))
                 ve=[e for e in events if e.voice==voice and start<=e.time<stop]
+                cursor=start
                 for e in ve:
+                    if e.time>cursor:
+                        sub(sub(measure,'forward'),'duration',to_div(e.time-cursor))
+                        cursor=e.time
+                    if e.kind in ('chord','rest') and e.time<cursor:
+                        raise CapellaError(
+                            f'Overlapping notes in {p.name}, voice {voice}, measure {mi+1}'
+                        )
                     if e.kind=='keySign':
                         fifths=int(e.node.get('fifths',0));prev_fifths=state['key'];state['key']=fifths
                         if mi==0 or fifths!=prev_fifths: add_attributes(measure,key=fifths)
@@ -537,9 +572,15 @@ def serialize_musicxml(raw, layout='balanced'):
                         if clef!=state['clef']:add_attributes(measure,clef=clef)
                         state['clef']=clef
                     elif e.kind in ('chord','rest'):
-                        nnotes+=make_note(measure,e,voice,state,slur_starts,slur_ends)
                         if e.time+e.dur>stop:
-                            warnings.append(f'A note crosses a barline in {p.name} at measure {mi+1}.')
+                            raise CapellaError(
+                                f'Note crosses a barline in {p.name}, voice {voice}, '
+                                f'measure {mi+1}; source measure boundaries need review.'
+                            )
+                        nnotes+=make_note(measure,e,voice,state,slur_starts,slur_ends)
+                        cursor=e.time+e.dur
+                if cursor<stop:
+                    sub(sub(measure,'forward'),'duration',to_div(stop-cursor))
             left_repeat=primary_barlines.get(start) in ('repBegin','repEndBegin')
             if left_repeat or (pi==0 and start in ending_starts):
                 bl=sub(measure,'barline',location='left')
