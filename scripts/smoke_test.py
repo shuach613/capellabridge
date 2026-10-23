@@ -211,6 +211,33 @@ def main():
         assert len(native.findall('./Score/Staff'))==2
     print('Multi-meter, tuplets, grace notes and measure rests rendered by MuseScore',flush=True)
 
+    # Two repeat signs can occupy one instant: previous-system repEnd
+    # plus next-system repBegin. Verify both survive MuseScore round-trips.
+    def repeat_system(prefix, ending):
+        chord='<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>'
+        return ('<system><staves><staff layout="Flute"><voices><voice><noteObjects>'
+                +prefix+chord+chord+ending+
+                '</noteObjects></voice></voices></staff></staves></system>')
+    repeat_xml=(
+        '<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves><staffLayout description="Flute"/></staves></layout>'
+        '<systems>'
+        +repeat_system('<timeSign time="2/4"/>','<barline type="repEnd"/>')
+        +repeat_system('<barline type="repBegin"/>','<barline type="repEndBegin"/>')
+        +repeat_system('','')
+        +'</systems></score>'
+    ).encode()
+    body,ctype=make_upload(repeat_xml)
+    result=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert result['results'][0]['ok'],result
+    item=result['results'][0]
+    assert item['repeat_boundaries']=={'forward':2,'backward':2},item
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        native=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+        assert len(native.findall('.//startRepeat'))==2
+        assert len(native.findall('.//endRepeat'))==2
+    print('Joined backward+forward Capella repeats survived native MuseScore export')
+
     print('All three layout modes passed the live Docker conversion test')
 
 
