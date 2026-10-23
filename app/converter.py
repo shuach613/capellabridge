@@ -405,11 +405,11 @@ def extract_score_directions(parts):
             # The first-system title/subtitle is often attached to a note;
             # adding it as a direction would print the credits twice.
             performance=re.search(
-                r'(?i)(\\bfine\\b|\\bcoda\\b|\\bsegno\\b|'
-                r'\\bd\\.?\\s*c\\.?\\b|\\bd\\.?\\s*s\\.?\\b|'
-                r'\\btrommelsolo\\b|\\btutti\\b|\\bsolo\\b|'
-                r'\\britardando\\b|\\brit\\.?\\b|\\ba tempo\\b|'
-                r'\\baccelerando\\b|\\baccel\\.?\\b)',
+                r'(?i)(\bfine\b|\bcoda\b|\bsegno\b|'
+                r'\bd\.?\s*c\.?\b|\bd\.?\s*s\.?\b|'
+                r'\btrommelsolo\b|\btutti\b|\bsolo\b|'
+                r'\britardando\b|\brit\.?\b|\ba tempo\b|'
+                r'\baccelerando\b|\baccel\.?\b)',
                 label)
             if (performance and 10<=height<=20 and y<0
                     and label not in out[event.time]):
