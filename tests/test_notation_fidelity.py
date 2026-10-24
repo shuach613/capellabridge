@@ -162,7 +162,8 @@ def test_score_title_frame_multiline_is_single_subtitle(tmp_path):
     with zipfile.ZipFile(path) as archive:
         native = ET.fromstring(archive.read("score.mscx"))
     texts = native.findall("./Score/Staff/VBox/Text")
-    assert [item.findtext("style") for item in texts] == ["Title", "Subtitle", "Composer"]
+    # A composer already printed in the subtitle must not reappear in the native frame.
+    assert [item.findtext("style") for item in texts] == ["Title", "Subtitle"]
     rich = texts[1].find("text")
     assert rich.text == "Prepared by Karl Schell\nArranged by René Brielmann"
     assert len(rich.findall("br")) == 0
