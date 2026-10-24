@@ -167,6 +167,10 @@ def test_hidden_playback_note_without_proven_rest_pattern_is_preserved():
     doc,_=convert([('Piccolo',music)])
     assert doc.find('./part/measure/note').get('print-object')=='no'
     assert doc.find('./part/measure/note/pitch') is not None
+    _,report=convert([('Piccolo',music)])
+    assert report['unresolved_hidden_sounding_chords']==1
+    assert any('invisible sounding source chords remain' in w
+               for w in report['warnings'])
 
 
 def test_combined_repeat_end_begin_has_both_directions():
