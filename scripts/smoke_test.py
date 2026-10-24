@@ -742,7 +742,8 @@ def main():
     rendered_pdf=get(item['downloads']['pdf'])
     assert rendered_pdf.startswith(b'%PDF-')
     import subprocess
-    printed=subprocess.run(['pdftotext','-','-'],input=rendered_pdf,
+    printed=subprocess.run(['docker','exec','-i','capellabridge-smoke',
+                            'pdftotext','-','-'],input=rendered_pdf,
                            capture_output=True,check=True,timeout=60)
     assert printed.stdout.decode('utf-8','replace').count('Trommelsolo')==1, (
         'Long-rest caption was duplicated or lost in the actual rendered PDF')
