@@ -130,8 +130,8 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                         if color is None:
                             color=ET.SubElement(item,'color')
                         red,green,blue=(int(raw[i:i+2],16) for i in (1,3,5))
-                        color.attrib.update(r=str(red),g=str(green),
-                                            b=str(blue),a='255')
+                        color.attrib.update({'r':str(red),'g':str(green),
+                                             'b':str(blue),'a':'255'})
                 # MusicXML page>1 credits are silently dropped on import.
                 # Retain editorial attributions as ordinary source text in
                 # the final measure of the top staff, not new sounding notes.
