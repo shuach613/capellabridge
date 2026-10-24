@@ -75,3 +75,28 @@ def test_nonvariable_three_part_score_does_not_hide_resting_staffs(tmp_path):
     prepare_print_ready(path,{'variable_staff_systems':False})
     root=reread(path)
     assert root.findtext('./Score/Style/hideEmptyStaves')=='0'
+
+
+def test_repeated_annotations_deduplicated_only_inside_source_multirests(tmp_path):
+    path=tmp_path/'drum.mscz'
+    make_mscz(path)
+    root=reread(path)
+    staff=root.find('./Score/Staff')
+    for _ in range(5):
+        measure=ET.SubElement(staff,'Measure')
+        ET.SubElement(measure,'voice')
+    for mi in (0,0,1,3,3,4):
+        voice=staff.findall('Measure')[mi].find('voice')
+        stafftext=ET.SubElement(voice,'StaffText')
+        ET.SubElement(stafftext,'text').text='Trommelsolo'
+    with zipfile.ZipFile(path,'w') as z:
+        z.writestr('score.mscx',ET.tostring(root,encoding='utf-8'))
+    metadata={'multi_rest_labels':[
+        {'label':'Trommelsolo','start_measure':0,'measures':3},
+        {'label':'Trommelsolo','start_measure':3,'measures':3}]}
+    prepare_print_ready(path,metadata)
+    root=reread(path)
+    labels=root.xpath('.//StaffText/text[text()="Trommelsolo"]')
+    assert len(labels)==2,len(labels)
+    prepare_print_ready(path,metadata)
+    assert len(reread(path).xpath('.//StaffText/text[text()="Trommelsolo"]'))==2
