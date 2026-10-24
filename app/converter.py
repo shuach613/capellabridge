@@ -964,7 +964,19 @@ def emit_glyph_directions(measure,event,voice):
     for glyph in capella_glyphs(event):
         if glyph in CAPELLA_DYNAMICS:
             direction=sub(measure,'direction',placement='below')
-            dynamics=sub(sub(direction,'direction-type'),'dynamics')
+            source_color=None
+            for draw in children(child(event.node,'drawObjects'),'drawObj'):
+                txt=child(draw,'text')
+                font=child(txt,'font')
+                content=child(txt,'content')
+                if (font is not None and content is not None
+                        and ''.join(content.itertext()).strip()==glyph):
+                    source_color=font.get('color')
+                    break
+            props={}
+            if source_color and re.fullmatch(r'[A-Fa-f0-9]{6}',source_color):
+                props['color']='#'+source_color.upper()
+            dynamics=sub(sub(direction,'direction-type'),'dynamics',**props)
             sub(dynamics,CAPELLA_DYNAMICS[glyph])
             sub(direction,'voice',voice)
         elif glyph in ('L','M'):
@@ -1152,8 +1164,16 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
         if stem is not None:
             direction=stem.get('dir')
             if direction in ('up','down'):sub(note,'stem',direction)
-        if shape in ('diamond','cross','triangle','slash'):
-            sub(note,'notehead','x' if shape=='cross' else shape)
+        source_rgb=child(ob,'display').get('color','') if child(ob,'display') is not None else ''
+        head_label=('x' if shape=='cross' else shape
+                    if shape in ('diamond','triangle','slash') else 'normal')
+        if shape in ('diamond','cross','triangle','slash') or (
+                head is not None and re.fullmatch(r'[A-Fa-f0-9]{6}',source_rgb)
+                and source_rgb.upper() not in ('000000','FFFFFF')):
+            attrs={}
+            if re.fullmatch(r'[A-Fa-f0-9]{6}',source_rgb):
+                attrs['color']='#'+source_rgb.upper()
+            sub(note,'notehead',head_label,**attrs)
         gliss_start, gliss_end = graphic_links if graphic_links else ({},{})
         tuplet_start, tuplet_end = tuplet_links if tuplet_links else ({},{})
         graphical_trill=(
@@ -1469,8 +1489,15 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     variation_numbers=extract_variation_numbers(parts)
     if subtitle and Fraction(0) in variation_numbers:
         first_section=variation_numbers[Fraction(0)]
-        subtitle='\n'.join(line for line in subtitle.splitlines()
-                           if line.strip()!=first_section)
+        cleaned=[]
+        for line in subtitle.splitlines():
+            if line.strip()==first_section:
+                continue
+            if line.rstrip().endswith(' '+first_section):
+                line=line.rstrip()[:-len(first_section)].rstrip()
+            if line.strip():
+                cleaned.append(line)
+        subtitle='\n'.join(cleaned)
     boxed_sections=set()
     for event in leading_voice_events(parts):
         label=variation_numbers.get(event.time)
@@ -1555,6 +1582,19 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     defaults=sub(score,'defaults');scaling=sub(defaults,'scaling');sub(scaling,'millimeters',{'balanced':'6.4','compact':'5.8','original':'6.0'}[layout]);sub(scaling,'tenths','40')
     page=sub(defaults,'page-layout');sub(page,'page-height','1683.78');sub(page,'page-width','1190.55')
     margins=sub(page,'page-margins',type='both');sub(margins,'left-margin','64');sub(margins,'right-margin','64');sub(margins,'top-margin','64');sub(margins,'bottom-margin','64')
+    # Source color map is used both by MusicXML and native MuseScore styling.
+    source_text_colors={}
+    for txt in root.xpath('//c:systems//c:drawObj/c:text',namespaces=N):
+        font=child(txt,'font')
+        content=child(txt,'content')
+        if font is None or content is None:
+            continue
+        rgb=font.get('color','')
+        if not re.fullmatch(r'[A-Fa-f0-9]{6}',rgb):
+            continue
+        phrase=' '.join(''.join(content.itertext()).split())
+        if phrase and rgb.upper() not in ('000000','FFFFFF'):
+            source_text_colors[phrase]='#'+rgb.upper()
     # Explicit page-one credits render on the score itself. Document metadata
     # alone does not reliably create visible MuseScore title frames on import.
     # Don't print the composer twice when the original byline already
@@ -1878,6 +1918,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     for name,count in unsupported.items():
         warnings.append(f'{count} source {name} elements require manual notation review.')
     report={'title':title,'subtitle':subtitle,'composer':composer,
+            'source_text_colors':source_text_colors,
             'source_multi_measure_rests':len(root.xpath(
                 '//c:rest/c:duration[not(contains(@base,"/")) and number(@base)>1]',
                 namespaces=N)),'parts':[p.name for p in parts],
