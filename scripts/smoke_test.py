@@ -716,7 +716,11 @@ def main():
     assert len(native_chords)==3, len(native_chords)
     assert native_chords[0].findtext('visible')!='0'
     assert native_chords[1].findtext('visible')=='0'
-    assert get(result['downloads']['pdf']).startswith(b'%PDF-')
+    visual_out=Path('/tmp/capellabridge-render-check')
+    visual_out.mkdir(parents=True,exist_ok=True)
+    visual_pdf=get(result['downloads']['pdf'])
+    assert visual_pdf.startswith(b'%PDF-')
+    (visual_out/'Waggis-hidden-shifted-rest.pdf').write_bytes(visual_pdf)
     print('Native shifted-note+rest workaround retained noteheads and sound',flush=True)
 
     multirest=(
@@ -742,7 +746,9 @@ def main():
     assert native.findtext('./Score/Style/createMultiMeasureRests')=='1'
     texts=[''.join(x.itertext()) for x in native.findall('.//StaffText/text')]
     assert sum('Trommelsolo' in t for t in texts)==1,texts
-    assert get(one['downloads']['pdf']).startswith(b'%PDF-')
+    visual_pdf=get(one['downloads']['pdf'])
+    assert visual_pdf.startswith(b'%PDF-')
+    (visual_out/'Calvados-multi-rest.pdf').write_bytes(visual_pdf)
     print('Native multi-measure rest retains one solo direction and multi-rest style',flush=True)
 
     print('All three layout modes passed the live Docker conversion test')
