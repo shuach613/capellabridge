@@ -2054,6 +2054,25 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             label=' '.join(''.join(content.itertext()).split())
             if 0<len(label)<=200:
                 source_text_colors.setdefault(label,rgb)
+    # Invisible *sounding* source notes not matching a verified, exact
+    # rest-engraving pattern are not safe to rewrite automatically. Surface
+    # them for score inspection instead of silently claiming print fidelity.
+    unresolved_hidden=[]
+    for part in parts:
+        for event in part.events:
+            if event.kind!='chord' or not event.dur or id(event) in graphical_rest_overrides:
+                continue
+            visibility=child(event.node,'display')
+            heads=children(child(event.node,'heads'),'head')
+            if (visibility is not None and visibility.get('invisible')=='true'
+                    and any(h.get('silent')!='true' for h in heads)):
+                unresolved_hidden.append((part.name,str(event.time)))
+    if unresolved_hidden:
+        warnings.append(
+            f'{len(unresolved_hidden)} invisible sounding source chords remain '
+            'because their musical/rest meaning is not established; review '
+            'printed notation and playback before relying on those passages.'
+        )
     report={'title':title,'subtitle':subtitle,'composer':composer,
             'closing_credits':closing_credits,
             'source_text_colors':source_text_colors,
@@ -2067,6 +2086,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             'printed_directions':[word for words in score_directions.values() for word in words],
             'notation_features':features,
             'notation_not_fully_interpreted':unsupported,
+            'unresolved_hidden_sounding_chords':len(unresolved_hidden),
             'print_review_recommended':True,
             'normalized_uniform_strongbeat':sum(uniform_strongbeat.values()),
             'variable_staff_systems':any(
