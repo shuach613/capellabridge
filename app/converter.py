@@ -1129,6 +1129,10 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             if glyph in glyphs and kind not in explicit:
                 marks=marks+[ET.Element('articulation',type=kind)]
                 explicit.add(kind)
+    if split_before:
+        # Continuations should have only the tie, not a second printed
+        # accent/staccatissimo from the same source note.
+        marks=[]
     if suppress_uniform_strongbeat:
         # Widespread strongBeat markers are commonly a source-wide playback/
         # formatting convention, not thousands of individual marcato marks.
@@ -1212,7 +1216,7 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             else:
                 sub(note,'type',note_type(dnode))
                 for _ in range(int(dnode.get('dots','0'))):sub(note,'dot')
-        if accidental:sub(note,'accidental',accidental)
+        if accidental and not split_before:sub(note,'accidental',accidental)
         if tuplet is not None and not is_grace and not (split_before or split_after):
             actual=int(tuplet.get('count','3'))
             modified=sub(note,'time-modification')
@@ -1234,7 +1238,7 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
         upper_mordent='l' in glyphs and not split_before
         # Older Capella scores enter a comma as ordinary serif text to
         # indicate a breath, rather than as a Capella music-font symbol.
-        breath_mark=any(
+        breath_mark=not split_before and any(
             child(child(obj,'text'),'content') is not None and
             ''.join(child(child(obj,'text'),'content').itertext()).strip()==','
             and (child(child(obj,'text'),'font') is not None)
