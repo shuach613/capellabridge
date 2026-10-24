@@ -983,6 +983,45 @@ def emit_glyph_directions(measure,event,voice):
             sub(direction,'sound',**sound)
 
 
+def source_annotation_color(font):
+    raw=font.get('color','') if font is not None else ''
+    return '#'+raw.upper() if re.fullmatch(r'[0-9A-Fa-f]{6}',raw) else None
+
+
+def emit_local_performance_text(measure,event,voice):
+    """Preserve small source instructions attached to any instrument.
+
+    Only explicit solo/expression conventions qualify: this prevents
+    movement labels, author names, lyrics and arbitrary graphics being
+    duplicated as directions on each staff.
+    """
+    for item in children(child(event.node,'drawObjects'),'drawObj'):
+        src=child(item,'text')
+        font=child(src,'font')
+        content=child(src,'content')
+        if src is None or font is None or content is None:
+            continue
+        face=font.get('face','').casefold()
+        if face in ('capella','capella3'):
+            continue
+        label=' '.join(''.join(content.itertext()).split())
+        if not label:
+            continue
+        if not (re.fullmatch(r'(?i)(?:\d+\s+)?solo\b',label)
+                or re.fullmatch(r'["“][^"”]{3,45}["”]',label)
+                or (label.startswith('s ') and 3<len(label)<=25 and
+                    font.get('weight','0') in ('700','bold'))):
+            continue
+        direction=sub(measure,'direction',placement=(
+            'above' if float(src.get('y','-7'))<0 else 'below'))
+        dtype=sub(direction,'direction-type')
+        options={'font_size':str(max(7,min(12,int(float(font.get('height','10'))))))}
+        color=source_annotation_color(font)
+        if color:options['color']=color
+        sub(dtype,'words',label,**options)
+        sub(direction,'voice',voice)
+
+
 def emit_staff_solo_direction(measure,event,voice):
     for graphic in children(child(event.node,'drawObjects'),'drawObj'):
         txt=child(graphic,'text')
@@ -1143,14 +1182,29 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
         )
         fermata_glyph='u' if 'u' in glyphs else 'k' if 'k' in glyphs else None
         upper_mordent='l' in glyphs
-        has_notation=bool(marks or ties or graphical_trill or upper_mordent or fermata_glyph or id(event) in slur_starts
+        # Older Capella scores enter a comma as ordinary serif text to
+        # indicate a breath, rather than as a Capella music-font symbol.
+        breath_mark=any(
+            child(child(obj,'text'),'content') is not None and
+            ''.join(child(child(obj,'text'),'content').itertext()).strip()==','
+            and (child(child(obj,'text'),'font') is not None)
+            and child(child(obj,'text'),'font').get('face','').casefold()
+                    not in ('capella','capella3')
+            for obj in children(child(ob,'drawObjects'),'drawObj')
+        )
+        if display_override and display_override.get('hide_tie_graphic'):
+            # Playback <tie> is retained above; the tied span exists only
+            # to power a source display workaround and is not drawn.
+            notation_ties=[]
+        else:
+            notation_ties=ties
+        has_notation=bool(breath_mark or marks or notation_ties or graphical_trill or upper_mordent or fermata_glyph or id(event) in slur_starts
                           or id(event) in slur_ends or id(event) in gliss_start
                           or id(event) in gliss_end or id(event) in tuplet_start
                           or id(event) in tuplet_end)
-        if ties or (hi == 0 and has_notation):
+        if notation_ties or (hi == 0 and has_notation):
             nt=sub(note,'notations')
-            if not (display_override and display_override.get('hide_tie_graphic')):
-                for tp in ties:sub(nt,'tied',type=tp)
+            for tp in notation_ties:sub(nt,'tied',type=tp)
             if hi == 0:
                 for sn in slur_ends.get(id(event),[]):sub(nt,'slur',type='stop',number=sn)
                 for sn in slur_starts.get(id(event),[]):sub(nt,'slur',type='start',number=sn)
@@ -1168,8 +1222,10 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                     if upper_mordent:sub(ornaments,'mordent')
                 if fermata_glyph:
                     sub(nt,'fermata',type=('upright' if fermata_glyph=='u' else 'inverted'))
-            if marks and hi == 0:
+            if (marks or breath_mark) and hi == 0:
                 articulations=sub(nt,'articulations')
+                if breath_mark:
+                    sub(articulations,'breath-mark','comma')
                 for a in marks:
                     types=a.get('type','').split()
                     mapped={'staccato':'staccato','tenuto':'tenuto',
@@ -1764,8 +1820,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                     if e.kind in ('chord','rest') and e.time>=start:
                         emit_glyph_directions(measure,e,voice)
                         emit_grouped_metronome_direction(measure,e,voice)
-                        if pi>0:
-                            emit_staff_solo_direction(measure,e,voice)
+                        emit_local_performance_text(measure,e,voice)
                         for no in wedge_stops.get(id(e),()):
                             direction=sub(measure,'direction',placement='below')
                             dtype=sub(direction,'direction-type')
