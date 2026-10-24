@@ -1,4 +1,4 @@
-"""Protect isolated accents while removing default-like uniform strongBeat marks."""
+"""Explicit source accents must survive regardless of their frequency."""
 import io
 import zipfile
 
@@ -37,18 +37,18 @@ def annotations(xml):
     return ET.fromstring(xml)
 
 
-def test_uniform_strongbeat_does_not_put_marcato_on_every_note():
+def test_uniform_strongbeat_preserves_all_printed_marcato_accents():
     xml, report = serialize_musicxml(full_score(
         lambda n: 'strongBeat staccato' if n == 20 else 'strongBeat'
     ))
     root = annotations(xml)
     assert report['measures'] == 10
-    assert report['normalized_uniform_strongbeat'] == 40
-    assert len(root.findall('.//articulations/strong-accent')) == 0
+    assert report['normalized_uniform_strongbeat'] == 0
+    assert len(root.findall('.//articulations/strong-accent')) == 40
     assert len(root.findall('.//articulations/staccato')) == 1
     assert len(root.findall('./part/measure[1]/note')) == 4
     assert len(root.findall('.//part/measure/note')) == 40
-    assert report['warnings'], 'Document selective articulation normalization'
+    assert all('strongBeat marks omitted' not in w for w in report['warnings'])
 
 
 def test_sparse_strongbeat_is_still_an_explicit_marcato():
@@ -65,8 +65,8 @@ def test_standard_strong_accent_is_preserved_even_if_all_strongbeat():
         full_score(lambda n: 'strongBeat strongAccent' if n == 3 else 'strongBeat')
     )
     root = annotations(xml)
-    assert report['normalized_uniform_strongbeat'] == 40
-    assert len(root.findall('.//articulations/strong-accent')) == 1
+    assert report['normalized_uniform_strongbeat'] == 0
+    assert len(root.findall('.//articulations/strong-accent')) >= 40
 
 
 def test_uniform_nineteen_note_passage_is_not_silently_normalized():
