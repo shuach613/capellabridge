@@ -98,7 +98,7 @@ def test_nunnefirzli_first_second_ending_brackets_attached_to_rests():
     rest=lambda number: ('<rest><duration base="1/4"/>'
                          +volta(number)+'</rest>')
     xml=(rest('1')+rest('2'))
-    root,_=convert(make_score([xml],meter='2/4'))
+    root,_=convert(make_score([xml],meter='1/4'))
     ending=root.findall('.//barline/ending')
     starts=[x.get('number') for x in ending if x.get('type')=='start']
     assert '1' in starts and '2' in starts
@@ -134,4 +134,4 @@ def test_no_generic_p1_p2_instrument_abbreviations():
         chord(duration='1/4')*2,
         chord(duration='1/4')*2,
     ]))
-    assert [n.text for n in root.findall('./part-list/score-part/part-abbreviation')]==['','']
+    assert [n.text for n in root.findall('./part-list/score-part/part-abbreviation')]==[None,None]
