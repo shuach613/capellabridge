@@ -20,7 +20,7 @@ STYLE_VALUES = {
     'measureNumberAllStaffs': '0',
     # The importer creates one Part for every Capella instrument, even
     # where the source introduces that part only in later systems.
-    'hideEmptyStaves': '1',
+    'hideEmptyStaves': '0',
     'dontHideStavesInFirstSystem': '0',
     'createMultiMeasureRests': '1',
     # Source credits are handled explicitly; a generated footer duplicates
@@ -50,6 +50,8 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                 node = style.find(key)
                 if node is None:
                     node = ET.SubElement(style, key)
+                if key == 'hideEmptyStaves' and metadata:
+                    value = '1' if metadata.get('variable_staff_systems') else '0'
                 node.text = value
             # MuseScore's MusicXML importer can add subtitle and composer in
             # the wrong order, causing the two text blocks to overlap.
@@ -110,6 +112,47 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                     if short is not None and (short.text or '').strip().upper() in {
                             f'P{i}' for i in range(1,100)}:
                         short.text = ''
+            # Restore source colors after MuseScore's MusicXML importer
+            # normalizes colored directions to black StaffText objects.
+            # Match the *complete* displayed label, not incidental substrings.
+            if metadata:
+                source_colors=metadata.get('source_text_colors') or {}
+                for item in score.iter():
+                    if item.tag not in ('StaffText','SystemText','Text','Dynamic'):
+                        continue
+                    words=item.find('text')
+                    if words is None:
+                        continue
+                    label=' '.join(''.join(words.itertext()).split())
+                    raw=source_colors.get(label)
+                    if raw and len(raw)==7 and raw.startswith('#'):
+                        color=item.find('color')
+                        if color is None:
+                            color=ET.SubElement(item,'color')
+                        red,green,blue=(int(raw[i:i+2],16) for i in (1,3,5))
+                        color.attrib.update(r=str(red),g=str(green),
+                                            b=str(blue),a='255')
+                # MusicXML page>1 credits are silently dropped on import.
+                # Retain editorial attributions as ordinary source text in
+                # the final measure of the top staff, not new sounding notes.
+                staff=score.find('Staff')
+                if staff is not None:
+                    measures=staff.findall('Measure')
+                    if measures:
+                        final_voice=measures[-1].find('voice')
+                        if final_voice is not None:
+                            for label in metadata.get('closing_credits') or []:
+                                if not label.strip():
+                                    continue
+                                if any(label == ' '.join(
+                                        ''.join(t.itertext()).split())
+                                       for t in final_voice.findall('.//StaffText/text')):
+                                    continue
+                                marker=ET.SubElement(final_voice,'StaffText')
+                                txt=ET.SubElement(marker,'text')
+                                txt.text=label
+                                ET.SubElement(marker,'offset').set('x','0')
+                                marker.find('offset').set('y','8')
             # MusicXML imports a group of four independent parts as a single
             # barLineSpan=4 on the first staff. MuseScore 3 treats staff
             # spanning as a per-adjacent-staff flag, making bars appear joined
