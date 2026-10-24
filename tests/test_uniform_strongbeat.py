@@ -66,7 +66,7 @@ def test_standard_strong_accent_is_preserved_even_if_all_strongbeat():
     )
     root = annotations(xml)
     assert report['normalized_uniform_strongbeat'] == 0
-    assert len(root.findall('.//articulations/strong-accent')) >= 40
+    assert len(root.findall('.//articulations/strong-accent')) == 40
 
 
 def test_uniform_nineteen_note_passage_is_not_silently_normalized():
