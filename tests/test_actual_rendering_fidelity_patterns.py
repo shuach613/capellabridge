@@ -164,3 +164,26 @@ def test_unverified_capella_glyph_is_reported_instead_of_silently_ignored():
     _,report=convert(make_score([notes]))
     assert report['unmapped_source_music_glyphs'].get('É')==1
     assert any('É' in warning for warning in report['warnings'])
+
+
+def test_waggis_hidden_rest_workaround_inside_triplet_preserves_triplet_meter():
+    """Every one of the 24 actual Waggis shifted pairs is triplet-scaled."""
+    tuplet='<tuplet count="3"/>'
+    def t_chord(pitch, extra='', graphics=''):
+        return ('<chord><duration base="1/8">'+tuplet+'</duration>'+extra
+                +(f'<drawObjects>{graphics}</drawObjects>' if graphics else '')
+                +f'<heads><head pitch="{pitch}"/></heads></chord>')
+    shifted=(
+        t_chord('G6','<display invisible="true" xShift="1.25"/>')
+        +t_chord('G6','<display xShift="-1.75"/>',draw('L'))
+        +t_chord('A6')
+        +chord('C7',duration='1/4')
+    )
+    root,_=convert(make_score([shifted]))
+    notes=root.findall('./part/measure/note')
+    assert len(notes)==4
+    assert [x.find('./rest') is not None for x in notes]==[False,True,False,False]
+    assert [int(n.findtext('duration')) for n in notes]==[3360,3360,3360,10080]
+    assert [n.findtext('./time-modification/actual-notes') for n in notes[:3]]==['3']*3
+    assert len(root.findall('.//notations/tuplet[@type="start"]'))==1
+    assert len(root.findall('.//notations/tuplet[@type="stop"]'))==1
