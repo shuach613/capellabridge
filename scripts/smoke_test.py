@@ -739,8 +739,14 @@ def main():
     with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
         nat=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
         assert nat.findtext('./Score/Style/createMultiMeasureRests')=='1'
-    assert get(item['downloads']['pdf']).startswith(b'%PDF-')
-    print('Seven-bar Trommelsolo keeps one label and native multiple-rest style',flush=True)
+    rendered_pdf=get(item['downloads']['pdf'])
+    assert rendered_pdf.startswith(b'%PDF-')
+    import subprocess
+    printed=subprocess.run(['pdftotext','-','-'],input=rendered_pdf,
+                           capture_output=True,check=True,timeout=60)
+    assert printed.stdout.decode('utf-8','replace').count('Trommelsolo')==1, (
+        'Long-rest caption was duplicated or lost in the actual rendered PDF')
+    print('Seven-bar Trommelsolo keeps one label in native MSCZ AND PDF',flush=True)
 
     print('All three layout modes passed the live Docker conversion test')
 
