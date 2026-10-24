@@ -802,6 +802,43 @@ def main():
     (visual_out/'Nunnefirzli-rest-attached-endings.pdf').write_bytes(visual_pdf)
     print('Native rest-attached first and second endings survived MuseScore export',flush=True)
 
+    colored=(
+        '<score xmlns="http://www.capella.de/CapXML/1.0">'
+        '<pageObjects><drawObj><text x="50" y="4">'
+        '<font face="Arial" height="20" color="000080"/>'
+        '<content>Blue fidelity</content></text></drawObj></pageObjects>'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices>'
+        '<voice><noteObjects><timeSign time="2/4"/>'
+        '<chord><duration base="1/4"/><drawObjects><drawObj>'
+        '<text x="-1" y="-8"><font face="Arial" height="8" color="0000FF"/>'
+        '<content>1  Solo</content></text></drawObj></drawObjects>'
+        '<heads><head pitch="C5"/></heads></chord>'
+        '<chord><duration base="1/4"/><drawObjects><drawObj>'
+        '<text x="2" y="4"><font face="Arial" height="10" color="000080"/>'
+        '<content>"glockig"</content></text></drawObj></drawObjects>'
+        '<heads><head pitch="D5"/></heads></chord>'
+        '</noteObjects></voice></voices></staff></staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(colored,filename='Colored-annotations.capx')
+    reply=json.loads(get('/api/convert?layout=original',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    item=reply['results'][0]
+    assert item['source_text_colors']['1 Solo']=='#0000FF'
+    assert item['source_text_colors']['"glockig"']=='#000080'
+    native_pdf=get(item['downloads']['pdf'])
+    assert native_pdf.startswith(b'%PDF-')
+    (visual_out/'Nunnefirzli-colored-annotations.pdf').write_bytes(native_pdf)
+    with fitz.open(stream=native_pdf,filetype='pdf') as pdf_doc:
+        spans=[sp for block in pdf_doc[0].get_text('dict')['blocks']
+               if 'lines' in block for line in block['lines']
+               for sp in line['spans']]
+    assert any('Solo' in sp.get('text','') and sp['color']==0x0000FF
+               for sp in spans),[(sp['text'],hex(sp['color'])) for sp in spans]
+    assert any('glockig' in sp.get('text','') and sp['color']==0x000080
+               for sp in spans),[(sp['text'],hex(sp['color'])) for sp in spans]
+    print('Source blue expression text survives native MuseScore PDF export',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
