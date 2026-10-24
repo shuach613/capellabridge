@@ -28,7 +28,15 @@ DURATION_TYPES = {
     "256th": Fraction(1, 256), "512th": Fraction(1, 512),
     "1024th": Fraction(1, 1024),
 }
-GRACE_TAGS = ("grace16", "grace32", "grace16after", "grace32after")
+# Native MuseScore 3 uses <grace8/> for common eighth-note acciaccaturas,
+# not just <grace16/> and <grace32/>. These are *not timed* events.
+# Match any explicitly supported native grace duration, with optional
+# "after" placement, rather than miscounting it as a normal note.
+GRACE_TAGS = tuple(
+    f"grace{denom}{suffix}"
+    for denom in (4, 8, 16, 32, 64, 128)
+    for suffix in ("", "after")
+) + ("grace", "appoggiatura", "acciaccatura")
 
 
 class ScoreIntegrityError(ValueError):
