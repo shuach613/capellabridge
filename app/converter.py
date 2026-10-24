@@ -1101,9 +1101,10 @@ def shifted_tied_rest_pairs(parts):
     return overrides
 
 
-def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False, display_override=None, split_before=False, split_after=False):
+def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False, display_override=None, split_before=False, split_after=False, link_event=None):
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
+    linked_id=id(link_event) if link_event is not None else id(event)
     heads = children(child(ob,'heads'),'head') if event.kind=='chord' else [None]
     dnode=child(ob,'duration')
     marks=children(ob,'articulation')
@@ -1225,12 +1226,12 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             sub(note,'notehead','x' if shape=='cross' else shape)
         gliss_start, gliss_end = graphic_links if graphic_links else ({},{})
         tuplet_start, tuplet_end = tuplet_links if tuplet_links else ({},{})
-        graphical_trill=(
+        graphical_trill=(not split_before) and (
             't' in glyphs or '¿' in glyphs or any(child(d,'trill') is not None for d in
                                   children(child(ob,'drawObjects'),'drawObj'))
         )
-        fermata_glyph='u' if 'u' in glyphs else 'k' if 'k' in glyphs else None
-        upper_mordent='l' in glyphs
+        fermata_glyph=('u' if 'u' in glyphs else 'k' if 'k' in glyphs else None) if not split_before else None
+        upper_mordent='l' in glyphs and not split_before
         # Older Capella scores enter a comma as ordinary serif text to
         # indicate a breath, rather than as a Capella music-font symbol.
         breath_mark=any(
@@ -1247,26 +1248,32 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             notation_ties=[]
         else:
             notation_ties=ties
-        has_notation=bool(breath_mark or marks or notation_ties or graphical_trill or upper_mordent or fermata_glyph or id(event) in slur_starts
-                          or id(event) in slur_ends or id(event) in gliss_start
-                          or id(event) in gliss_end or id(event) in tuplet_start
-                          or id(event) in tuplet_end)
+        has_notation=bool(breath_mark or marks or notation_ties or graphical_trill or upper_mordent or fermata_glyph or (not split_before and linked_id in slur_starts)
+                          or (not split_after and linked_id in slur_ends)
+                          or (not split_before and linked_id in gliss_start)
+                          or (not split_after and linked_id in gliss_end)
+                          or (not split_before and linked_id in tuplet_start)
+                          or (not split_after and linked_id in tuplet_end))
         if notation_ties or (hi == 0 and has_notation):
             nt=sub(note,'notations')
             for tp in notation_ties:sub(nt,'tied',type=tp)
             if hi == 0:
                 if not split_after:
-                    for sn in slur_ends.get(id(event),[]):sub(nt,'slur',type='stop',number=sn)
+                    for sn in slur_ends.get(linked_id,[]):sub(nt,'slur',type='stop',number=sn)
                 if not split_before:
-                    for sn in slur_starts.get(id(event),[]):sub(nt,'slur',type='start',number=sn)
-                for tn in tuplet_end.get(id(event),[]):
-                    sub(nt,'tuplet',type='stop',number=tn)
-                for tn in tuplet_start.get(id(event),[]):
-                    sub(nt,'tuplet',type='start',number=tn,bracket='no')
-                for sn in gliss_end.get(id(event),[]):
-                    sub(nt,'glissando',type='stop',number=sn,line_type='wavy')
-                for sn in gliss_start.get(id(event),[]):
-                    sub(nt,'glissando',type='start',number=sn,line_type='wavy')
+                    for sn in slur_starts.get(linked_id,[]):sub(nt,'slur',type='start',number=sn)
+                if not split_after:
+                    for tn in tuplet_end.get(linked_id,[]):
+                        sub(nt,'tuplet',type='stop',number=tn)
+                if not split_before:
+                    for tn in tuplet_start.get(linked_id,[]):
+                        sub(nt,'tuplet',type='start',number=tn,bracket='no')
+                if not split_after:
+                    for sn in gliss_end.get(linked_id,[]):
+                        sub(nt,'glissando',type='stop',number=sn,line_type='wavy')
+                if not split_before:
+                    for sn in gliss_start.get(linked_id,[]):
+                        sub(nt,'glissando',type='start',number=sn,line_type='wavy')
                 if graphical_trill or upper_mordent:
                     ornaments=sub(nt,'ornaments')
                     if graphical_trill:sub(ornaments,'trill-mark')
@@ -1939,7 +1946,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                                           suppress_uniform_strongbeat=pi in uniform_strongbeat,
                                           display_override=graphical_rest_overrides.get(id(e)),
                                           split_before=e.time<start and not is_multi_rest,
-                                          split_after=e.time+e.dur>stop and not is_multi_rest)
+                                          split_after=e.time+e.dur>stop and not is_multi_rest,
+                                          link_event=e)
                         cursor=event_for_note.time+event_for_note.dur
                 if cursor<stop:
                     sub(sub(measure,'forward'),'duration',to_div(stop-cursor,active_divisions))
