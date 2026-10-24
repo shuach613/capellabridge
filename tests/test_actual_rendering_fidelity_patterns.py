@@ -135,3 +135,23 @@ def test_no_generic_p1_p2_instrument_abbreviations():
         chord(duration='1/4')*2,
     ]))
     assert [n.text for n in root.findall('./part-list/score-part/part-abbreviation')]==[None,None]
+
+
+def test_historical_text_comma_is_printed_as_true_breath_mark():
+    comma='<drawObj><text x="2" y="-2.75">' \
+          '<font face="Times New Roman" height="12"/>' \
+          '<content>,</content></text></drawObj>'
+    seq=chord('C5',duration='1/4',graphics=comma)+chord('D5',duration='1/4')
+    root,_=convert(make_score([seq]))
+    assert len(root.findall('.//notations/articulations/breath-mark'))==1
+    assert root.findtext('.//notations/articulations/breath-mark')==','
+    assert len(root.findall('./part/measure/note'))==2
+
+
+def test_ordinary_comma_in_caption_is_not_breath_mark():
+    comma='<drawObj><text x="-4" y="-14">' \
+          '<font face="Arial" height="12"/>' \
+          '<content>,</content></text></drawObj>'
+    seq=chord('C5',duration='1/4',graphics=comma)+chord('D5',duration='1/4')
+    root,_=convert(make_score([seq]))
+    assert root.find('.//notations/articulations/breath-mark') is None
