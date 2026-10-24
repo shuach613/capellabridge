@@ -58,6 +58,32 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                 if node is None:
                     node = ET.SubElement(style, key)
                 node.text = value
+            # MuseScore 3 duplicates StaffText attached to the source's
+            # multi-measure rest on every expanded bar. Its PDF renderer then
+            # displays a staircase of identical labels (Calvados). Keep the
+            # first label in each uninterrupted span of empty measures; reset
+            # as soon as a sounding chord or non-empty measure intervenes.
+            if source_info.get('source_multi_measure_rests'):
+                for staff in score.findall('Staff'):
+                    seen_rest_labels=set()
+                    for measure in staff.findall('Measure'):
+                        voices=measure.findall('voice')
+                        if (not voices or any(voice.findall('Chord')
+                                              for voice in voices)):
+                            seen_rest_labels.clear()
+                            continue
+                        for voice in voices:
+                            for label_node in list(voice.findall('StaffText')):
+                                words=label_node.find('text')
+                                if words is None:
+                                    continue
+                                label=' '.join(''.join(words.itertext()).split())
+                                if not label:
+                                    continue
+                                if label in seen_rest_labels:
+                                    voice.remove(label_node)
+                                else:
+                                    seen_rest_labels.add(label)
             # MuseScore's MusicXML importer can add subtitle and composer in
             # the wrong order, causing the two text blocks to overlap.
             # Rebuild the three known credits as normal sequential VBox texts.
