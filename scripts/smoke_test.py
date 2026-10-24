@@ -677,6 +677,74 @@ def main():
     assert get(item['downloads']['pdf']).startswith(b'%PDF-')
     print('Embedded RTF D.S. al Segno navigation survived native MSCZ/PDF export',flush=True)
 
+    # Regression through the actual MuseScore importer, not just MusicXML:
+    # Waggis's hidden-note/shifted-tie/graphic-rest pattern must keep the
+    # audible tie, move the printed notehead to the intended earlier note,
+    # and retain a visible rest graphic without inserting rhythmic events.
+    tricky=(
+        '<score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves><staffLayout description="Piccolo 1"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo 1"><voices>'
+        '<voice><noteObjects><timeSign time="2/4"/>'
+        '<chord><duration base="1/8"/><display invisible="true" xShift="1.25"/>'
+        '<heads><head pitch="D7"><tie begin="true"/></head></heads></chord>'
+        '<chord><duration base="1/8"/><display xShift="-1.75"/>'
+        '<articulation type="strongAccent"/>'
+        '<drawObjects><drawObj><text x="3" y="-3">'
+        '<font face="capella3" height="18"/><content>L</content>'
+        '</text></drawObj></drawObjects>'
+        '<heads><head pitch="D7"><tie end="true"/></head></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="E7"/></heads></chord>'
+        '</noteObjects></voice></voices></staff></staves></system></systems></score>'
+    ).encode('utf-8')
+    body,ctype=make_upload(tricky,filename='HiddenShiftedRest.capx')
+    response=json.loads(get('/api/convert?layout=original',body,ctype))
+    assert response['results'][0]['ok'],response
+    result=response['results'][0]
+    from xml.etree import ElementTree as ET
+    mx=ET.fromstring(get(result['downloads']['musicxml']))
+    ns=mx.findall('./part/measure/note')
+    assert len(ns)==3
+    assert ns[0].get('print-object')!='no'
+    assert ns[1].get('print-object')=='no'
+    assert ns[0].find('./tie[@type="start"]') is not None
+    assert ns[1].find('./tie[@type="stop"]') is not None
+    assert mx.find('.//direction-type/words[.="𝄾"]') is not None
+    with zipfile.ZipFile(io.BytesIO(get(result['downloads']['mscz']))) as z:
+        native=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+    native_chords=native.findall('./Score/Staff/Measure/voice/Chord')
+    assert len(native_chords)==3, len(native_chords)
+    assert native_chords[0].findtext('visible')!='0'
+    assert native_chords[1].findtext('visible')=='0'
+    assert get(result['downloads']['pdf']).startswith(b'%PDF-')
+    print('Native shifted-note+rest workaround retained noteheads and sound',flush=True)
+
+    multirest=(
+        '<score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices>'
+        '<voice><noteObjects><timeSign time="2/4"/>'
+        '<rest><duration base="3"/><drawObjects><drawObj>'
+        '<text x="0" y="-7"><font face="Arial" height="12"/>'
+        '<content>Trommelsolo</content></text></drawObj></drawObjects></rest>'
+        '<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>'
+        '</noteObjects></voice></voices></staff></staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(multirest,filename='LongRest.capx')
+    reply=json.loads(get('/api/convert?layout=original',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    one=reply['results'][0]
+    xml=ET.fromstring(get(one['downloads']['musicxml']))
+    assert len(xml.findall('.//direction-type/words[.="Trommelsolo"]'))==1
+    with zipfile.ZipFile(io.BytesIO(get(one['downloads']['mscz']))) as z:
+        native=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+    assert native.findtext('./Score/Style/createMultiMeasureRests')=='1'
+    texts=[''.join(x.itertext()) for x in native.findall('.//StaffText/text')]
+    assert sum('Trommelsolo' in t for t in texts)==1,texts
+    assert get(one['downloads']['pdf']).startswith(b'%PDF-')
+    print('Native multi-measure rest retains one solo direction and multi-rest style',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
