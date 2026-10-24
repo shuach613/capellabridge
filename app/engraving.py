@@ -119,7 +119,6 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
             # Capella annotations, never recolor unrelated score objects.
             source_colors=(metadata or {}).get('source_text_colors') or {}
             if source_colors:
-                import re
                 normalized_colors={
                     ' '.join(label.split()):rgb
                     for label,rgb in source_colors.items()
