@@ -1629,6 +1629,34 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         phrase=' '.join(''.join(content.itertext()).split())
         if phrase and rgb.upper() not in ('000000','FFFFFF'):
             source_text_colors[phrase]='#'+rgb.upper()
+    # Capture *consistent* source dynamics/hairpin colors for MuseScore's
+    # native editor: the import engine strips MusicXML RGB values on many
+    # Dynamic/HairPin elements. Never infer a color from unrelated markings.
+    dynamic_color_samples=collections.defaultdict(set)
+    for txt in root.xpath('//c:systems//c:drawObj/c:text',namespaces=N):
+        font=child(txt,'font')
+        content=child(txt,'content')
+        if font is None or content is None:
+            continue
+        if font.get('face','').casefold() not in ('capella','capella3'):
+            continue
+        glyph=''.join(content.itertext()).strip()
+        typ=CAPELLA_DYNAMICS.get(glyph)
+        rgb=font.get('color','000000')
+        if typ and re.fullmatch(r'[0-9a-fA-F]{6}',rgb):
+            dynamic_color_samples[typ].add(rgb.upper())
+    source_dynamic_colors={
+        typ:'#'+next(iter(values))
+        for typ,values in dynamic_color_samples.items()
+        if len(values)==1 and '000000' not in values
+    }
+    wedge_values=set(x.get('color','000000').upper()
+                     for x in root.xpath('//c:systems//c:drawObj/c:wedge',namespaces=N))
+    source_wedge_color=(
+        '#'+next(iter(wedge_values))
+        if len(wedge_values)==1 and '000000' not in wedge_values
+           and re.fullmatch(r'[A-F0-9]{6}',next(iter(wedge_values)))
+        else None)
     # Explicit page-one credits render on the score itself. Document metadata
     # alone does not reliably create visible MuseScore title frames on import.
     # Don't print the composer twice when the original byline already
@@ -1967,6 +1995,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         warnings.append(f'{count} source {name} elements require manual notation review.')
     report={'title':title,'subtitle':subtitle,'composer':composer,
             'source_text_colors':source_text_colors,
+            'source_dynamic_colors':source_dynamic_colors,
+            'source_wedge_color':source_wedge_color,
             'unmapped_source_music_glyphs':dict(missing_glyphs),
             'source_multi_measure_rests':len(root.xpath(
                 '//c:rest/c:duration[not(contains(@base,"/")) and number(@base)>1]',
