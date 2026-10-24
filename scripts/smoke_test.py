@@ -677,6 +677,71 @@ def main():
     assert get(item['downloads']['pdf']).startswith(b'%PDF-')
     print('Embedded RTF D.S. al Segno navigation survived native MSCZ/PDF export',flush=True)
 
+    # Real rendering regression: hidden shifted Capella notes were previously
+    # invisible in MuseScore, and their companion 8th rest was printed as
+    # floating Unicode text rather than as a true timed rest.
+    displaced=(
+        '<score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices><voice>'
+        '<noteObjects><timeSign time="2/4"/>'
+        '<chord><duration base="1/8"/>'
+        '<display invisible="true" xShift="1.25"/>'
+        '<heads><head pitch="D7"><tie begin="true"/></head></heads></chord>'
+        '<chord><duration base="1/8"/>'
+        '<display xShift="-1.75"/><articulation type="strongAccent"/>'
+        '<drawObjects><drawObj><text y="-5">'
+        '<font face="capella3" height="18"/><content>L</content>'
+        '</text></drawObj></drawObjects>'
+        '<heads><head pitch="D7"><tie end="true"/></head></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="E7"/></heads></chord>'
+        '</noteObjects></voice></voices></staff></staves></system></systems>'
+        '</score>'
+    ).encode('utf-8')
+    body,ctype=make_upload(displaced,filename='Waggis-engraving.capx')
+    result=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert result['results'][0]['ok'],result
+    item=result['results'][0]
+    xmltree=ET.fromstring(get(item['downloads']['musicxml']))
+    notes=xmltree.findall('./part/measure/note')
+    assert len(notes)==3,notes
+    assert [n.find('rest') is not None for n in notes]==[False,True,False]
+    assert all(n.attrib.get('print-object')!='no' for n in notes)
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        nat=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+        assert nat.findall('.//Chord'), 'Expected native pitched notes'
+        assert nat.findall('.//Rest'), 'Expected native printed rest'
+        assert not nat.findall('.//StaffText/text[.="𝄾"]'), 'Floating eighth-rest text remains'
+    assert get(item['downloads']['pdf']).startswith(b'%PDF-')
+    print('Displaced Waggis note/rest prints as native notes and rest',flush=True)
+
+    # The initial seven-bar Trommelsolo is one source event, NOT seven text
+    # directions.  Assert both source MusicXML and native MuseScore style.
+    multi=(
+        '<score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices>'
+        '<voice><noteObjects><timeSign time="2/4"/>'
+        '<rest><duration base="7"/><drawObjects><drawObj>'
+        '<text y="-8"><font face="Arial" height="11"/>'
+        '<content>Trommelsolo</content></text></drawObj>'
+        '</drawObjects></rest></noteObjects></voice></voices></staff>'
+        '</staves></system></systems></score>'
+    ).encode('utf-8')
+    body,ctype=make_upload(multi,filename='Calvados-engraving.capx')
+    result=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert result['results'][0]['ok'],result
+    item=result['results'][0]
+    assert item['printed_directions']==['Trommelsolo'],item
+    xmltree=ET.fromstring(get(item['downloads']['musicxml']))
+    assert len(xmltree.findall('.//direction-type/words[.="Trommelsolo"]'))==1
+    assert xmltree.findtext('.//measure-style/multiple-rest')=='7'
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        nat=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+        assert nat.findtext('./Score/Style/createMultiMeasureRests')=='1'
+    assert get(item['downloads']['pdf']).startswith(b'%PDF-')
+    print('Seven-bar Trommelsolo keeps one label and native multiple-rest style',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
