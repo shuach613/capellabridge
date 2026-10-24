@@ -963,14 +963,31 @@ def emit_glyph_directions(measure,event,voice):
             sub(dynamics,CAPELLA_DYNAMICS[glyph])
             sub(direction,'voice',voice)
         elif glyph in ('L','M'):
-            # A note-anchored Capella3 8th/16th rest glyph is a graphic,
-            # not an additional timed rest. Print its musical rest sign
-            # without changing meter, note durations or playback.
+            # Graphic rest associated with a notehead (often a hidden
+            # tied Capella playback note). It is NOT an extra timed rest.
+            # Retain source drawing offsets rather than allowing MuseScore
+            # to push every annotation to its default top-of-staff position.
             rest_char={'L':'\U0001D13E','M':'\U0001D13F'}[glyph]
+            coords=(0.,-3.)
+            for graphic in children(child(event.node,'drawObjects'),'drawObj'):
+                source=child(graphic,'text')
+                font=child(source,'font')
+                content=child(source,'content')
+                if (font is not None and content is not None and
+                        font.get('face','').casefold() in ('capella','capella3')
+                        and ''.join(content.itertext()).strip()==glyph):
+                    try:
+                        coords=(float(source.get('x','0')),
+                                float(source.get('y','-3')))
+                    except ValueError:
+                        pass
+                    break
             direction=sub(measure,'direction',placement='above')
             subtype=sub(direction,'direction-type')
             sub(subtype,'words',rest_char,font_size='14',
-                font_family='FreeSerif')
+                font_family='FreeSerif',
+                relative_x=str(round(coords[0]*10,2)),
+                default_y=str(round(-coords[1]*10,2)))
             sub(direction,'voice',voice)
         elif glyph in CAPELLA_NAVIGATION:
             label,sound=CAPELLA_NAVIGATION[glyph]
