@@ -44,3 +44,29 @@ def test_unchanging_staff_layout_does_not_hide_empty_staves_globally(tmp_path):
         root=ET.fromstring(archive.read('score.mscx'))
     assert root.find('./Score/Style/hideEmptyStaves') is None
     assert root.findtext('./Score/Style/showFooter')=='0'
+
+
+def test_native_dynamics_keep_verified_red_source_color(tmp_path):
+    score=tmp_path/'dynamics.mscz'
+    native=(
+        '<museScore version="3.01"><Score><Style/>'
+        '<Staff id="1"><Measure><voice>'
+        '<Dynamic><subtype>mf</subtype></Dynamic>'
+        '<Dynamic><subtype>p</subtype></Dynamic>'
+        '<HairPin><subtype>0</subtype></HairPin>'
+        '</voice></Measure></Staff></Score></museScore>'
+    )
+    with zipfile.ZipFile(score,'w') as archive:
+        archive.writestr('score.mscx',native)
+    prepare_print_ready(score,{
+        'source_dynamic_colors':{'mf':'#FF0000'},
+        'source_wedge_color':'#0000FF',
+    })
+    with zipfile.ZipFile(score) as archive:
+        root=ET.fromstring(archive.read('score.mscx'))
+    dynamics=root.findall('.//Dynamic')
+    assert dynamics[0].find('color').attrib=={
+        'r':'255','g':'0','b':'0','a':'255'}
+    assert dynamics[1].find('color') is None
+    assert root.find('.//HairPin/color').attrib=={
+        'r':'0','g':'0','b':'255','a':'255'}
