@@ -104,26 +104,33 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                             height.text = str(max(14.0, 8.0 + 3.0 * (
                                 len(credits)+max(0,len(subtitle_lines)-1)),
                                 float(height.text or '0')))
-            # MuseScore's default text fonts cannot display Unicode
-            # Musical Symbols U+1D13E / U+1D13F. When Capella encodes a
-            # *graphical* rest over sounding tied notes, the MusicXML
-            # direction must become a native SMuFL symbol, not a timed
-            # Rest event. Native <sym> markup uses MuseScore's installed
-            # musical font and survives subsequent native PDF export.
+            # MusicXML imports source graphical rests as StaffText.
+            # Unicode 1D13E/1D13F is missing from the text font, and
+            # MuseScore prints literal <sym> markup in these StaffText
+            # objects. Use native, non-timed MuseScore Symbol elements at
+            # the same voice/tick positions instead; they use the music
+            # font and do not change note durations or playback.
             musical_rest_symbols={
                 '\U0001D13E':'rest8th',
                 '\U0001D13F':'rest16th',
             }
-            for staff_text in score.iter():
-                if staff_text.tag not in ('StaffText','SystemText','Text'):
-                    continue
-                content=staff_text.find('text')
-                if content is None:
-                    continue
-                source=''.join(content.itertext()).strip()
-                if source in musical_rest_symbols:
-                    content.clear()
-                    content.text='<sym>'+musical_rest_symbols[source]+'</sym>'
+            for voice in score.findall('.//voice'):
+                for index,item in enumerate(list(voice)):
+                    if item.tag!='StaffText':
+                        continue
+                    content=item.find('text')
+                    if content is None:
+                        continue
+                    glyph=''.join(content.itertext()).strip()
+                    if glyph not in musical_rest_symbols:
+                        continue
+                    symbol=ET.Element('Symbol')
+                    ET.SubElement(symbol,'name').text=musical_rest_symbols[glyph]
+                    off=item.find('offset')
+                    if off is not None:
+                        symbol.append(ET.fromstring(ET.tostring(off)))
+                    voice.remove(item)
+                    voice.insert(index,symbol)
             # Never print internal MusicXML part identifiers (P1, P2 ...)
             # as instrument labels on subsequent systems.
             for part in score.findall('Part'):
