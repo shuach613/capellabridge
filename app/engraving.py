@@ -18,6 +18,14 @@ STYLE_VALUES = {
     'showMeasureNumberOne': '0',
     'measureNumberSystem': '1',
     'measureNumberAllStaffs': '0',
+    # The importer creates one Part for every Capella instrument, even
+    # where the source introduces that part only in later systems.
+    'hideEmptyStaves': '1',
+    'dontHideStavesInFirstSystem': '0',
+    'createMultiMeasureRests': '1',
+    # Source credits are handled explicitly; a generated footer duplicates
+    # them on every MuseScore page.
+    'showFooter': '0',
 }
 
 def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
@@ -66,7 +74,11 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                     if subtitle_lines:
                         credits.append(('Subtitle','\n'.join(subtitle_lines)))
                     if metadata.get('composer'):
-                        credits.append(('Composer',metadata['composer']))
+                        # The byline may already be included verbatim in
+                        # Capella's title ("..., vom George Gruntz").
+                        canonical = lambda t: ''.join(c.casefold() for c in t if c.isalnum())
+                        if canonical(metadata['composer']) not in canonical(metadata.get('title','')):
+                            credits.append(('Composer',metadata['composer']))
                     old_credits = [element for element in frame.findall('Text')
                                    if element.findtext('style') in ('Title','Subtitle','Composer')]
                     if old_credits and any(value for _, value in credits):
@@ -90,6 +102,14 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                             height.text = str(max(14.0, 8.0 + 3.0 * (
                                 len(credits)+max(0,len(subtitle_lines)-1)),
                                 float(height.text or '0')))
+            # Never print internal MusicXML part identifiers (P1, P2 ...)
+            # as instrument labels on subsequent systems.
+            for part in score.findall('Part'):
+                for instrument in part.findall('Instrument'):
+                    short = instrument.find('shortName')
+                    if short is not None and (short.text or '').strip().upper() in {
+                            f'P{i}' for i in range(1,100)}:
+                        short.text = ''
             # MusicXML imports a group of four independent parts as a single
             # barLineSpan=4 on the first staff. MuseScore 3 treats staff
             # spanning as a per-adjacent-staff flag, making bars appear joined
