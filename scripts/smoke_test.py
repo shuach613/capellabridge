@@ -869,7 +869,8 @@ def main():
         (ch.tag, ch.findtext('durationType'), [c.tag for c in ch],
          ch.findtext('visible')) for ch in native.findall('.//Chord')
     ]
-    assert any(any(tag.startswith('grace') for tag in childtags)
+    assert any(any(tag.startswith('grace') or tag in ('acciaccatura','appoggiatura')
+                   for tag in childtags)
                for _,_,childtags,_ in grace_nodes), (
         'MuseScore did not retain an identifiable native grace chord',
         grace_nodes[:20])
