@@ -1102,6 +1102,31 @@ def shifted_tied_rest_pairs(parts):
                     'extra_articulations':children(second.node,'articulation')}
                 overrides[id(second)]={'print_as_rest':True,
                     'replace_source_tie':True}
+    # Another legacy construction places a real graphical rest over an
+    # invisible, *silent* chord to achieve custom beaming. The hidden pitch
+    # was never musical content. Replace the complete object with a timed
+    # visible rest; retain its precise tuplet/onset/duration.
+    for part in parts:
+        for event in part.events:
+            if event.kind!='chord' or id(event) in overrides:
+                continue
+            display=child(event.node,'display')
+            heads=children(child(event.node,'heads'),'head')
+            if (display is None or display.get('invisible')!='true'
+                    or not heads or not all(h.get('silent')=='true' for h in heads)):
+                continue
+            rest_glyphs=set(capella_glyphs(event)).intersection({'L','M'})
+            d=child(event.node,'duration')
+            if (not rest_glyphs or d is None
+                    or d.get('noDuration')=='true'):
+                continue
+            # Only translate a glyph when its expected rest value matches
+            # the source chord (tuplets alter performed duration separately).
+            if not any((glyph=='L' and d.get('base')=='1/8') or
+                       (glyph=='M' and d.get('base')=='1/16')
+                       for glyph in rest_glyphs):
+                continue
+            overrides[id(event)]={'print_as_rest':True,'visible':True}
     return overrides
 
 
@@ -1116,6 +1141,8 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
     marks=children(ob,'articulation')
     if display_override:
         marks=marks+display_override.get('extra_articulations',[])
+        if display_override.get('print_as_rest'):
+            marks=[]
     if split_before:
         marks=[]  # A sustained note has articulations only at its original onset.
     # Historical CAPELLA3.TTF signs 200–207 (Capella 7 handbook):
@@ -1128,7 +1155,7 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
         'Ë':'strongAccent','Ì':'weakBeat','Í':'strongBeat',
         'Î':'staccatissimo','Ï':'strongAccent',
     }
-    if event.kind=='chord':
+    if event.kind=='chord' and not (display_override and display_override.get('print_as_rest')):
         explicit={token for mark in marks
                   for token in mark.get('type','').split()}
         for glyph,kind in legacy_articulations.items():
@@ -1551,8 +1578,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     uniform_strongbeat={}
     if graphical_rest_overrides:
         warnings.append(
-            f'Normalized {len(graphical_rest_overrides)//2} precise tied '
-            'Capella note/rest engraving workarounds to timed notes and rests.'
+            f'Normalized {len(graphical_rest_overrides)} source note/rest '
+            'engravings to timed musical notes and rests.'
         )
     boundaries,meter=compute_boundaries(parts,end)
     # A time signature's written form is semantically significant: 2/4 is
