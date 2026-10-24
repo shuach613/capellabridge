@@ -7,6 +7,7 @@ and PNG previews all share the same staff/measure numbering preferences.
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import textwrap
 import zipfile
@@ -141,6 +142,29 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                                         'g':str(int(rgb[3:5],16)),
                                         'b':str(int(rgb[5:7],16)),
                                         'a':'255'})
+            # MusicXML-to-MuseScore loses RGB attributes on imported
+            # dynamic symbols. Restore colors only when every source instance
+            # of that particular dynamic agreed on one non-default color.
+            def set_native_color(node, rgb):
+                if not isinstance(rgb,str) or not re.fullmatch(
+                        r'#[0-9A-Fa-f]{6}',rgb):
+                    return
+                color=node.find('color')
+                if color is None:
+                    color=ET.Element('color')
+                    node.insert(0,color)
+                color.attrib.clear()
+                color.attrib.update({
+                    'r':str(int(rgb[1:3],16)),
+                    'g':str(int(rgb[3:5],16)),
+                    'b':str(int(rgb[5:7],16)),
+                    'a':'255'})
+            for dynamic in score.xpath('.//Dynamic'):
+                typ=dynamic.findtext('subtype','')
+                set_native_color(dynamic,source_info.get(
+                    'source_dynamic_colors',{}).get(typ))
+            for wedge in score.xpath('.//HairPin'):
+                set_native_color(wedge,source_info.get('source_wedge_color'))
             # MusicXML imports a group of four independent parts as a single
             # barLineSpan=4 on the first staff. MuseScore 3 treats staff
             # spanning as a per-adjacent-staff flag, making bars appear joined
