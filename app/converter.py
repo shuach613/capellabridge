@@ -1059,11 +1059,14 @@ def emit_staff_solo_direction(measure,event,voice):
 def shifted_tied_rest_pairs(parts):
     """Recognize Capella's beam-across-rest engraving workaround.
 
-    A hidden tie-start note followed by a shifted tie-end of the SAME pitch
-    with an attached eighth-rest drawing is one sustained sounding pitch
-    but a visible note + drawn rest. Do not remove either sounding event,
-    shift their musical times or add another timed rest. Reassign only which
-    notehead is printed. Untagged hidden notes are never changed.
+    A hidden tie-start note and shifted tie-end of the SAME pitch, with
+    an attached rest drawing, are a Capella engraving workaround for
+    a sounded/printed note followed by a real rest. Translate the pair
+    into one visible pitched note and one *timed* MusicXML rest of equal
+    durations. This prevents invisible audible notes, stray graphical rest
+    symbols, and an incorrect sustained playback note. Only the precise
+    tied/shifted/rest-glyph pattern qualifies; other hidden notes retain
+    their source semantics. Preserve source accents at the note onset.
     """
     overrides={}
     for part in parts:
@@ -1095,9 +1098,10 @@ def shifted_tied_rest_pairs(parts):
                     continue
                 if 'L' not in capella_glyphs(second):
                     continue
-                overrides[id(first)]={'visible':True,'hide_tie_graphic':True,
+                overrides[id(first)]={'visible':True,'replace_source_tie':True,
                     'extra_articulations':children(second.node,'articulation')}
-                overrides[id(second)]={'visible':False,'hide_tie_graphic':True}
+                overrides[id(second)]={'print_as_rest':True,
+                    'replace_source_tie':True}
     return overrides
 
 
@@ -1105,7 +1109,9 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
     linked_id=id(link_event) if link_event is not None else id(event)
-    heads = children(child(ob,'heads'),'head') if event.kind=='chord' else [None]
+    heads = (children(child(ob,'heads'),'head') if event.kind=='chord'
+             and not (display_override and display_override.get('print_as_rest'))
+             else [None])
     dnode=child(ob,'duration')
     marks=children(ob,'articulation')
     if display_override:
@@ -1193,6 +1199,8 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                 if ti.get('begin')=='true' and not split_after:ties.append('start')
             if split_before and 'stop' not in ties:ties.append('stop')
             if split_after and 'start' not in ties:ties.append('start')
+            if display_override and display_override.get('replace_source_tie'):
+                ties=[]
         if not is_grace:sub(note,'duration',to_div(event.dur, divisions))
         for tp in ties:sub(note,'tie',type=tp)
         sub(note,'voice',voice)
@@ -1246,9 +1254,10 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                     not in ('capella','capella3')
             for obj in children(child(ob,'drawObjects'),'drawObj')
         )
-        if display_override and display_override.get('hide_tie_graphic'):
-            # Playback <tie> is retained above; the tied span exists only
-            # to power a source display workaround and is not drawn.
+        if display_override and display_override.get('replace_source_tie'):
+            # Capella tied chords were merely the device used to draw
+            # a note plus rest. The output has a genuinely timed rest:
+            # neither sounding ties nor drawn ties may survive.
             notation_ties=[]
         else:
             notation_ties=ties
@@ -1540,6 +1549,11 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     # parts such as Alte Schwytzer: dropping them removes thousands of
     # printed accents. Never suppress an articulation by frequency.
     uniform_strongbeat={}
+    if graphical_rest_overrides:
+        warnings.append(
+            f'Normalized {len(graphical_rest_overrides)//2} precise tied '
+            'Capella note/rest engraving workarounds to timed notes and rests.'
+        )
     boundaries,meter=compute_boundaries(parts,end)
     # A time signature's written form is semantically significant: 2/4 is
     # NOT displayed as 1/2, and 6/8 is NOT displayed as 3/4, even though
@@ -1875,7 +1889,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                             f'Overlapping notes in {p.name}, voice {voice}, measure {mi+1}'
                         )
                     if e.kind in ('chord','rest') and e.time>=start:
-                        emit_glyph_directions(measure,e,voice)
+                        if not graphical_rest_overrides.get(id(e),{}).get('print_as_rest'):
+                            emit_glyph_directions(measure,e,voice)
                         emit_grouped_metronome_direction(measure,e,voice)
                         emit_local_performance_text(measure,e,voice)
                         for no in wedge_stops.get(id(e),()):
