@@ -1504,6 +1504,21 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         raise CapellaError('Score requires an impractically fine rhythmic grid; '
                            'cannot safely encode it in MusicXML.')
     features,unsupported=source_notation_audit(root)
+    # Report Capella-specific glyphs that cannot yet be interpreted with
+    # verified semantics, rather than silently claiming perfect fidelity.
+    known_font_chars=(set(CAPELLA_DYNAMICS)|set(CAPELLA_NAVIGATION)|
+                      set('LMÊtl¿uk¢')|set('123456789'))
+    missing_glyphs=collections.Counter()
+    for part in parts:
+        for event in part.events:
+            if event.kind in ('chord','rest'):
+                for glyph in capella_glyphs(event):
+                    if glyph not in known_font_chars:
+                        missing_glyphs[glyph]+=1
+    if missing_glyphs:
+        preview=', '.join(repr(ch)+': '+str(count)
+                          for ch,count in missing_glyphs.most_common(8))
+        warnings.append('Unmapped historical Capella music font symbols: '+preview)
     title,subtitle,composer=extract_metadata(root, filename)
     variation_numbers=extract_variation_numbers(parts)
     if subtitle and Fraction(0) in variation_numbers:
@@ -1952,6 +1967,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         warnings.append(f'{count} source {name} elements require manual notation review.')
     report={'title':title,'subtitle':subtitle,'composer':composer,
             'source_text_colors':source_text_colors,
+            'unmapped_source_music_glyphs':dict(missing_glyphs),
             'source_multi_measure_rests':len(root.xpath(
                 '//c:rest/c:duration[not(contains(@base,"/")) and number(@base)>1]',
                 namespaces=N)),'parts':[p.name for p in parts],
