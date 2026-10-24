@@ -766,6 +766,42 @@ def main():
     (visual_out/'Calvados-multi-rest.pdf').write_bytes(visual_pdf)
     print('Native multi-measure rest retains one solo direction and multi-rest style',flush=True)
 
+    # Rest-attached first/second endings reproduce Nunnefirzli's last pair.
+    # Their source namespace is CapXML 1.0; normalization must not silently
+    # discard rest drawObjects or change the ending/repeat semantics.
+    volta_score=(
+        '<score xmlns="http://www.capella.de/CapXML/1.0">'
+        '<pageObjects><drawObj><text x="55" y="4">'
+        '<font face="Arial" height="20"/><content>Nunnefirzli</content>'
+        '</text></drawObj></pageObjects>'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices>'
+        '<voice><noteObjects><timeSign time="1/4"/>'
+        '<rest><duration base="1/4"/><drawObjects><drawObj>'
+        '<volta firstNumber="1" x1="-2" x2="14" y="-8" />'
+        '</drawObj></drawObjects></rest>'
+        '<rest><duration base="1/4"/><drawObjects><drawObj>'
+        '<volta firstNumber="2" x1="-2" x2="14" y="-8" />'
+        '</drawObj></drawObjects></rest>'
+        '</noteObjects></voice></voices></staff></staves></system></systems>'
+        '</score>'
+    ).encode('utf-8')
+    body,ctype=make_upload(volta_score,filename='Nunnefirzli-rest-endings.capx')
+    reply=json.loads(get('/api/convert?layout=original',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    item=reply['results'][0]
+    mx=ET.fromstring(get(item['downloads']['musicxml']))
+    ending_numbers=[e.get('number') for e in mx.findall('.//ending[@type="start"]')]
+    assert ending_numbers==['1','2'],ending_numbers
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        native=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+    native_ending_numbers=[str(x.text) for x in native.findall('.//Volta/endings')]
+    assert native_ending_numbers or native.findall('.//Volta'), 'Lost rest-attached volta graphics'
+    visual_pdf=get(item['downloads']['pdf'])
+    assert visual_pdf.startswith(b'%PDF-')
+    (visual_out/'Nunnefirzli-rest-attached-endings.pdf').write_bytes(visual_pdf)
+    print('Native rest-attached first and second endings survived MuseScore export',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
