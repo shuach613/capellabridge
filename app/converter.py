@@ -1535,13 +1535,11 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             'notation model; review proprietary graphics and advanced symbols.'
         )
     graphical_rest_overrides=shifted_tied_rest_pairs(parts)
-    uniform_strongbeat=uniformly_marked_voices(parts)
-    if uniform_strongbeat:
-        names=', '.join(parts[i].name for i in sorted(uniform_strongbeat))
-        warnings.append(
-            'Uniform Capella strongBeat marks omitted from notation in '
-            f'{names}; explicitly selected accents and other articulations remain.'
-        )
+    # Articulations describe PRINTED MUSIC, not a statistical pattern.
+    # Near-universal strongBeat markings are intentional in historic march
+    # parts such as Alte Schwytzer: dropping them removes thousands of
+    # printed accents. Never suppress an articulation by frequency.
+    uniform_strongbeat={}
     boundaries,meter=compute_boundaries(parts,end)
     # A time signature's written form is semantically significant: 2/4 is
     # NOT displayed as 1/2, and 6/8 is NOT displayed as 3/4, even though
