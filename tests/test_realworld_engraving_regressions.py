@@ -124,3 +124,15 @@ def test_no_generated_p1_part_abbreviation():
 def test_engine_can_hide_late_parts_and_group_rest_counts():
     assert STYLE_VALUES['createMultiMeasureRests']=='1'
     assert STYLE_VALUES['dontHideStavesInFirstSystem']=='0'
+
+
+def test_documented_capella3_accent_and_hard_staccato_glyphs():
+    graphics=grp(graphic('É',face='capella3',size=18))
+    graphics2=grp(graphic('È',face='capella3',size=18))
+    graphics3=grp(graphic('Ë',face='capella3',size=18))
+    music=obj(extra=graphics)+obj(extra=graphics2)+obj(extra=graphics3)+obj()
+    doc,_=convert([('Piccolo',music)])
+    notes=doc.findall('./part/measure/note')
+    assert notes[0].find('./notations/articulations/staccatissimo') is not None
+    assert notes[1].find('./notations/articulations/tenuto') is not None
+    assert notes[2].find('./notations/articulations/strong-accent') is not None
