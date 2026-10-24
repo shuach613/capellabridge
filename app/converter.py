@@ -989,6 +989,7 @@ def emit_glyph_directions(measure,event,voice):
 
 
 def emit_staff_solo_direction(measure,event,voice):
+    """Keep small solo/technique cues printed on secondary staves."""
     for graphic in children(child(event.node,'drawObjects'),'drawObj'):
         txt=child(graphic,'text')
         font=child(txt,'font')
@@ -997,11 +998,17 @@ def emit_staff_solo_direction(measure,event,voice):
             continue
         if font.get('face','').casefold() in ('capella3','capella'):
             continue
+        if font.get('color','').upper()=='FFFFFF':
+            continue
         label=' '.join(''.join(content.itertext()).split())
-        if not re.match(r'(?i)^solo\b',label):
+        if not re.fullmatch(r'(?i)(?:\d+\s+)?solo|["“]?glockig["”]?',label):
             continue
         direction=sub(measure,'direction',placement='below')
-        sub(sub(direction,'direction-type'),'words',label,font_size='11')
+        rgb=font.get('color','')
+        props={'font_size':'10'}
+        if re.fullmatch(r'[A-Fa-f0-9]{6}',rgb):
+            props['color']='#'+rgb.upper()
+        sub(sub(direction,'direction-type'),'words',label,**props)
         sub(direction,'voice',voice)
 
 
@@ -1870,7 +1877,10 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     data=ET.tostring(score,encoding='utf-8',xml_declaration=True,pretty_print=True,doctype='<!DOCTYPE score-partwise  PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">')
     for name,count in unsupported.items():
         warnings.append(f'{count} source {name} elements require manual notation review.')
-    report={'title':title,'subtitle':subtitle,'composer':composer,'parts':[p.name for p in parts],
+    report={'title':title,'subtitle':subtitle,'composer':composer,
+            'source_multi_measure_rests':len(root.xpath(
+                '//c:rest/c:duration[not(contains(@base,"/")) and number(@base)>1]',
+                namespaces=N)),'parts':[p.name for p in parts],
             'measures':measure_count,'notes':sum(1 for p in parts for e in p.events if e.kind=='chord'),
             'warnings':sorted(set(warnings)),'layout':layout,'source_format':'capx',
             'source_systems':len(children(child(root, 'systems'), 'system')),
