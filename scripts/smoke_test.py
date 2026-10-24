@@ -745,8 +745,10 @@ def main():
     printed=subprocess.run(['docker','exec','-i','capellabridge-smoke',
                             'pdftotext','-','-'],input=rendered_pdf,
                            capture_output=True,check=True,timeout=60)
-    assert printed.stdout.decode('utf-8','replace').count('Trommelsolo')==1, (
-        'Long-rest caption was duplicated or lost in the actual rendered PDF')
+    extracted=printed.stdout.decode('utf-8','replace')
+    assert extracted.count('Trommelsolo')==1, (
+        f'Long-rest caption count {extracted.count("Trommelsolo")} '
+        f'in rendered PDF; extracted={extracted[:1200]!r}')
     print('Seven-bar Trommelsolo keeps one label in native MSCZ AND PDF',flush=True)
 
     print('All three layout modes passed the live Docker conversion test')
