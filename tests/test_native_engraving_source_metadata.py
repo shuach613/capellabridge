@@ -102,7 +102,7 @@ def test_repeated_annotations_deduplicated_only_inside_source_multirests(tmp_pat
     assert len(reread(path).xpath('.//StaffText/text[text()="Trommelsolo"]'))==2
 
 
-def test_graphical_rests_use_native_smufl_markup_not_missing_font(tmp_path):
+def test_graphical_rests_use_native_symbols_not_font_dependent_text(tmp_path):
     path=tmp_path/'graphical-rests.mscz'
     make_mscz(path)
     with zipfile.ZipFile(path) as z:
@@ -115,8 +115,7 @@ def test_graphical_rests_use_native_smufl_markup_not_missing_font(tmp_path):
         z.writestr('score.mscx',ET.tostring(root))
     prepare_print_ready(path, {'variable_staff_systems':False})
     native=reread(path)
-    symbols=[t.text for t in native.findall('.//StaffText/text')]
-    assert '<sym>rest8th</sym>' in symbols
-    assert '<sym>rest16th</sym>' in symbols
+    names=[n.text for n in native.findall('.//Symbol/name')]
+    assert names==['rest8th','rest16th']
     prepare_print_ready(path, {'variable_staff_systems':False})
-    assert [t.text for t in reread(path).findall('.//StaffText/text')] == symbols
+    assert [n.text for n in reread(path).findall('.//Symbol/name')] == names
