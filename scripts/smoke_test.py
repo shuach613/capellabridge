@@ -694,7 +694,10 @@ def main():
         '<font face="capella3" height="18"/><content>L</content>'
         '</text></drawObj></drawObjects>'
         '<heads><head pitch="D7"><tie end="true"/></head></heads></chord>'
-        '<chord><duration base="1/4"/><heads><head pitch="E7"/></heads></chord>'
+        '<chord><duration base="1/4"/><drawObjects><drawObj>'
+        '<text x="0" y="-3"><font face="capella3" height="18"/>'
+        '<content>M</content></text></drawObj></drawObjects>'
+        '<heads><head pitch="E7"/></heads></chord>'
         '</noteObjects></voice></voices></staff></staves></system></systems></score>'
     ).encode('utf-8')
     body,ctype=make_upload(tricky,filename='HiddenShiftedRest.capx')
@@ -716,15 +719,27 @@ def main():
     assert len(native_chords)==3, len(native_chords)
     assert native_chords[0].findtext('visible')!='0'
     assert native_chords[1].findtext('visible')=='0'
+    symbols=[n.text for n in native.findall('.//Symbol/name')]
+    assert 'rest8th' in symbols and 'rest16th' in symbols,symbols
     visual_out=Path('/tmp/capellabridge-render-check')
     visual_out.mkdir(parents=True,exist_ok=True)
     visual_pdf=get(result['downloads']['pdf'])
     assert visual_pdf.startswith(b'%PDF-')
     (visual_out/'Waggis-hidden-shifted-rest.pdf').write_bytes(visual_pdf)
+    import fitz
+    with fitz.open(stream=visual_pdf,filetype='pdf') as pdf_doc:
+        glyphs=''.join(c['c'] for block in pdf_doc[0].get_text('rawdict')['blocks']
+                       if 'lines' in block for line in block['lines']
+                       for span in line['spans'] for c in span['chars'])
+    assert '\ue4e6' in glyphs and '\ue4e7' in glyphs, repr(glyphs)
+    assert '<sym>' not in glyphs
     print('Native shifted-note+rest workaround retained noteheads and sound',flush=True)
 
     multirest=(
         '<score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<pageObjects><drawObj><text x="55" y="4">'
+        '<font face="Arial" height="22"/><content>Calvados</content>'
+        '</text></drawObj></pageObjects>'
         '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
         '<systems><system><staves><staff layout="Piccolo"><voices>'
         '<voice><noteObjects><timeSign time="2/4"/>'
