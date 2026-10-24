@@ -1399,6 +1399,13 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     features,unsupported=source_notation_audit(root)
     title,subtitle,composer=extract_metadata(root, filename)
     variation_numbers=extract_variation_numbers(parts)
+    # A first-system movement caption can appear in both the page-level
+    # subtitle and the source's first musical system. Print it only once,
+    # above the actual music where the original attaches it.
+    section_labels={' '.join(v.split()).casefold()
+                    for v in variation_numbers.values()}
+    subtitle='\n'.join(line for line in subtitle.splitlines()
+                       if ' '.join(line.split()).casefold() not in section_labels)
     boxed_sections=set()
     for event in leading_voice_events(parts):
         label=variation_numbers.get(event.time)
@@ -1572,7 +1579,9 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         sub(group,'group-symbol','bracket');sub(group,'group-barline','yes')
     for pi,p in enumerate(parts):
         sp=sub(plist,'score-part',id=f'P{pi+1}')
-        sub(sp,'part-name',p.name);sub(sp,'part-abbreviation',f'P{pi+1}')
+        # P1/P2 are internal MusicXML identifiers, never source names.
+        # MuseScore otherwise prints these bogus names on later systems.
+        sub(sp,'part-name',p.name)
         inst=sub(sp,'score-instrument',id=f'I{pi+1}');sub(inst,'instrument-name',p.name)
         midi=sub(sp,'midi-instrument',id=f'I{pi+1}');sub(midi,'midi-channel',(pi%15)+1);sub(midi,'midi-program',p.midi_program)
     if grouping:sub(plist,'part-group',type='stop',number='1')
@@ -1599,7 +1608,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     # of the ending measure. Their firstNumber is a semantic indicator.
     ending_starts={}
     for event in leading_voice_events(parts):
-        if event.kind != 'chord' or event.voice!=1:continue
+        if event.kind not in ('chord','rest') or event.voice!=1:continue
         for obj in children(child(event.node,'drawObjects'),'drawObj'):
             volta=child(obj,'volta')
             if volta is not None and volta.get('firstNumber'):
@@ -1719,6 +1728,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                             sub(dtype,'wedge',**props)
                             sub(direction,'voice',voice)
                     if (pi==0 and voice==1 and e.kind in ('chord','rest')
+                            and start<=e.time<stop
                             and e.time not in placed_directions):
                         for words in score_directions.get(e.time,()):
                             add_score_direction(measure,words,
