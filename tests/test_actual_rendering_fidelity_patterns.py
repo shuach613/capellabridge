@@ -155,3 +155,12 @@ def test_ordinary_comma_in_caption_is_not_breath_mark():
     seq=chord('C5',duration='1/4',graphics=comma)+chord('D5',duration='1/4')
     root,_=convert(make_score([seq]))
     assert root.find('.//notations/articulations/breath-mark') is None
+
+
+def test_unverified_capella_glyph_is_reported_instead_of_silently_ignored():
+    mark='<drawObj><text y="-5"><font face="capella3" height="18"/>' \
+         '<content>É</content></text></drawObj>'
+    notes=chord('C5',duration='1/4',graphics=mark)+chord('D5',duration='1/4')
+    _,report=convert(make_score([notes]))
+    assert report['unmapped_source_music_glyphs'].get('É')==1
+    assert any('É' in warning for warning in report['warnings'])
