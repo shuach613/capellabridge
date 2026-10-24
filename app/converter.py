@@ -1101,7 +1101,7 @@ def shifted_tied_rest_pairs(parts):
     return overrides
 
 
-def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False, display_override=None):
+def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False, display_override=None, split_before=False, split_after=False):
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
     heads = children(child(ob,'heads'),'head') if event.kind=='chord' else [None]
@@ -1109,6 +1109,8 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
     marks=children(ob,'articulation')
     if display_override:
         marks=marks+display_override.get('extra_articulations',[])
+    if split_before:
+        marks=[]  # A sustained note has articulations only at its original onset.
     # Historical CAPELLA3.TTF signs 200–207 (Capella 7 handbook):
     # È tenuto; É/Î hard staccato; Ê normal accent; Ë/Ï strong accent;
     # Ì soft beat; Í hard beat. Translate their semantic musical meaning,
@@ -1182,16 +1184,35 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             shape=head.get('shape')
             ti=child(head,'tie')
             if ti is not None:
-                if ti.get('end')=='true':ties.append('stop')
-                if ti.get('begin')=='true':ties.append('start')
+                if ti.get('end')=='true' and not split_before:ties.append('stop')
+                if ti.get('begin')=='true' and not split_after:ties.append('start')
+            if split_before and 'stop' not in ties:ties.append('stop')
+            if split_after and 'start' not in ties:ties.append('start')
         if not is_grace:sub(note,'duration',to_div(event.dur, divisions))
         for tp in ties:sub(note,'tie',type=tp)
         sub(note,'voice',voice)
         if dnode is not None and not is_full_measure_rest:
-            sub(note,'type',note_type(dnode))
-            for _ in range(int(dnode.get('dots','0'))):sub(note,'dot')
+            if split_before or split_after:
+                # Rhythmic note values can change at a barline; a 3/8
+                # chord spanning 1/8+1/4 must be written as those two types.
+                fragment_type=None
+                for unit,name in DURATION_TYPES.items():
+                    for dots in range(5):
+                        written=unit*sum((Fraction(1,2**k) for k in range(dots+1)),Fraction(0))
+                        if written==event.dur:
+                            fragment_type=(name,dots)
+                            break
+                    if fragment_type:break
+                if fragment_type:
+                    sub(note,'type',fragment_type[0])
+                    for _ in range(fragment_type[1]):sub(note,'dot')
+                # Irregular fragments retain exact <duration> without an
+                # invented incorrect note type or unearned tuplet ratio.
+            else:
+                sub(note,'type',note_type(dnode))
+                for _ in range(int(dnode.get('dots','0'))):sub(note,'dot')
         if accidental:sub(note,'accidental',accidental)
-        if tuplet is not None and not is_grace:
+        if tuplet is not None and not is_grace and not (split_before or split_after):
             actual=int(tuplet.get('count','3'))
             modified=sub(note,'time-modification')
             sub(modified,'actual-notes',actual)
@@ -1234,8 +1255,10 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             nt=sub(note,'notations')
             for tp in notation_ties:sub(nt,'tied',type=tp)
             if hi == 0:
-                for sn in slur_ends.get(id(event),[]):sub(nt,'slur',type='stop',number=sn)
-                for sn in slur_starts.get(id(event),[]):sub(nt,'slur',type='start',number=sn)
+                if not split_after:
+                    for sn in slur_ends.get(id(event),[]):sub(nt,'slur',type='stop',number=sn)
+                if not split_before:
+                    for sn in slur_starts.get(id(event),[]):sub(nt,'slur',type='start',number=sn)
                 for tn in tuplet_end.get(id(event),[]):
                     sub(nt,'tuplet',type='stop',number=tn)
                 for tn in tuplet_start.get(id(event),[]):
@@ -1264,7 +1287,7 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                     for typ in types:
                         tagname=mapped.get(typ)
                         if tagname:sub(articulations,tagname)
-        if hi==0 and not is_grace:
+        if hi==0 and not is_grace and not split_before:
             lyric=child(ob,'lyric')
             for verse in children(lyric,'verse'):
                 words=''.join(verse.itertext()).strip()
@@ -1818,7 +1841,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             if visibility is not None:
                 sub(sub(measure,'attributes'),'staff-details',print_object=visibility)
             state['accidentals']={}
-            vs=sorted({e.voice for e in events if start<=e.time<stop})
+            vs=sorted({e.voice for e in events if (start<=e.time<stop or
+                        (e.kind in ('chord','rest') and e.time<start<e.time+e.dur))})
             if not vs:vs=[1]
             for vsi,voice in enumerate(vs):
                 if vsi:
@@ -1826,11 +1850,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 ve=[
                     e for e in events if e.voice==voice and (
                         start<=e.time<stop or (
-                            e.kind=='rest' and e.time<start and
-                            e.time+e.dur>start and
-                            re.fullmatch(r'[1-9]\d*',
-                                (child(e.node,'duration').get('base','')
-                                 if child(e.node,'duration') is not None else ''))
+                            e.kind in ('chord','rest') and e.time<start<e.time+e.dur
                         )
                     )
                 ]
@@ -1841,7 +1861,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                         sub(sub(measure,'forward'),'duration',to_div(e.time-cursor,active_divisions))
                         cursor=e.time
                     if (e.kind in ('chord','rest') and e.time<cursor
-                            and not (e.kind=='rest' and e.time<start)):
+                            and not (e.time<start and e.time+e.dur>start)):
                         raise CapellaError(
                             f'Overlapping notes in {p.name}, voice {voice}, measure {mi+1}'
                         )
@@ -1904,16 +1924,22 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                             if start==e.time:
                                 style=sub(sub(measure,'attributes'),'measure-style')
                                 sub(style,'multiple-rest',rest_base)
-                        elif e.time+e.dur>stop:
-                            raise CapellaError(
-                                f'Note crosses a barline in {p.name}, voice {voice}, '
-                                f'measure {mi+1}; source measure boundaries need review.'
-                            )
+                        elif e.time<start or e.time+e.dur>stop:
+                            seg_start=max(e.time,start)
+                            seg_end=min(e.time+e.dur,stop)
+                            if seg_start>=seg_end:
+                                raise CapellaError('Invalid crossing-note fragment')
+                            event_for_note=Event(seg_start,e.kind,e.node,e.system,
+                                                 e.voice,seg_end-seg_start)
+                            warnings.append('Sustained notes/rests crossing an inferred barline '
+                                            'were segmented at measure boundaries without changing sound.')
                         nnotes+=make_note(measure,event_for_note,voice,state,
                                           slur_starts,slur_ends,active_divisions,
                                           graphic_links,tuplet_links,
                                           suppress_uniform_strongbeat=pi in uniform_strongbeat,
-                                          display_override=graphical_rest_overrides.get(id(e)))
+                                          display_override=graphical_rest_overrides.get(id(e)),
+                                          split_before=e.time<start and not is_multi_rest,
+                                          split_after=e.time+e.dur>stop and not is_multi_rest)
                         cursor=event_for_note.time+event_for_note.dur
                 if cursor<stop:
                     sub(sub(measure,'forward'),'duration',to_div(stop-cursor,active_divisions))
