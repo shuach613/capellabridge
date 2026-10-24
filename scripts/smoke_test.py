@@ -257,16 +257,16 @@ def main():
     response=json.loads(get('/api/convert?layout=balanced',body,ctype))
     assert response['results'][0]['ok'],response
     entry=response['results'][0]
-    assert entry['normalized_uniform_strongbeat']==40,entry
+    assert entry['normalized_uniform_strongbeat']==0,entry
     with zipfile.ZipFile(io.BytesIO(get(entry['downloads']['mscz']))) as z:
         from xml.etree import ElementTree as ET
         native=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
         assert len(native.findall('.//Chord'))==40
-        assert not any(
-            a.findtext('subtype')=='articMarcatoAbove'
-            for a in native.findall('.//Articulation')
-        ),'Uniform accents were reintroduced during MuseScore conversion'
-    print('Uniform strongBeat marks suppressed in final editable MSCZ',flush=True)
+        native_accents=native.findall('.//Articulation')
+        assert len(native_accents)>=40,(
+            'Explicit source strongBeat accents were lost during MuseScore conversion',
+            len(native_accents))
+    print('All explicitly printed source strongBeat accents survived native MuseScore export',flush=True)
 
     # Source-library patterns: Waggis introduces an additional piccolo only
     # in its final system; Calvados uses 7-bar rests and a 2/4 -> 6/8 change.
