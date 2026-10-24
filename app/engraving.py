@@ -132,6 +132,30 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                         red,green,blue=(int(raw[i:i+2],16) for i in (1,3,5))
                         color.attrib.update({'r':str(red),'g':str(green),
                                              'b':str(blue),'a':'255'})
+                # MuseScore can duplicate note-attached labels while
+                # expanding/condensing a Capella multi-measure rest. Only
+                # deduplicate within an explicit source rest span: the same
+                # label can legitimately recur in a later section.
+                source_spans=metadata.get('multi_rest_labels') or []
+                leading=score.find('Staff')
+                if leading is not None and source_spans:
+                    measures=leading.findall('Measure')
+                    for span in source_spans:
+                        first=int(span['start_measure'])
+                        last=first+int(span['measures'])
+                        label=' '.join(str(span['label']).split())
+                        kept=False
+                        for measure in measures[max(first,0):min(last,len(measures))]:
+                            for voice in measure.findall('voice'):
+                                for item in list(voice.findall('StaffText')):
+                                    words=item.find('text')
+                                    if words is None or ' '.join(
+                                            ''.join(words.itertext()).split())!=label:
+                                        continue
+                                    if kept:
+                                        voice.remove(item)
+                                    else:
+                                        kept=True
                 # MusicXML page>1 credits are silently dropped on import.
                 # Retain editorial attributions as ordinary source text in
                 # the final measure of the top staff, not new sounding notes.
