@@ -1936,6 +1936,22 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 if right_repeat:sub(bl,'repeat',direction='backward')
             if mi==0 and start==0 and stop<meter:
                 measure.set('implicit','yes')
+    multi_rest_labels=[]
+    for event in leading_voice_events(parts):
+        if event.kind!='rest':
+            continue
+        d=child(event.node,'duration')
+        base=d.get('base','') if d is not None else ''
+        if not re.fullmatch(r'[2-9]\d*',base):
+            continue
+        if event.time not in boundaries:
+            continue
+        start_bar=boundaries.index(event.time)
+        for label in score_directions.get(event.time,()):
+            multi_rest_labels.append({
+                'label':label,'start_measure':start_bar,
+                'measures':int(base)
+            })
     # Notation-level warnings: emphasize these instead of silently promising fidelity.
     if root.xpath('//c:systems//c:volta | //c:pageObjects//c:volta',namespaces=N):
         warnings.append('Some graphical ending brackets may need layout review.')
@@ -1960,6 +1976,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     report={'title':title,'subtitle':subtitle,'composer':composer,
             'closing_credits':closing_credits,
             'source_text_colors':source_text_colors,
+            'multi_rest_labels':multi_rest_labels,
             'parts':[p.name for p in parts],
             'measures':measure_count,'notes':sum(1 for p in parts for e in p.events if e.kind=='chord'),
             'warnings':sorted(set(warnings)),'layout':layout,'source_format':'capx',
