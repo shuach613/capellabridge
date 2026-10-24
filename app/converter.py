@@ -1000,12 +1000,59 @@ def emit_staff_solo_direction(measure,event,voice):
         sub(direction,'voice',voice)
 
 
-def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False):
+def shifted_tied_rest_pairs(parts):
+    """Recognize Capella's beam-across-rest engraving workaround.
+
+    A hidden tie-start note followed by a shifted tie-end of the SAME pitch
+    with an attached eighth-rest drawing is one sustained sounding pitch
+    but a visible note + drawn rest. Do not remove either sounding event,
+    shift their musical times or add another timed rest. Reassign only which
+    notehead is printed. Untagged hidden notes are never changed.
+    """
+    overrides={}
+    for part in parts:
+        voices=collections.defaultdict(list)
+        for event in sorted(part.events,key=lambda e:(e.time,e.voice)):
+            if event.kind=='chord':
+                voices[event.voice].append(event)
+        for chords in voices.values():
+            for first,second in zip(chords,chords[1:]):
+                if first.time+first.dur != second.time or first.dur!=second.dur:
+                    continue
+                d1=child(first.node,'display')
+                d2=child(second.node,'display')
+                if (d1 is None or d2 is None
+                        or d1.get('invisible')!='true'
+                        or float(d1.get('xShift','0'))<0
+                        or float(d2.get('xShift','0'))>=0):
+                    continue
+                heads1=children(child(first.node,'heads'),'head')
+                heads2=children(child(second.node,'heads'),'head')
+                if len(heads1)!=1 or len(heads2)!=1:
+                    continue
+                h1,h2=heads1[0],heads2[0]
+                if h1.get('pitch')!=h2.get('pitch'):
+                    continue
+                if (child(h1,'tie') is None or child(h2,'tie') is None
+                        or child(h1,'tie').get('begin')!='true'
+                        or child(h2,'tie').get('end')!='true'):
+                    continue
+                if 'L' not in capella_glyphs(second):
+                    continue
+                overrides[id(first)]={'visible':True,'hide_tie_graphic':True,
+                    'extra_articulations':children(second.node,'articulation')}
+                overrides[id(second)]={'visible':False,'hide_tie_graphic':True}
+    return overrides
+
+
+def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False, display_override=None):
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
     heads = children(child(ob,'heads'),'head') if event.kind=='chord' else [None]
     dnode=child(ob,'duration')
     marks=children(ob,'articulation')
+    if display_override:
+        marks=marks+display_override.get('extra_articulations',[])
     # Capella's 0xCA music-font symbol (Ê) is a printed accent,
     # distinct from the source's generic strongBeat playback convention.
     glyphs=capella_glyphs(event)
@@ -1026,6 +1073,8 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
     tuplet = child(dnode, 'tuplet')
     display=child(ob,'display')
     invisible=display is not None and display.get('invisible')=='true'
+    if display_override and 'visible' in display_override:
+        invisible=not display_override['visible']
     for hi,head in enumerate(heads):
         note=sub(meas,'note',**({'print_object':'no'} if invisible else {}))
         if is_grace:sub(note,'grace',slash='yes')
@@ -1100,7 +1149,8 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                           or id(event) in tuplet_end)
         if ties or (hi == 0 and has_notation):
             nt=sub(note,'notations')
-            for tp in ties:sub(nt,'tied',type=tp)
+            if not (display_override and display_override.get('hide_tie_graphic')):
+                for tp in ties:sub(nt,'tied',type=tp)
             if hi == 0:
                 for sn in slur_ends.get(id(event),[]):sub(nt,'slur',type='stop',number=sn)
                 for sn in slur_starts.get(id(event),[]):sub(nt,'slur',type='start',number=sn)
@@ -1366,6 +1416,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             f'CapXML {original_capxml} source normalized to the common '
             'notation model; review proprietary graphics and advanced symbols.'
         )
+    graphical_rest_overrides=shifted_tied_rest_pairs(parts)
     uniform_strongbeat=uniformly_marked_voices(parts)
     if uniform_strongbeat:
         names=', '.join(parts[i].name for i in sorted(uniform_strongbeat))
@@ -1778,7 +1829,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                         nnotes+=make_note(measure,event_for_note,voice,state,
                                           slur_starts,slur_ends,active_divisions,
                                           graphic_links,tuplet_links,
-                                          suppress_uniform_strongbeat=pi in uniform_strongbeat)
+                                          suppress_uniform_strongbeat=pi in uniform_strongbeat,
+                                          display_override=graphical_rest_overrides.get(id(e)))
                         cursor=event_for_note.time+event_for_note.dur
                 if cursor<stop:
                     sub(sub(measure,'forward'),'duration',to_div(stop-cursor,active_divisions))
