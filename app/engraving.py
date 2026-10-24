@@ -18,6 +18,9 @@ STYLE_VALUES = {
     'showMeasureNumberOne': '0',
     'measureNumberSystem': '1',
     'measureNumberAllStaffs': '0',
+    # The MusicXML importer otherwise adds a copyright footer on every page
+    # in addition to the explicit source copyright near the score title.
+    'showFooter': '0',
 }
 
 def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
@@ -38,7 +41,18 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
             if style is None:
                 style = ET.Element('Style')
                 score.insert(0, style)
-            for key, value in STYLE_VALUES.items():
+            source_info=metadata or {}
+            preferences=dict(STYLE_VALUES)
+            if source_info.get('variable_staff_systems'):
+                # MuseScore 3 ignores some MusicXML staff-details visibility
+                # changes; native hide-empty style is required for parts
+                # that enter only in later systems (e.g. Waggis P4).
+                preferences['hideEmptyStaves']='1'
+                preferences['dontHidStavesInFirstSystm']='0'
+            if source_info.get('source_multi_measure_rests'):
+                preferences['createMultiMeasureRests']='1'
+                preferences['minEmptyMeasures']='2'
+            for key, value in preferences.items():
                 node = style.find(key)
                 if node is None:
                     node = ET.SubElement(style, key)
@@ -65,7 +79,16 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                     # keeps lines distinct and prevents the observed overlap.
                     if subtitle_lines:
                         credits.append(('Subtitle','\n'.join(subtitle_lines)))
-                    if metadata.get('composer'):
+                    # When source title or subtitle already prints the
+                    # composer's name, don't re-insert a duplicate native
+                    # Composer frame (despite MusicXML suppressing that frame).
+                    normalize=lambda x: ''.join(ch.casefold() for ch in x
+                                                  if ch.isalnum())
+                    person=normalize(metadata.get('composer',''))
+                    already_printed=person and any(
+                        person in normalize(metadata.get(field,''))
+                        for field in ('title','subtitle'))
+                    if metadata.get('composer') and not already_printed:
                         credits.append(('Composer',metadata['composer']))
                     old_credits = [element for element in frame.findall('Text')
                                    if element.findtext('style') in ('Title','Subtitle','Composer')]
