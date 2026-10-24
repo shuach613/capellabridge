@@ -113,6 +113,34 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                             height.text = str(max(14.0, 8.0 + 3.0 * (
                                 len(credits)+max(0,len(subtitle_lines)-1)),
                                 float(height.text or '0')))
+            # MuseScore's MusicXML importer drops many explicit per-word
+            # colors. Restore only colors explicitly present in the source
+            # Capella annotations, never recolor unrelated score objects.
+            source_colors=(metadata or {}).get('source_text_colors') or {}
+            if source_colors:
+                import re
+                normalized_colors={
+                    ' '.join(label.split()):rgb
+                    for label,rgb in source_colors.items()
+                    if re.fullmatch(r'#[0-9A-Fa-f]{6}',rgb)
+                }
+                for text_node in score.xpath('.//StaffText | .//SystemText'):
+                    rich=text_node.find('text')
+                    if rich is None:
+                        continue
+                    label=' '.join(''.join(rich.itertext()).split())
+                    rgb=normalized_colors.get(label)
+                    if rgb is None:
+                        continue
+                    node=text_node.find('color')
+                    if node is None:
+                        node=ET.Element('color')
+                        text_node.insert(0,node)
+                    node.attrib.clear()
+                    node.attrib.update({'r':str(int(rgb[1:3],16)),
+                                        'g':str(int(rgb[3:5],16)),
+                                        'b':str(int(rgb[5:7],16)),
+                                        'a':'255'})
             # MusicXML imports a group of four independent parts as a single
             # barLineSpan=4 on the first staff. MuseScore 3 treats staff
             # spanning as a per-adjacent-staff flag, making bars appear joined
