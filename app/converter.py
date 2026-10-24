@@ -716,7 +716,7 @@ def extract_score_directions(parts, section_times=None):
                 r'(?i)(\bfine\b|\bcoda\b|\bsegno\b|'
                 r'\bd\.?\s*c\.?\s*(?=al\b|\s|$)|'
                 r'\bd\.?\s*s\.?\s*(?=al\b|\s|$)|'
-                r'\bda\s+capo\b|\bintro\b|\bmaestoso\b|\blively\b|\bmarcial\b|'
+                r'\bda\s+capo\b|\bintro\b|\bmaestoso\b|\blively\b|\bmarcial\b|\bglockig\b|'
                 r'\btrommelsolo\b|\btutti\b|\bsolo\b|\btrio\b|'
                 r'\britardando\b|\brit\.?\b|\ba tempo\b|'
                 r'\baccelerando\b|\baccel\.?\b)',
@@ -734,11 +734,16 @@ def extract_score_directions(parts, section_times=None):
             section_caption=(event.time in section_times and 8<=height<=13
                              and y<0 and font.get('italic')=='true'
                              and len(label)>=5 and any(c.isalpha() for c in label))
+            solo_cue=bool(re.fullmatch(r'(?i)\d+\s+solo\b',label)
+                          and 5<=height<=13 and y<0)
+            named_section=bool(re.fullmatch(
+                r"(?iu)(?:s|dr|d['’]?|der|das)\s+[A-Za-zÄÖÜäöüß]{4,32}",
+                label) and 8<=height<=14 and y<0)
             if (((performance and (10<=height<=20 or
                                   (label.casefold()=='trio' and 7<=height<=20)))
                  or (special and 8<=height<=20)
                  or (tune_caption and 8<=height<=15)
-                 or section_caption)
+                 or section_caption or solo_cue or named_section)
                     and label not in out[event.time]):
                 out[event.time].append(label)
     return dict(out)
@@ -1455,6 +1460,10 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     features,unsupported=source_notation_audit(root)
     title,subtitle,composer=extract_metadata(root, filename)
     variation_numbers=extract_variation_numbers(parts)
+    if subtitle and Fraction(0) in variation_numbers:
+        first_section=variation_numbers[Fraction(0)]
+        subtitle='\n'.join(line for line in subtitle.splitlines()
+                           if line.strip()!=first_section)
     boxed_sections=set()
     for event in leading_voice_events(parts):
         label=variation_numbers.get(event.time)
@@ -1628,7 +1637,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         sub(group,'group-symbol','bracket');sub(group,'group-barline','yes')
     for pi,p in enumerate(parts):
         sp=sub(plist,'score-part',id=f'P{pi+1}')
-        sub(sp,'part-name',p.name);sub(sp,'part-abbreviation',f'P{pi+1}')
+        sub(sp,'part-name',p.name);sub(sp,'part-abbreviation','')
         inst=sub(sp,'score-instrument',id=f'I{pi+1}');sub(inst,'instrument-name',p.name)
         midi=sub(sp,'midi-instrument',id=f'I{pi+1}');sub(midi,'midi-channel',(pi%15)+1);sub(midi,'midi-program',p.midi_program)
     if grouping:sub(plist,'part-group',type='stop',number='1')
@@ -1655,7 +1664,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     # of the ending measure. Their firstNumber is a semantic indicator.
     ending_starts={}
     for event in leading_voice_events(parts):
-        if event.kind != 'chord' or event.voice!=1:continue
+        if event.kind not in ('chord','rest') or event.voice!=1:continue
         for obj in children(child(event.node,'drawObjects'),'drawObj'):
             volta=child(obj,'volta')
             if volta is not None and volta.get('firstNumber'):
