@@ -59,3 +59,30 @@ def test_unusual_source_tuplet_offset_rest_preserves_exact_total_duration():
     rest_chunks=[n for n in out if n.find('rest') is not None]
     assert [int(n.findtext('duration')) for n in rest_chunks[-2:]]==[2940,2100]
     assert sum(int(n.findtext('duration')) for n in out)==10080*4*Fraction(101,96)
+
+
+def test_crossing_chord_prints_accent_breath_and_accidental_only_once():
+    annotated=(
+        '<chord><duration base="1/4"/>'
+        '<drawObjects>'
+        '<drawObj><text x="0" y="-4">'
+        '<font face="capella3" height="18"/>'
+        '<content>É</content></text></drawObj>'
+        '<drawObj><text x="0" y="-6">'
+        '<font face="Times New Roman" height="12"/>'
+        '<content>,</content></text></drawObj>'
+        '</drawObjects>'
+        '<heads><head pitch="F5">'
+        '<alter step="1" display="force"/></head></heads></chord>'
+    )
+    xml,_=make([note()*7+annotated])
+    pitches=get_pitched(xml)
+    first,second=pitches[-2:]
+    assert first.find('./tie[@type="start"]') is not None
+    assert second.find('./tie[@type="stop"]') is not None
+    assert first.find('./accidental').text=='sharp'
+    assert second.find('./accidental') is None
+    assert first.find('./notations/articulations/staccatissimo') is not None
+    assert second.find('./notations/articulations/staccatissimo') is None
+    assert first.find('./notations/articulations/breath-mark') is not None
+    assert second.find('./notations/articulations/breath-mark') is None
