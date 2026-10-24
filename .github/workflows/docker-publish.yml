@@ -24,6 +24,15 @@ jobs:
           python-version: '3.12'
       - name: Install tests
         run: python -m pip install -r requirements.txt pytest httpx pymupdf
+      - name: Upload public converter source for private local reference validation
+        uses: actions/upload-artifact@v4
+        with:
+          name: capellabridge-validation-source
+          path: |
+            app/converter.py
+            app/__init__.py
+            requirements.txt
+          retention-days: 3
       - name: Run unit tests
         run: python -m pytest -q
       - name: Validate Compose
@@ -45,6 +54,14 @@ jobs:
         env:
           STUDIO_COMPAT_OUTPUT: /tmp/capellabridge-studio4.mscz
         run: python scripts/smoke_test.py http://127.0.0.1:18765
+      - name: Upload synthetic notation render proofs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capellabridge-notation-render-proofs
+          path: /tmp/capellabridge-render-check/*.pdf
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Install official MuseScore Studio 4.7.5 for cross-version check
         timeout-minutes: 12
         run: |

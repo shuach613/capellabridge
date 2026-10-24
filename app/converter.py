@@ -963,14 +963,31 @@ def emit_glyph_directions(measure,event,voice):
             sub(dynamics,CAPELLA_DYNAMICS[glyph])
             sub(direction,'voice',voice)
         elif glyph in ('L','M'):
-            # A note-anchored Capella3 8th/16th rest glyph is a graphic,
-            # not an additional timed rest. Print its musical rest sign
-            # without changing meter, note durations or playback.
+            # Graphic rest associated with a notehead (often a hidden
+            # tied Capella playback note). It is NOT an extra timed rest.
+            # Retain source drawing offsets rather than allowing MuseScore
+            # to push every annotation to its default top-of-staff position.
             rest_char={'L':'\U0001D13E','M':'\U0001D13F'}[glyph]
+            coords=(0.,-3.)
+            for graphic in children(child(event.node,'drawObjects'),'drawObj'):
+                source=child(graphic,'text')
+                font=child(source,'font')
+                content=child(source,'content')
+                if (font is not None and content is not None and
+                        font.get('face','').casefold() in ('capella','capella3')
+                        and ''.join(content.itertext()).strip()==glyph):
+                    try:
+                        coords=(float(source.get('x','0')),
+                                float(source.get('y','-3')))
+                    except ValueError:
+                        pass
+                    break
             direction=sub(measure,'direction',placement='above')
             subtype=sub(direction,'direction-type')
             sub(subtype,'words',rest_char,font_size='14',
-                font_family='FreeSerif')
+                font_family='FreeSerif',
+                relative_x=str(round(coords[0]*10,2)),
+                default_y=str(round(-coords[1]*10,2)))
             sub(direction,'voice',voice)
         elif glyph in CAPELLA_NAVIGATION:
             label,sound=CAPELLA_NAVIGATION[glyph]
@@ -981,6 +998,45 @@ def emit_glyph_directions(measure,event,voice):
             else:sub(dtyp,'words',label)
             sub(direction,'voice',voice)
             sub(direction,'sound',**sound)
+
+
+def source_annotation_color(font):
+    raw=font.get('color','') if font is not None else ''
+    return '#'+raw.upper() if re.fullmatch(r'[0-9A-Fa-f]{6}',raw) else None
+
+
+def emit_local_performance_text(measure,event,voice):
+    """Preserve small source instructions attached to any instrument.
+
+    Only explicit solo/expression conventions qualify: this prevents
+    movement labels, author names, lyrics and arbitrary graphics being
+    duplicated as directions on each staff.
+    """
+    for item in children(child(event.node,'drawObjects'),'drawObj'):
+        src=child(item,'text')
+        font=child(src,'font')
+        content=child(src,'content')
+        if src is None or font is None or content is None:
+            continue
+        face=font.get('face','').casefold()
+        if face in ('capella','capella3'):
+            continue
+        label=' '.join(''.join(content.itertext()).split())
+        if not label:
+            continue
+        if not (re.fullmatch(r'(?i)(?:\d+\s+)?solo\b',label)
+                or re.fullmatch(r'["“][^"”]{3,45}["”]',label)
+                or (label.startswith('s ') and 3<len(label)<=25 and
+                    font.get('weight','0') in ('700','bold'))):
+            continue
+        direction=sub(measure,'direction',placement=(
+            'above' if float(src.get('y','-7'))<0 else 'below'))
+        dtype=sub(direction,'direction-type')
+        options={'font_size':str(max(7,min(12,int(float(font.get('height','10'))))))}
+        color=source_annotation_color(font)
+        if color:options['color']=color
+        sub(dtype,'words',label,**options)
+        sub(direction,'voice',voice)
 
 
 def emit_staff_solo_direction(measure,event,voice):
@@ -1000,18 +1056,83 @@ def emit_staff_solo_direction(measure,event,voice):
         sub(direction,'voice',voice)
 
 
-def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False):
+def shifted_tied_rest_pairs(parts):
+    """Recognize Capella's beam-across-rest engraving workaround.
+
+    A hidden tie-start note followed by a shifted tie-end of the SAME pitch
+    with an attached eighth-rest drawing is one sustained sounding pitch
+    but a visible note + drawn rest. Do not remove either sounding event,
+    shift their musical times or add another timed rest. Reassign only which
+    notehead is printed. Untagged hidden notes are never changed.
+    """
+    overrides={}
+    for part in parts:
+        voices=collections.defaultdict(list)
+        for event in sorted(part.events,key=lambda e:(e.time,e.voice)):
+            if event.kind=='chord':
+                voices[event.voice].append(event)
+        for chords in voices.values():
+            for first,second in zip(chords,chords[1:]):
+                if first.time+first.dur != second.time or first.dur!=second.dur:
+                    continue
+                d1=child(first.node,'display')
+                d2=child(second.node,'display')
+                if (d1 is None or d2 is None
+                        or d1.get('invisible')!='true'
+                        or float(d1.get('xShift','0'))<0
+                        or float(d2.get('xShift','0'))>=0):
+                    continue
+                heads1=children(child(first.node,'heads'),'head')
+                heads2=children(child(second.node,'heads'),'head')
+                if len(heads1)!=1 or len(heads2)!=1:
+                    continue
+                h1,h2=heads1[0],heads2[0]
+                if h1.get('pitch')!=h2.get('pitch'):
+                    continue
+                if (child(h1,'tie') is None or child(h2,'tie') is None
+                        or child(h1,'tie').get('begin')!='true'
+                        or child(h2,'tie').get('end')!='true'):
+                    continue
+                if 'L' not in capella_glyphs(second):
+                    continue
+                overrides[id(first)]={'visible':True,'hide_tie_graphic':True,
+                    'extra_articulations':children(second.node,'articulation')}
+                overrides[id(second)]={'visible':False,'hide_tie_graphic':True}
+    return overrides
+
+
+def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False, display_override=None, split_before=False, split_after=False, link_event=None):
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
+    linked_id=id(link_event) if link_event is not None else id(event)
     heads = children(child(ob,'heads'),'head') if event.kind=='chord' else [None]
     dnode=child(ob,'duration')
     marks=children(ob,'articulation')
-    # Capella's 0xCA music-font symbol (Ê) is a printed accent,
-    # distinct from the source's generic strongBeat playback convention.
+    if display_override:
+        marks=marks+display_override.get('extra_articulations',[])
+    if split_before:
+        marks=[]  # A sustained note has articulations only at its original onset.
+    # Historical CAPELLA3.TTF signs 200–207 (Capella 7 handbook):
+    # È tenuto; É/Î hard staccato; Ê normal accent; Ë/Ï strong accent;
+    # Ì soft beat; Í hard beat. Translate their semantic musical meaning,
+    # never their unrelated Unicode text appearance.
     glyphs=capella_glyphs(event)
-    if event.kind=='chord' and 'Ê' in glyphs and not any(
-            'normalAccent' in m.get('type','').split() for m in marks):
-        marks=marks+[ET.Element('articulation',type='normalAccent')]
+    legacy_articulations={
+        'È':'tenuto','É':'staccatissimo','Ê':'normalAccent',
+        'Ë':'strongAccent','Ì':'weakBeat','Í':'strongBeat',
+        'Î':'staccatissimo','Ï':'strongAccent',
+    }
+    if event.kind=='chord':
+        explicit={token for mark in marks
+                  for token in mark.get('type','').split()}
+        for glyph,kind in legacy_articulations.items():
+            if glyph in glyphs and kind not in explicit:
+                marks=marks+[ET.Element('articulation',type=kind)]
+                explicit.add(kind)
+    if split_before:
+        # Continuations should have only the tie, not a second printed
+        # accent/staccatissimo from the same source note.
+        marks=[]
     if suppress_uniform_strongbeat:
         # Widespread strongBeat markers are commonly a source-wide playback/
         # formatting convention, not thousands of individual marcato marks.
@@ -1026,6 +1147,8 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
     tuplet = child(dnode, 'tuplet')
     display=child(ob,'display')
     invisible=display is not None and display.get('invisible')=='true'
+    if display_override and 'visible' in display_override:
+        invisible=not display_override['visible']
     for hi,head in enumerate(heads):
         note=sub(meas,'note',**({'print_object':'no'} if invisible else {}))
         if is_grace:sub(note,'grace',slash='yes')
@@ -1066,16 +1189,35 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             shape=head.get('shape')
             ti=child(head,'tie')
             if ti is not None:
-                if ti.get('end')=='true':ties.append('stop')
-                if ti.get('begin')=='true':ties.append('start')
+                if ti.get('end')=='true' and not split_before:ties.append('stop')
+                if ti.get('begin')=='true' and not split_after:ties.append('start')
+            if split_before and 'stop' not in ties:ties.append('stop')
+            if split_after and 'start' not in ties:ties.append('start')
         if not is_grace:sub(note,'duration',to_div(event.dur, divisions))
         for tp in ties:sub(note,'tie',type=tp)
         sub(note,'voice',voice)
         if dnode is not None and not is_full_measure_rest:
-            sub(note,'type',note_type(dnode))
-            for _ in range(int(dnode.get('dots','0'))):sub(note,'dot')
-        if accidental:sub(note,'accidental',accidental)
-        if tuplet is not None and not is_grace:
+            if split_before or split_after:
+                # Rhythmic note values can change at a barline; a 3/8
+                # chord spanning 1/8+1/4 must be written as those two types.
+                fragment_type=None
+                for unit,name in DURATION_TYPES.items():
+                    for dots in range(5):
+                        written=unit*sum((Fraction(1,2**k) for k in range(dots+1)),Fraction(0))
+                        if written==event.dur:
+                            fragment_type=(name,dots)
+                            break
+                    if fragment_type:break
+                if fragment_type:
+                    sub(note,'type',fragment_type[0])
+                    for _ in range(fragment_type[1]):sub(note,'dot')
+                # Irregular fragments retain exact <duration> without an
+                # invented incorrect note type or unearned tuplet ratio.
+            else:
+                sub(note,'type',note_type(dnode))
+                for _ in range(int(dnode.get('dots','0'))):sub(note,'dot')
+        if accidental and not split_before:sub(note,'accidental',accidental)
+        if tuplet is not None and not is_grace and not (split_before or split_after):
             actual=int(tuplet.get('count','3'))
             modified=sub(note,'time-modification')
             sub(modified,'actual-notes',actual)
@@ -1088,38 +1230,64 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             sub(note,'notehead','x' if shape=='cross' else shape)
         gliss_start, gliss_end = graphic_links if graphic_links else ({},{})
         tuplet_start, tuplet_end = tuplet_links if tuplet_links else ({},{})
-        graphical_trill=(
+        graphical_trill=(not split_before) and (
             't' in glyphs or '¿' in glyphs or any(child(d,'trill') is not None for d in
                                   children(child(ob,'drawObjects'),'drawObj'))
         )
-        fermata_glyph='u' if 'u' in glyphs else 'k' if 'k' in glyphs else None
-        upper_mordent='l' in glyphs
-        has_notation=bool(marks or ties or graphical_trill or upper_mordent or fermata_glyph or id(event) in slur_starts
-                          or id(event) in slur_ends or id(event) in gliss_start
-                          or id(event) in gliss_end or id(event) in tuplet_start
-                          or id(event) in tuplet_end)
-        if ties or (hi == 0 and has_notation):
+        fermata_glyph=('u' if 'u' in glyphs else 'k' if 'k' in glyphs else None) if not split_before else None
+        upper_mordent='l' in glyphs and not split_before
+        # Older Capella scores enter a comma as ordinary serif text to
+        # indicate a breath, rather than as a Capella music-font symbol.
+        breath_mark=not split_before and any(
+            child(child(obj,'text'),'content') is not None and
+            ''.join(child(child(obj,'text'),'content').itertext()).strip()==','
+            and (child(child(obj,'text'),'font') is not None)
+            and child(child(obj,'text'),'font').get('face','').casefold()
+                    not in ('capella','capella3')
+            for obj in children(child(ob,'drawObjects'),'drawObj')
+        )
+        if display_override and display_override.get('hide_tie_graphic'):
+            # Playback <tie> is retained above; the tied span exists only
+            # to power a source display workaround and is not drawn.
+            notation_ties=[]
+        else:
+            notation_ties=ties
+        has_notation=bool(breath_mark or marks or notation_ties or graphical_trill or upper_mordent or fermata_glyph or (not split_before and linked_id in slur_starts)
+                          or (not split_after and linked_id in slur_ends)
+                          or (not split_before and linked_id in gliss_start)
+                          or (not split_after and linked_id in gliss_end)
+                          or (not split_before and linked_id in tuplet_start)
+                          or (not split_after and linked_id in tuplet_end))
+        if notation_ties or (hi == 0 and has_notation):
             nt=sub(note,'notations')
-            for tp in ties:sub(nt,'tied',type=tp)
+            for tp in notation_ties:sub(nt,'tied',type=tp)
             if hi == 0:
-                for sn in slur_ends.get(id(event),[]):sub(nt,'slur',type='stop',number=sn)
-                for sn in slur_starts.get(id(event),[]):sub(nt,'slur',type='start',number=sn)
-                for tn in tuplet_end.get(id(event),[]):
-                    sub(nt,'tuplet',type='stop',number=tn)
-                for tn in tuplet_start.get(id(event),[]):
-                    sub(nt,'tuplet',type='start',number=tn,bracket='no')
-                for sn in gliss_end.get(id(event),[]):
-                    sub(nt,'glissando',type='stop',number=sn,line_type='wavy')
-                for sn in gliss_start.get(id(event),[]):
-                    sub(nt,'glissando',type='start',number=sn,line_type='wavy')
+                if not split_after:
+                    for sn in slur_ends.get(linked_id,[]):sub(nt,'slur',type='stop',number=sn)
+                if not split_before:
+                    for sn in slur_starts.get(linked_id,[]):sub(nt,'slur',type='start',number=sn)
+                if not split_after:
+                    for tn in tuplet_end.get(linked_id,[]):
+                        sub(nt,'tuplet',type='stop',number=tn)
+                if not split_before:
+                    for tn in tuplet_start.get(linked_id,[]):
+                        sub(nt,'tuplet',type='start',number=tn,bracket='no')
+                if not split_after:
+                    for sn in gliss_end.get(linked_id,[]):
+                        sub(nt,'glissando',type='stop',number=sn,line_type='wavy')
+                if not split_before:
+                    for sn in gliss_start.get(linked_id,[]):
+                        sub(nt,'glissando',type='start',number=sn,line_type='wavy')
                 if graphical_trill or upper_mordent:
                     ornaments=sub(nt,'ornaments')
                     if graphical_trill:sub(ornaments,'trill-mark')
                     if upper_mordent:sub(ornaments,'mordent')
                 if fermata_glyph:
                     sub(nt,'fermata',type=('upright' if fermata_glyph=='u' else 'inverted'))
-            if marks and hi == 0:
+            if (marks or breath_mark) and hi == 0:
                 articulations=sub(nt,'articulations')
+                if breath_mark:
+                    sub(articulations,'breath-mark','comma')
                 for a in marks:
                     types=a.get('type','').split()
                     mapped={'staccato':'staccato','tenuto':'tenuto',
@@ -1130,7 +1298,7 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                     for typ in types:
                         tagname=mapped.get(typ)
                         if tagname:sub(articulations,tagname)
-        if hi==0 and not is_grace:
+        if hi==0 and not is_grace and not split_before:
             lyric=child(ob,'lyric')
             for verse in children(lyric,'verse'):
                 words=''.join(verse.itertext()).strip()
@@ -1366,6 +1534,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             f'CapXML {original_capxml} source normalized to the common '
             'notation model; review proprietary graphics and advanced symbols.'
         )
+    graphical_rest_overrides=shifted_tied_rest_pairs(parts)
     uniform_strongbeat=uniformly_marked_voices(parts)
     if uniform_strongbeat:
         names=', '.join(parts[i].name for i in sorted(uniform_strongbeat))
@@ -1399,6 +1568,13 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     features,unsupported=source_notation_audit(root)
     title,subtitle,composer=extract_metadata(root, filename)
     variation_numbers=extract_variation_numbers(parts)
+    # A first-system movement caption can appear in both the page-level
+    # subtitle and the source's first musical system. Print it only once,
+    # above the actual music where the original attaches it.
+    section_labels={' '.join(v.split()).casefold()
+                    for v in variation_numbers.values()}
+    subtitle='\n'.join(line for line in subtitle.splitlines()
+                       if ' '.join(line.split()).casefold() not in section_labels)
     boxed_sections=set()
     for event in leading_voice_events(parts):
         label=variation_numbers.get(event.time)
@@ -1524,6 +1700,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     # to the last system, rather than to the first-page pageObjects.
     # Olymper and several Basel marches otherwise lose their final credits.
     source_page_count=None
+    closing_credits=[]
     for box in root.xpath('./c:pageObjects/c:drawObj/c:text',namespaces=N):
         content=child(box,'content')
         if content is None:continue
@@ -1535,7 +1712,6 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     if source_page_count and 1<=source_page_count<=200:
         last_systems=root.xpath('./c:systems/c:system[last()]',namespaces=N)
         if last_systems:
-            closing_credits=[]
             for words in last_systems[0].xpath('.//c:drawObj/c:text',
                                                  namespaces=N):
                 font=child(words,'font')
@@ -1572,7 +1748,9 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         sub(group,'group-symbol','bracket');sub(group,'group-barline','yes')
     for pi,p in enumerate(parts):
         sp=sub(plist,'score-part',id=f'P{pi+1}')
-        sub(sp,'part-name',p.name);sub(sp,'part-abbreviation',f'P{pi+1}')
+        # P1/P2 are internal MusicXML identifiers, never source names.
+        # MuseScore otherwise prints these bogus names on later systems.
+        sub(sp,'part-name',p.name)
         inst=sub(sp,'score-instrument',id=f'I{pi+1}');sub(inst,'instrument-name',p.name)
         midi=sub(sp,'midi-instrument',id=f'I{pi+1}');sub(midi,'midi-channel',(pi%15)+1);sub(midi,'midi-program',p.midi_program)
     if grouping:sub(plist,'part-group',type='stop',number='1')
@@ -1599,7 +1777,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     # of the ending measure. Their firstNumber is a semantic indicator.
     ending_starts={}
     for event in leading_voice_events(parts):
-        if event.kind != 'chord' or event.voice!=1:continue
+        if event.kind not in ('chord','rest') or event.voice!=1:continue
         for obj in children(child(event.node,'drawObjects'),'drawObj'):
             volta=child(obj,'volta')
             if volta is not None and volta.get('firstNumber'):
@@ -1674,7 +1852,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             if visibility is not None:
                 sub(sub(measure,'attributes'),'staff-details',print_object=visibility)
             state['accidentals']={}
-            vs=sorted({e.voice for e in events if start<=e.time<stop})
+            vs=sorted({e.voice for e in events if (start<=e.time<stop or
+                        (e.kind in ('chord','rest') and e.time<start<e.time+e.dur))})
             if not vs:vs=[1]
             for vsi,voice in enumerate(vs):
                 if vsi:
@@ -1682,11 +1861,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 ve=[
                     e for e in events if e.voice==voice and (
                         start<=e.time<stop or (
-                            e.kind=='rest' and e.time<start and
-                            e.time+e.dur>start and
-                            re.fullmatch(r'[1-9]\d*',
-                                (child(e.node,'duration').get('base','')
-                                 if child(e.node,'duration') is not None else ''))
+                            e.kind in ('chord','rest') and e.time<start<e.time+e.dur
                         )
                     )
                 ]
@@ -1697,15 +1872,14 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                         sub(sub(measure,'forward'),'duration',to_div(e.time-cursor,active_divisions))
                         cursor=e.time
                     if (e.kind in ('chord','rest') and e.time<cursor
-                            and not (e.kind=='rest' and e.time<start)):
+                            and not (e.time<start and e.time+e.dur>start)):
                         raise CapellaError(
                             f'Overlapping notes in {p.name}, voice {voice}, measure {mi+1}'
                         )
                     if e.kind in ('chord','rest') and e.time>=start:
                         emit_glyph_directions(measure,e,voice)
                         emit_grouped_metronome_direction(measure,e,voice)
-                        if pi>0:
-                            emit_staff_solo_direction(measure,e,voice)
+                        emit_local_performance_text(measure,e,voice)
                         for no in wedge_stops.get(id(e),()):
                             direction=sub(measure,'direction',placement='below')
                             dtype=sub(direction,'direction-type')
@@ -1719,6 +1893,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                             sub(dtype,'wedge',**props)
                             sub(direction,'voice',voice)
                     if (pi==0 and voice==1 and e.kind in ('chord','rest')
+                            and start<=e.time<stop
                             and e.time not in placed_directions):
                         for words in score_directions.get(e.time,()):
                             add_score_direction(measure,words,
@@ -1760,15 +1935,23 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                             if start==e.time:
                                 style=sub(sub(measure,'attributes'),'measure-style')
                                 sub(style,'multiple-rest',rest_base)
-                        elif e.time+e.dur>stop:
-                            raise CapellaError(
-                                f'Note crosses a barline in {p.name}, voice {voice}, '
-                                f'measure {mi+1}; source measure boundaries need review.'
-                            )
+                        elif e.time<start or e.time+e.dur>stop:
+                            seg_start=max(e.time,start)
+                            seg_end=min(e.time+e.dur,stop)
+                            if seg_start>=seg_end:
+                                raise CapellaError('Invalid crossing-note fragment')
+                            event_for_note=Event(seg_start,e.kind,e.node,e.system,
+                                                 e.voice,seg_end-seg_start)
+                            warnings.append('Sustained notes/rests crossing an inferred barline '
+                                            'were segmented at measure boundaries without changing sound.')
                         nnotes+=make_note(measure,event_for_note,voice,state,
                                           slur_starts,slur_ends,active_divisions,
                                           graphic_links,tuplet_links,
-                                          suppress_uniform_strongbeat=pi in uniform_strongbeat)
+                                          suppress_uniform_strongbeat=pi in uniform_strongbeat,
+                                          display_override=graphical_rest_overrides.get(id(e)),
+                                          split_before=e.time<start and not is_multi_rest,
+                                          split_after=e.time+e.dur>stop and not is_multi_rest,
+                                          link_event=e)
                         cursor=event_for_note.time+event_for_note.dur
                 if cursor<stop:
                     sub(sub(measure,'forward'),'duration',to_div(stop-cursor,active_divisions))
@@ -1791,6 +1974,22 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 if right_repeat:sub(bl,'repeat',direction='backward')
             if mi==0 and start==0 and stop<meter:
                 measure.set('implicit','yes')
+    multi_rest_labels=[]
+    for event in leading_voice_events(parts):
+        if event.kind!='rest':
+            continue
+        d=child(event.node,'duration')
+        base=d.get('base','') if d is not None else ''
+        if not re.fullmatch(r'[2-9]\d*',base):
+            continue
+        if event.time not in boundaries:
+            continue
+        start_bar=boundaries.index(event.time)
+        for label in score_directions.get(event.time,()):
+            multi_rest_labels.append({
+                'label':label,'start_measure':start_bar,
+                'measures':int(base)
+            })
     # Notation-level warnings: emphasize these instead of silently promising fidelity.
     if root.xpath('//c:systems//c:volta | //c:pageObjects//c:volta',namespaces=N):
         warnings.append('Some graphical ending brackets may need layout review.')
@@ -1801,7 +2000,22 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     data=ET.tostring(score,encoding='utf-8',xml_declaration=True,pretty_print=True,doctype='<!DOCTYPE score-partwise  PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">')
     for name,count in unsupported.items():
         warnings.append(f'{count} source {name} elements require manual notation review.')
-    report={'title':title,'subtitle':subtitle,'composer':composer,'parts':[p.name for p in parts],
+    source_text_colors={}
+    for txt in root.xpath('//c:drawObj/c:text',namespaces=N):
+        font=child(txt,'font')
+        content=child(txt,'content')
+        if font is None or content is None:
+            continue
+        rgb=source_annotation_color(font)
+        if rgb and rgb not in ('#000000','#FFFFFF'):
+            label=' '.join(''.join(content.itertext()).split())
+            if 0<len(label)<=200:
+                source_text_colors.setdefault(label,rgb)
+    report={'title':title,'subtitle':subtitle,'composer':composer,
+            'closing_credits':closing_credits,
+            'source_text_colors':source_text_colors,
+            'multi_rest_labels':multi_rest_labels,
+            'parts':[p.name for p in parts],
             'measures':measure_count,'notes':sum(1 for p in parts for e in p.events if e.kind=='chord'),
             'warnings':sorted(set(warnings)),'layout':layout,'source_format':'capx',
             'source_systems':len(children(child(root, 'systems'), 'system')),

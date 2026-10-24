@@ -18,6 +18,14 @@ STYLE_VALUES = {
     'showMeasureNumberOne': '0',
     'measureNumberSystem': '1',
     'measureNumberAllStaffs': '0',
+    # The importer creates one Part for every Capella instrument, even
+    # where the source introduces that part only in later systems.
+    'hideEmptyStaves': '0',
+    'dontHideStavesInFirstSystem': '0',
+    'createMultiMeasureRests': '1',
+    # Source credits are handled explicitly; a generated footer duplicates
+    # them on every MuseScore page.
+    'showFooter': '0',
 }
 
 def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
@@ -42,6 +50,8 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                 node = style.find(key)
                 if node is None:
                     node = ET.SubElement(style, key)
+                if key == 'hideEmptyStaves' and metadata:
+                    value = '1' if metadata.get('variable_staff_systems') else '0'
                 node.text = value
             # MuseScore's MusicXML importer can add subtitle and composer in
             # the wrong order, causing the two text blocks to overlap.
@@ -66,7 +76,11 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                     if subtitle_lines:
                         credits.append(('Subtitle','\n'.join(subtitle_lines)))
                     if metadata.get('composer'):
-                        credits.append(('Composer',metadata['composer']))
+                        # The byline may already be included verbatim in
+                        # Capella's title ("..., vom George Gruntz").
+                        canonical = lambda t: ''.join(c.casefold() for c in t if c.isalnum())
+                        if canonical(metadata['composer']) not in canonical(metadata.get('title','')):
+                            credits.append(('Composer',metadata['composer']))
                     old_credits = [element for element in frame.findall('Text')
                                    if element.findtext('style') in ('Title','Subtitle','Composer')]
                     if old_credits and any(value for _, value in credits):
@@ -90,6 +104,106 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                             height.text = str(max(14.0, 8.0 + 3.0 * (
                                 len(credits)+max(0,len(subtitle_lines)-1)),
                                 float(height.text or '0')))
+            # MusicXML imports source graphical rests as StaffText.
+            # Unicode 1D13E/1D13F is missing from the text font, and
+            # MuseScore prints literal <sym> markup in these StaffText
+            # objects. Use native, non-timed MuseScore Symbol elements at
+            # the same voice/tick positions instead; they use the music
+            # font and do not change note durations or playback.
+            musical_rest_symbols={
+                '\U0001D13E':'rest8th',
+                '\U0001D13F':'rest16th',
+            }
+            for voice in score.findall('.//voice'):
+                for index,item in enumerate(list(voice)):
+                    if item.tag!='StaffText':
+                        continue
+                    content=item.find('text')
+                    if content is None:
+                        continue
+                    glyph=''.join(content.itertext()).strip()
+                    if glyph not in musical_rest_symbols:
+                        continue
+                    symbol=ET.Element('Symbol')
+                    ET.SubElement(symbol,'name').text=musical_rest_symbols[glyph]
+                    off=item.find('offset')
+                    if off is not None:
+                        symbol.append(ET.fromstring(ET.tostring(off)))
+                    voice.remove(item)
+                    voice.insert(index,symbol)
+            # Never print internal MusicXML part identifiers (P1, P2 ...)
+            # as instrument labels on subsequent systems.
+            for part in score.findall('Part'):
+                for instrument in part.findall('Instrument'):
+                    short = instrument.find('shortName')
+                    if short is not None and (short.text or '').strip().upper() in {
+                            f'P{i}' for i in range(1,100)}:
+                        short.text = ''
+            # Restore source colors after MuseScore's MusicXML importer
+            # normalizes colored directions to black StaffText objects.
+            # Match the *complete* displayed label, not incidental substrings.
+            if metadata:
+                source_colors=metadata.get('source_text_colors') or {}
+                for item in score.iter():
+                    if item.tag not in ('StaffText','SystemText','Text','Dynamic'):
+                        continue
+                    words=item.find('text')
+                    if words is None:
+                        continue
+                    label=' '.join(''.join(words.itertext()).split())
+                    raw=source_colors.get(label)
+                    if raw and len(raw)==7 and raw.startswith('#'):
+                        color=item.find('color')
+                        if color is None:
+                            color=ET.SubElement(item,'color')
+                        red,green,blue=(int(raw[i:i+2],16) for i in (1,3,5))
+                        color.attrib.update({'r':str(red),'g':str(green),
+                                             'b':str(blue),'a':'255'})
+                # MuseScore can duplicate note-attached labels while
+                # expanding/condensing a Capella multi-measure rest. Only
+                # deduplicate within an explicit source rest span: the same
+                # label can legitimately recur in a later section.
+                source_spans=metadata.get('multi_rest_labels') or []
+                leading=score.find('Staff')
+                if leading is not None and source_spans:
+                    measures=leading.findall('Measure')
+                    for span in source_spans:
+                        first=int(span['start_measure'])
+                        last=first+int(span['measures'])
+                        label=' '.join(str(span['label']).split())
+                        kept=False
+                        for measure in measures[max(first,0):min(last,len(measures))]:
+                            for voice in measure.findall('voice'):
+                                for item in list(voice.findall('StaffText')):
+                                    words=item.find('text')
+                                    if words is None or ' '.join(
+                                            ''.join(words.itertext()).split())!=label:
+                                        continue
+                                    if kept:
+                                        voice.remove(item)
+                                    else:
+                                        kept=True
+                # MusicXML page>1 credits are silently dropped on import.
+                # Retain editorial attributions as ordinary source text in
+                # the final measure of the top staff, not new sounding notes.
+                staff=score.find('Staff')
+                if staff is not None:
+                    measures=staff.findall('Measure')
+                    if measures:
+                        final_voice=measures[-1].find('voice')
+                        if final_voice is not None:
+                            for label in metadata.get('closing_credits') or []:
+                                if not label.strip():
+                                    continue
+                                if any(label == ' '.join(
+                                        ''.join(t.itertext()).split())
+                                       for t in final_voice.findall('.//StaffText/text')):
+                                    continue
+                                marker=ET.SubElement(final_voice,'StaffText')
+                                txt=ET.SubElement(marker,'text')
+                                txt.text=label
+                                ET.SubElement(marker,'offset').set('x','0')
+                                marker.find('offset').set('y','8')
             # MusicXML imports a group of four independent parts as a single
             # barLineSpan=4 on the first staff. MuseScore 3 treats staff
             # spanning as a per-adjacent-staff flag, making bars appear joined
