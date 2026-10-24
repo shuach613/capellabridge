@@ -1644,10 +1644,10 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         if count_match:
             source_page_count=int(count_match.group(1))
             break
+    closing_credits=[]
     if source_page_count and 1<=source_page_count<=200:
         last_systems=root.xpath('./c:systems/c:system[last()]',namespaces=N)
         if last_systems:
-            closing_credits=[]
             for words in last_systems[0].xpath('.//c:drawObj/c:text',
                                                  namespaces=N):
                 font=child(words,'font')
@@ -1888,6 +1888,20 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                         cursor=event_for_note.time+event_for_note.dur
                 if cursor<stop:
                     sub(sub(measure,'forward'),'duration',to_div(stop-cursor,active_divisions))
+            # MusicXML page-N credits are often ignored during MuseScore
+            # import. Anchor the original closing author/revision lines to
+            # the final musical system so both MSCZ and exported PDF retain
+            # the attribution. Emit once, below the final present staff.
+            if (closing_credits and pi==len(parts)-1
+                    and mi==measure_count-1):
+                for index,label in enumerate(closing_credits):
+                    direction=sub(measure,'direction',placement='below')
+                    props={'font_size':'8',
+                           'relative_y':str(-32-15*index)}
+                    rgb=source_text_colors.get(label)
+                    if rgb:props['color']=rgb
+                    sub(sub(direction,'direction-type'),'words',label,**props)
+                    sub(direction,'voice','1')
             left_repeat=repeat_start(start)
             if left_repeat or (pi==0 and start in ending_starts):
                 bl=sub(measure,'barline',location='left')
