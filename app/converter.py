@@ -1092,12 +1092,23 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
     marks=children(ob,'articulation')
     if display_override:
         marks=marks+display_override.get('extra_articulations',[])
-    # Capella's 0xCA music-font symbol (Ê) is a printed accent,
-    # distinct from the source's generic strongBeat playback convention.
+    # Historical CAPELLA3.TTF signs 200–207 (Capella 7 handbook):
+    # È tenuto; É/Î hard staccato; Ê normal accent; Ë/Ï strong accent;
+    # Ì soft beat; Í hard beat. Translate their semantic musical meaning,
+    # never their unrelated Unicode text appearance.
     glyphs=capella_glyphs(event)
-    if event.kind=='chord' and 'Ê' in glyphs and not any(
-            'normalAccent' in m.get('type','').split() for m in marks):
-        marks=marks+[ET.Element('articulation',type='normalAccent')]
+    legacy_articulations={
+        'È':'tenuto','É':'staccatissimo','Ê':'normalAccent',
+        'Ë':'strongAccent','Ì':'weakBeat','Í':'strongBeat',
+        'Î':'staccatissimo','Ï':'strongAccent',
+    }
+    if event.kind=='chord':
+        explicit={token for mark in marks
+                  for token in mark.get('type','').split()}
+        for glyph,kind in legacy_articulations.items():
+            if glyph in glyphs and kind not in explicit:
+                marks=marks+[ET.Element('articulation',type=kind)]
+                explicit.add(kind)
     if suppress_uniform_strongbeat:
         # Widespread strongBeat markers are commonly a source-wide playback/
         # formatting convention, not thousands of individual marcato marks.
