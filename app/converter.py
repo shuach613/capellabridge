@@ -1324,6 +1324,7 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                 articulations=sub(nt,'articulations')
                 if breath_mark:
                     sub(articulations,'breath-mark','comma')
+                written=set()
                 for a in marks:
                     types=a.get('type','').split()
                     mapped={'staccato':'staccato','tenuto':'tenuto',
@@ -1333,7 +1334,9 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                         'strongBeat':'strong-accent'}
                     for typ in types:
                         tagname=mapped.get(typ)
-                        if tagname:sub(articulations,tagname)
+                        if tagname and tagname not in written:
+                            sub(articulations,tagname)
+                            written.add(tagname)
         if hi==0 and not is_grace and not split_before:
             lyric=child(ob,'lyric')
             for verse in children(lyric,'verse'):
