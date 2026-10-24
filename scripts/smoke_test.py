@@ -877,6 +877,43 @@ def main():
     assert get(item['downloads']['pdf']).startswith(b'%PDF-')
     print('Native Tango eighth grace survives without false measure-overfull rejection',flush=True)
 
+    # Real-source variant in Fyyrvogel and Alte Schwytzer: a silent,
+    # invisible Capella playback chord with a visible capella3 L eighth
+    # rest is an actual notated rest, NOT a hidden sounding pitch plus text.
+    silent_rest=(
+        '<score xmlns="http://www.capella.de/CapXML/3.0">'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices><voice>'
+        '<noteObjects><timeSign time="2/4"/>'
+        '<chord><duration base="1/8"/><display invisible="true"/>'
+        '<articulation type="strongBeat"/>'
+        '<drawObjects><drawObj><text x="0" y="0">'
+        '<font face="capella3" height="18"/><content>L</content>'
+        '</text></drawObj></drawObjects>'
+        '<heads><head pitch="D6" silent="true"/></heads></chord>'
+        '<chord><duration base="1/8"/><heads><head pitch="E6"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="F6"/></heads></chord>'
+        '</noteObjects></voice></voices></staff></staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(silent_rest,filename='Fyyrvogel-silent-rest.capx')
+    reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    item=reply['results'][0]
+    mx=ET.fromstring(get(item['downloads']['musicxml']))
+    ns=mx.findall('./part/measure/note')
+    assert len(ns)==3
+    assert ns[0].find('rest') is not None and ns[0].get('print-object')!='no'
+    assert ns[0].find('pitch') is None
+    assert mx.find('.//direction-type/words[.="𝄾"]') is None
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        native=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+    rests=native.findall('./Score/Staff/Measure/voice/Rest')
+    chords=native.findall('./Score/Staff/Measure/voice/Chord')
+    assert len(rests)==1 and rests[0].findtext('durationType')=='eighth'
+    assert len(chords)==2 and all(c.findtext('visible')!='0' for c in chords)
+    assert get(item['downloads']['pdf']).startswith(b'%PDF-')
+    print('Native silent graphical eighth rest is an actual audible rest, not a hidden pitch',flush=True)
+
     print('All three layout modes passed the live Docker conversion test')
 
 
