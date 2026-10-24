@@ -1182,7 +1182,24 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
         )
         fermata_glyph='u' if 'u' in glyphs else 'k' if 'k' in glyphs else None
         upper_mordent='l' in glyphs
-        has_notation=bool(marks or ties or graphical_trill or upper_mordent or fermata_glyph or id(event) in slur_starts
+        # Historical piccolo scores draw breath commas as Times New Roman
+        # note-attached text rather than semantic articulation objects.
+        # Only a solitary comma, right of the notehead, qualifies.
+        breath_comma=False
+        for draw in children(child(ob,'drawObjects'),'drawObj'):
+            item=child(draw,'text')
+            font=child(item,'font')
+            content=child(item,'content')
+            if font is None or content is None:
+                continue
+            if (font.get('face','').casefold() in
+                    ('times new roman','times','liberation serif')
+                    and ''.join(content.itertext()).strip()==','):
+                try:
+                    breath_comma=float(item.get('x','0'))>=1
+                except ValueError:
+                    pass
+        has_notation=bool(breath_comma or marks or ties or graphical_trill or upper_mordent or fermata_glyph or id(event) in slur_starts
                           or id(event) in slur_ends or id(event) in gliss_start
                           or id(event) in gliss_end or id(event) in tuplet_start
                           or id(event) in tuplet_end)
@@ -1206,7 +1223,7 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                     if upper_mordent:sub(ornaments,'mordent')
                 if fermata_glyph:
                     sub(nt,'fermata',type=('upright' if fermata_glyph=='u' else 'inverted'))
-            if marks and hi == 0:
+            if (marks or breath_comma) and hi == 0:
                 articulations=sub(nt,'articulations')
                 for a in marks:
                     types=a.get('type','').split()
@@ -1218,6 +1235,8 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                     for typ in types:
                         tagname=mapped.get(typ)
                         if tagname:sub(articulations,tagname)
+                if breath_comma:
+                    sub(articulations,'breath-mark',',')
         if hi==0 and not is_grace:
             lyric=child(ob,'lyric')
             for verse in children(lyric,'verse'):
