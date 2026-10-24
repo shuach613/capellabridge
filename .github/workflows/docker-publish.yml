@@ -45,6 +45,14 @@ jobs:
         env:
           STUDIO_COMPAT_OUTPUT: /tmp/capellabridge-studio4.mscz
         run: python scripts/smoke_test.py http://127.0.0.1:18765
+      - name: Upload synthetic notation render proofs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capellabridge-notation-render-proofs
+          path: /tmp/capellabridge-render-check/*.pdf
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Install official MuseScore Studio 4.7.5 for cross-version check
         timeout-minutes: 12
         run: |
