@@ -865,7 +865,14 @@ def main():
     assert sum(int(n.text) for n in mx.findall('.//note/duration'))==20160
     with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
         native=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
-    assert native.find('.//Chord/grace8') is not None or native.find('.//Chord/grace16') is not None
+    grace_nodes=[
+        (ch.tag, ch.findtext('durationType'), [c.tag for c in ch],
+         ch.findtext('visible')) for ch in native.findall('.//Chord')
+    ]
+    assert any(any(tag.startswith('grace') for tag in childtags)
+               for _,_,childtags,_ in grace_nodes), (
+        'MuseScore did not retain an identifiable native grace chord',
+        grace_nodes[:20])
     assert get(item['downloads']['pdf']).startswith(b'%PDF-')
     print('Native Tango eighth grace survives without false measure-overfull rejection',flush=True)
 
