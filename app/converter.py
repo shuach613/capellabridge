@@ -1059,11 +1059,14 @@ def emit_staff_solo_direction(measure,event,voice):
 def shifted_tied_rest_pairs(parts):
     """Recognize Capella's beam-across-rest engraving workaround.
 
-    A hidden tie-start note followed by a shifted tie-end of the SAME pitch
-    with an attached eighth-rest drawing is one sustained sounding pitch
-    but a visible note + drawn rest. Do not remove either sounding event,
-    shift their musical times or add another timed rest. Reassign only which
-    notehead is printed. Untagged hidden notes are never changed.
+    A hidden tie-start note and shifted tie-end of the SAME pitch, with
+    an attached rest drawing, are a Capella engraving workaround for
+    a sounded/printed note followed by a real rest. Translate the pair
+    into one visible pitched note and one *timed* MusicXML rest of equal
+    durations. This prevents invisible audible notes, stray graphical rest
+    symbols, and an incorrect sustained playback note. Only the precise
+    tied/shifted/rest-glyph pattern qualifies; other hidden notes retain
+    their source semantics. Preserve source accents at the note onset.
     """
     overrides={}
     for part in parts:
@@ -1095,9 +1098,35 @@ def shifted_tied_rest_pairs(parts):
                     continue
                 if 'L' not in capella_glyphs(second):
                     continue
-                overrides[id(first)]={'visible':True,'hide_tie_graphic':True,
+                overrides[id(first)]={'visible':True,'replace_source_tie':True,
                     'extra_articulations':children(second.node,'articulation')}
-                overrides[id(second)]={'visible':False,'hide_tie_graphic':True}
+                overrides[id(second)]={'print_as_rest':True,
+                    'replace_source_tie':True}
+    # Another legacy construction places a real graphical rest over an
+    # invisible, *silent* chord to achieve custom beaming. The hidden pitch
+    # was never musical content. Replace the complete object with a timed
+    # visible rest; retain its precise tuplet/onset/duration.
+    for part in parts:
+        for event in part.events:
+            if event.kind!='chord' or id(event) in overrides:
+                continue
+            display=child(event.node,'display')
+            heads=children(child(event.node,'heads'),'head')
+            if (display is None or display.get('invisible')!='true'
+                    or not heads or not all(h.get('silent')=='true' for h in heads)):
+                continue
+            rest_glyphs=set(capella_glyphs(event)).intersection({'L','M'})
+            d=child(event.node,'duration')
+            if (not rest_glyphs or d is None
+                    or d.get('noDuration')=='true'):
+                continue
+            # Only translate a glyph when its expected rest value matches
+            # the source chord (tuplets alter performed duration separately).
+            if not any((glyph=='L' and d.get('base')=='1/8') or
+                       (glyph=='M' and d.get('base')=='1/16')
+                       for glyph in rest_glyphs):
+                continue
+            overrides[id(event)]={'print_as_rest':True,'visible':True}
     return overrides
 
 
@@ -1105,11 +1134,15 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
     linked_id=id(link_event) if link_event is not None else id(event)
-    heads = children(child(ob,'heads'),'head') if event.kind=='chord' else [None]
+    heads = (children(child(ob,'heads'),'head') if event.kind=='chord'
+             and not (display_override and display_override.get('print_as_rest'))
+             else [None])
     dnode=child(ob,'duration')
     marks=children(ob,'articulation')
     if display_override:
         marks=marks+display_override.get('extra_articulations',[])
+        if display_override.get('print_as_rest'):
+            marks=[]
     if split_before:
         marks=[]  # A sustained note has articulations only at its original onset.
     # Historical CAPELLA3.TTF signs 200–207 (Capella 7 handbook):
@@ -1122,7 +1155,7 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
         'Ë':'strongAccent','Ì':'weakBeat','Í':'strongBeat',
         'Î':'staccatissimo','Ï':'strongAccent',
     }
-    if event.kind=='chord':
+    if event.kind=='chord' and not (display_override and display_override.get('print_as_rest')):
         explicit={token for mark in marks
                   for token in mark.get('type','').split()}
         for glyph,kind in legacy_articulations.items():
@@ -1193,6 +1226,8 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                 if ti.get('begin')=='true' and not split_after:ties.append('start')
             if split_before and 'stop' not in ties:ties.append('stop')
             if split_after and 'start' not in ties:ties.append('start')
+            if display_override and display_override.get('replace_source_tie'):
+                ties=[]
         if not is_grace:sub(note,'duration',to_div(event.dur, divisions))
         for tp in ties:sub(note,'tie',type=tp)
         sub(note,'voice',voice)
@@ -1246,9 +1281,10 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                     not in ('capella','capella3')
             for obj in children(child(ob,'drawObjects'),'drawObj')
         )
-        if display_override and display_override.get('hide_tie_graphic'):
-            # Playback <tie> is retained above; the tied span exists only
-            # to power a source display workaround and is not drawn.
+        if display_override and display_override.get('replace_source_tie'):
+            # Capella tied chords were merely the device used to draw
+            # a note plus rest. The output has a genuinely timed rest:
+            # neither sounding ties nor drawn ties may survive.
             notation_ties=[]
         else:
             notation_ties=ties
@@ -1288,6 +1324,7 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                 articulations=sub(nt,'articulations')
                 if breath_mark:
                     sub(articulations,'breath-mark','comma')
+                written=set()
                 for a in marks:
                     types=a.get('type','').split()
                     mapped={'staccato':'staccato','tenuto':'tenuto',
@@ -1297,7 +1334,9 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                         'strongBeat':'strong-accent'}
                     for typ in types:
                         tagname=mapped.get(typ)
-                        if tagname:sub(articulations,tagname)
+                        if tagname and tagname not in written:
+                            sub(articulations,tagname)
+                            written.add(tagname)
         if hi==0 and not is_grace and not split_before:
             lyric=child(ob,'lyric')
             for verse in children(lyric,'verse'):
@@ -1535,12 +1574,15 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             'notation model; review proprietary graphics and advanced symbols.'
         )
     graphical_rest_overrides=shifted_tied_rest_pairs(parts)
-    uniform_strongbeat=uniformly_marked_voices(parts)
-    if uniform_strongbeat:
-        names=', '.join(parts[i].name for i in sorted(uniform_strongbeat))
+    # Articulations describe PRINTED MUSIC, not a statistical pattern.
+    # Near-universal strongBeat markings are intentional in historic march
+    # parts such as Alte Schwytzer: dropping them removes thousands of
+    # printed accents. Never suppress an articulation by frequency.
+    uniform_strongbeat={}
+    if graphical_rest_overrides:
         warnings.append(
-            'Uniform Capella strongBeat marks omitted from notation in '
-            f'{names}; explicitly selected accents and other articulations remain.'
+            f'Normalized {len(graphical_rest_overrides)} source note/rest '
+            'engravings to timed musical notes and rests.'
         )
     boundaries,meter=compute_boundaries(parts,end)
     # A time signature's written form is semantically significant: 2/4 is
@@ -1877,7 +1919,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                             f'Overlapping notes in {p.name}, voice {voice}, measure {mi+1}'
                         )
                     if e.kind in ('chord','rest') and e.time>=start:
-                        emit_glyph_directions(measure,e,voice)
+                        if not graphical_rest_overrides.get(id(e),{}).get('print_as_rest'):
+                            emit_glyph_directions(measure,e,voice)
                         emit_grouped_metronome_direction(measure,e,voice)
                         emit_local_performance_text(measure,e,voice)
                         for no in wedge_stops.get(id(e),()):
@@ -2011,6 +2054,25 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             label=' '.join(''.join(content.itertext()).split())
             if 0<len(label)<=200:
                 source_text_colors.setdefault(label,rgb)
+    # Invisible *sounding* source notes not matching a verified, exact
+    # rest-engraving pattern are not safe to rewrite automatically. Surface
+    # them for score inspection instead of silently claiming print fidelity.
+    unresolved_hidden=[]
+    for part in parts:
+        for event in part.events:
+            if event.kind!='chord' or not event.dur or id(event) in graphical_rest_overrides:
+                continue
+            visibility=child(event.node,'display')
+            heads=children(child(event.node,'heads'),'head')
+            if (visibility is not None and visibility.get('invisible')=='true'
+                    and any(h.get('silent')!='true' for h in heads)):
+                unresolved_hidden.append((part.name,str(event.time)))
+    if unresolved_hidden:
+        warnings.append(
+            f'{len(unresolved_hidden)} invisible sounding source chords remain '
+            'because their musical/rest meaning is not established; review '
+            'printed notation and playback before relying on those passages.'
+        )
     report={'title':title,'subtitle':subtitle,'composer':composer,
             'closing_credits':closing_credits,
             'source_text_colors':source_text_colors,
@@ -2024,6 +2086,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             'printed_directions':[word for words in score_directions.values() for word in words],
             'notation_features':features,
             'notation_not_fully_interpreted':unsupported,
+            'unresolved_hidden_sounding_chords':len(unresolved_hidden),
             'print_review_recommended':True,
             'normalized_uniform_strongbeat':sum(uniform_strongbeat.values()),
             'variable_staff_systems':any(

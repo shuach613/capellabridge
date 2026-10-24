@@ -257,16 +257,16 @@ def main():
     response=json.loads(get('/api/convert?layout=balanced',body,ctype))
     assert response['results'][0]['ok'],response
     entry=response['results'][0]
-    assert entry['normalized_uniform_strongbeat']==40,entry
+    assert entry['normalized_uniform_strongbeat']==0,entry
     with zipfile.ZipFile(io.BytesIO(get(entry['downloads']['mscz']))) as z:
         from xml.etree import ElementTree as ET
         native=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
         assert len(native.findall('.//Chord'))==40
-        assert not any(
-            a.findtext('subtype')=='articMarcatoAbove'
-            for a in native.findall('.//Articulation')
-        ),'Uniform accents were reintroduced during MuseScore conversion'
-    print('Uniform strongBeat marks suppressed in final editable MSCZ',flush=True)
+        native_accents=native.findall('.//Articulation')
+        assert len(native_accents)>=40,(
+            'Explicit source strongBeat accents were lost during MuseScore conversion',
+            len(native_accents))
+    print('All explicitly printed source strongBeat accents survived native MuseScore export',flush=True)
 
     # Source-library patterns: Waggis introduces an additional piccolo only
     # in its final system; Calvados uses 7-bar rests and a 2/4 -> 6/8 change.
@@ -678,9 +678,9 @@ def main():
     print('Embedded RTF D.S. al Segno navigation survived native MSCZ/PDF export',flush=True)
 
     # Regression through the actual MuseScore importer, not just MusicXML:
-    # Waggis's hidden-note/shifted-tie/graphic-rest pattern must keep the
-    # audible tie, move the printed notehead to the intended earlier note,
-    # and retain a visible rest graphic without inserting rhythmic events.
+    # Waggis's hidden-note/shifted-tie/graphic-rest workaround must
+    # become one audible/visible note followed by a REAL timed eighth rest.
+    # This guards both correct engraving and playback rhythm.
     tricky=(
         '<score xmlns="http://www.capella.de/CapXML/2.0">'
         '<layout><staves><staffLayout description="Piccolo 1"/></staves></layout>'
@@ -709,18 +709,21 @@ def main():
     ns=mx.findall('./part/measure/note')
     assert len(ns)==3
     assert ns[0].get('print-object')!='no'
-    assert ns[1].get('print-object')=='no'
-    assert ns[0].find('./tie[@type="start"]') is not None
-    assert ns[1].find('./tie[@type="stop"]') is not None
-    assert mx.find('.//direction-type/words[.="𝄾"]') is not None
+    assert ns[1].get('print-object')!='no'
+    assert ns[0].find('./pitch') is not None
+    assert ns[1].find('./rest') is not None
+    assert ns[0].find('./tie') is None
+    assert ns[1].find('./tie') is None
+    assert mx.find('.//direction-type/words[.="𝄾"]') is None
     with zipfile.ZipFile(io.BytesIO(get(result['downloads']['mscz']))) as z:
         native=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
     native_chords=native.findall('./Score/Staff/Measure/voice/Chord')
-    assert len(native_chords)==3, len(native_chords)
+    assert len(native_chords)==2, len(native_chords)
     assert native_chords[0].findtext('visible')!='0'
-    assert native_chords[1].findtext('visible')=='0'
+    native_rests=native.findall('./Score/Staff/Measure/voice/Rest')
+    assert any(r.findtext('durationType')=='eighth' for r in native_rests)
     symbols=[n.text for n in native.findall('.//Symbol/name')]
-    assert 'rest8th' in symbols and 'rest16th' in symbols,symbols
+    assert 'rest16th' in symbols,symbols
     visual_out=Path('/tmp/capellabridge-render-check')
     visual_out.mkdir(parents=True,exist_ok=True)
     visual_pdf=get(result['downloads']['pdf'])
@@ -733,7 +736,7 @@ def main():
                        for span in line['spans'] for c in span['chars'])
     assert '\ue4e6' in glyphs and '\ue4e7' in glyphs, repr(glyphs)
     assert '<sym>' not in glyphs
-    print('Native shifted-note+rest workaround retained noteheads and sound',flush=True)
+    print('Native shifted-note+rest workaround produced timed rest without invisible pitched playback',flush=True)
 
     multirest=(
         '<score xmlns="http://www.capella.de/CapXML/2.0">'
@@ -838,6 +841,78 @@ def main():
     assert any('glockig' in sp.get('text','') and sp['color']==0x000080
                for sp in spans),[(sp['text'],hex(sp['color'])) for sp in spans]
     print('Source blue expression text survives native MuseScore PDF export',flush=True)
+
+    # A single eighth grace in a 2/4 bar is a zero-duration decoration.
+    # Previously the MSCZ auditor counted it as 1/8, falsely claiming
+    # "5/8 of 1/2" and rejecting perfectly valid Tango scores.
+    tango_grace=(
+        '<score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices><voice>'
+        '<noteObjects><timeSign time="2/4"/>'
+        '<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>'
+        '<chord><duration base="1/8" noDuration="true"/>'
+        '<display small="true"/><heads><head pitch="D5"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="E5"/></heads></chord>'
+        '</noteObjects></voice></voices></staff></staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(tango_grace,filename='Tango-grace-validation.capx')
+    reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    item=reply['results'][0]
+    mx=ET.fromstring(get(item['downloads']['musicxml']))
+    assert len(mx.findall('.//note/grace'))==1
+    assert sum(int(n.text) for n in mx.findall('.//note/duration'))==20160
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        native=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+    grace_nodes=[
+        (ch.tag, ch.findtext('durationType'), [c.tag for c in ch],
+         ch.findtext('visible')) for ch in native.findall('.//Chord')
+    ]
+    assert any(any(tag.startswith('grace') or tag in ('acciaccatura','appoggiatura')
+                   for tag in childtags)
+               for _,_,childtags,_ in grace_nodes), (
+        'MuseScore did not retain an identifiable native grace chord',
+        grace_nodes[:20])
+    assert get(item['downloads']['pdf']).startswith(b'%PDF-')
+    print('Native Tango eighth grace survives without false measure-overfull rejection',flush=True)
+
+    # Real-source variant in Fyyrvogel and Alte Schwytzer: a silent,
+    # invisible Capella playback chord with a visible capella3 L eighth
+    # rest is an actual notated rest, NOT a hidden sounding pitch plus text.
+    silent_rest=(
+        '<score xmlns="http://www.capella.de/CapXML/3.0">'
+        '<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+        '<systems><system><staves><staff layout="Piccolo"><voices><voice>'
+        '<noteObjects><timeSign time="2/4"/>'
+        '<chord><duration base="1/8"/><display invisible="true"/>'
+        '<articulation type="strongBeat"/>'
+        '<drawObjects><drawObj><text x="0" y="0">'
+        '<font face="capella3" height="18"/><content>L</content>'
+        '</text></drawObj></drawObjects>'
+        '<heads><head pitch="D6" silent="true"/></heads></chord>'
+        '<chord><duration base="1/8"/><heads><head pitch="E6"/></heads></chord>'
+        '<chord><duration base="1/4"/><heads><head pitch="F6"/></heads></chord>'
+        '</noteObjects></voice></voices></staff></staves></system></systems></score>'
+    ).encode()
+    body,ctype=make_upload(silent_rest,filename='Fyyrvogel-silent-rest.capx')
+    reply=json.loads(get('/api/convert?layout=balanced',body,ctype))
+    assert reply['results'][0]['ok'],reply
+    item=reply['results'][0]
+    mx=ET.fromstring(get(item['downloads']['musicxml']))
+    ns=mx.findall('./part/measure/note')
+    assert len(ns)==3
+    assert ns[0].find('rest') is not None and ns[0].get('print-object')!='no'
+    assert ns[0].find('pitch') is None
+    assert mx.find('.//direction-type/words[.="𝄾"]') is None
+    with zipfile.ZipFile(io.BytesIO(get(item['downloads']['mscz']))) as z:
+        native=ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith('.mscx'))))
+    rests=native.findall('./Score/Staff/Measure/voice/Rest')
+    chords=native.findall('./Score/Staff/Measure/voice/Chord')
+    assert len(rests)==1 and rests[0].findtext('durationType')=='eighth'
+    assert len(chords)==2 and all(c.findtext('visible')!='0' for c in chords)
+    assert get(item['downloads']['pdf']).startswith(b'%PDF-')
+    print('Native silent graphical eighth rest is an actual audible rest, not a hidden pitch',flush=True)
 
     print('All three layout modes passed the live Docker conversion test')
 

@@ -49,7 +49,7 @@ def convert(parts,metre='4/4',page=''):
     return ET.fromstring(xml),report
 
 
-def test_hidden_tied_xshift_rest_trick_preserves_sound_and_fixes_display():
+def test_hidden_tied_xshift_rest_trick_becomes_real_notated_rest():
     # A minimized representation of the Waggis number-eight workaround.
     hidden=(
         '<chord><duration base="1/8"/><display invisible="true" xShift="1.25"/>'
@@ -64,14 +64,16 @@ def test_hidden_tied_xshift_rest_trick_preserves_sound_and_fixes_display():
     notes=doc.findall('./part/measure/note')
     assert len(notes)==4
     assert notes[0].get('print-object')!='no'
-    assert notes[1].get('print-object')=='no'
-    assert notes[0].find('./tie[@type="start"]') is not None
-    assert notes[1].find('./tie[@type="stop"]') is not None
+    assert notes[1].get('print-object')!='no'
+    assert notes[0].find('pitch') is not None
+    assert notes[1].find('rest') is not None
+    assert notes[0].find('./tie') is None
+    assert notes[1].find('./tie') is None
     assert notes[0].find('./notations/articulations/strong-accent') is not None
     assert notes[0].find('./notations/tied') is None
     assert notes[1].find('./notations/tied') is None
     assert [x.findtext('duration') for x in notes]==['5040','5040','10080','20160']
-    assert doc.find('.//direction-type/words[.="𝄾"]') is not None
+    assert doc.find('.//direction-type/words[.="𝄾"]') is None
 
 
 def test_unrelated_hidden_note_is_not_made_visible():
@@ -136,3 +138,57 @@ def test_documented_capella3_accent_and_hard_staccato_glyphs():
     assert notes[0].find('./notations/articulations/staccatissimo') is not None
     assert notes[1].find('./notations/articulations/tenuto') is not None
     assert notes[2].find('./notations/articulations/strong-accent') is not None
+
+
+def test_silent_invisible_capella_chord_with_visible_rest_glyph_becomes_timed_rest():
+    # Fyyrvogel and Alte Schwytzer use a silent hidden playback placeholder
+    # plus a capella3 L glyph. A printed rest is the real musical object.
+    rest=(
+        '<chord><duration base="1/8"/><display invisible="true"/>'
+        '<articulation type="strongBeat"/>'
+        +grp(graphic('L','capella3',18))
+        +'<heads><head pitch="G5" silent="true"/></heads></chord>')
+    music=rest+obj(dur='1/8')+obj(dur='1/4')
+    doc,_=convert([('Piccolo',music)],metre='2/4')
+    notes=doc.findall('./part/measure/note')
+    assert notes[0].get('print-object')!='no'
+    assert notes[0].find('rest') is not None
+    assert notes[0].find('pitch') is None
+    assert notes[0].find('./duration').text=='5040'
+    assert notes[0].find('./notations/articulations') is None
+    assert len(doc.findall('.//direction-type/words[.="𝄾"]'))==0
+
+
+def test_hidden_playback_note_without_proven_rest_pattern_is_preserved():
+    # No guessing: a hidden but *sounding* note without a known source
+    # engraving workaround is not automatically turned into a rest.
+    hidden='<display invisible="true"/>'
+    music=obj('D5',extra=hidden)+obj('E5')+obj('F5')+obj('G5')
+    doc,_=convert([('Piccolo',music)])
+    assert doc.find('./part/measure/note').get('print-object')=='no'
+    assert doc.find('./part/measure/note/pitch') is not None
+    _,report=convert([('Piccolo',music)])
+    assert report['unresolved_hidden_sounding_chords']==1
+    assert any('invisible sounding source chords remain' in w
+               for w in report['warnings'])
+
+
+def test_combined_repeat_end_begin_has_both_directions():
+    # A repEndBegin is both a repeat end on the preceding measure AND
+    # the beginning of the next repeat. Never treat it as a single mark.
+    cap=(f'<score xmlns="{NS}">'
+         '<layout><staves><staffLayout description="P"/></staves></layout>'
+         '<systems><system><staves><staff layout="P"><voices><voice>'
+         '<noteObjects><timeSign time="1/4"/>'
+         +obj()+obj()+
+         '<barline type="repEndBegin"/>'+obj()+obj()+
+         '</noteObjects></voice></voices></staff></staves></system></systems>'
+         '</score>')
+    import zipfile
+    raw=io.BytesIO()
+    with zipfile.ZipFile(raw,'w') as z:
+        z.writestr('score.xml',cap)
+    score,_=serialize_musicxml(raw.getvalue())
+    xml=ET.fromstring(score)
+    assert xml.find('./part/measure[2]/barline/repeat[@direction="backward"]') is not None
+    assert xml.find('./part/measure[3]/barline/repeat[@direction="forward"]') is not None
