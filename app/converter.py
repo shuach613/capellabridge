@@ -1638,6 +1638,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     # to the last system, rather than to the first-page pageObjects.
     # Olymper and several Basel marches otherwise lose their final credits.
     source_page_count=None
+    closing_credits=[]
     for box in root.xpath('./c:pageObjects/c:drawObj/c:text',namespaces=N):
         content=child(box,'content')
         if content is None:continue
@@ -1649,7 +1650,6 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     if source_page_count and 1<=source_page_count<=200:
         last_systems=root.xpath('./c:systems/c:system[last()]',namespaces=N)
         if last_systems:
-            closing_credits=[]
             for words in last_systems[0].xpath('.//c:drawObj/c:text',
                                                  namespaces=N):
                 font=child(words,'font')
@@ -1918,7 +1918,21 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     data=ET.tostring(score,encoding='utf-8',xml_declaration=True,pretty_print=True,doctype='<!DOCTYPE score-partwise  PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">')
     for name,count in unsupported.items():
         warnings.append(f'{count} source {name} elements require manual notation review.')
-    report={'title':title,'subtitle':subtitle,'composer':composer,'parts':[p.name for p in parts],
+    source_text_colors={}
+    for txt in root.xpath('//c:drawObj/c:text',namespaces=N):
+        font=child(txt,'font')
+        content=child(txt,'content')
+        if font is None or content is None:
+            continue
+        rgb=source_annotation_color(font)
+        if rgb and rgb not in ('#000000','#FFFFFF'):
+            label=' '.join(''.join(content.itertext()).split())
+            if 0<len(label)<=200:
+                source_text_colors.setdefault(label,rgb)
+    report={'title':title,'subtitle':subtitle,'composer':composer,
+            'closing_credits':closing_credits,
+            'source_text_colors':source_text_colors,
+            'parts':[p.name for p in parts],
             'measures':measure_count,'notes':sum(1 for p in parts for e in p.events if e.kind=='chord'),
             'warnings':sorted(set(warnings)),'layout':layout,'source_format':'capx',
             'source_systems':len(children(child(root, 'systems'), 'system')),
