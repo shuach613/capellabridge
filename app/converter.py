@@ -1000,12 +1000,66 @@ def emit_staff_solo_direction(measure,event,voice):
         sub(direction,'voice',voice)
 
 
-def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False):
+def graphical_rest_rewrites(events):
+    """Recognize hidden shifted note + visible displaced note + rest glyph.
+
+    The source visually prints the second note at the first rhythmic slot and
+    an L/M rest at the second slot.  Replace this exact pair by a note/rest
+    without modifying the timing, and retain the displaced note's accent.
+    Silent hidden placeholders bearing L/M are also visible rests.
+    """
+    overrides={}
+    voices=collections.defaultdict(list)
+    for event in events:
+        if event.kind in ('chord','rest'):
+            voices[event.voice].append(event)
+    for sequence in voices.values():
+        for event in sequence:
+            display=child(event.node,'display')
+            heads=children(child(event.node,'heads'),'head')
+            if (event.kind=='chord' and display is not None
+                    and display.get('invisible')=='true' and heads
+                    and all(h.get('silent')=='true' for h in heads)
+                    and set(capella_glyphs(event)) & {'L','M'}):
+                overrides[id(event)]={'kind':'rest','graphic':True}
+        for first,second in zip(sequence,sequence[1:]):
+            if first.kind!='chord' or second.kind!='chord':
+                continue
+            a=child(first.node,'display')
+            b=child(second.node,'display')
+            if a is None or b is None or a.get('invisible')!='true':
+                continue
+            try:
+                shifted=(float(a.get('xShift','0'))>0 and
+                         float(b.get('xShift','0'))<0)
+            except ValueError:
+                shifted=False
+            first_heads=children(child(first.node,'heads'),'head')
+            second_heads=children(child(second.node,'heads'),'head')
+            if not (shifted and b.get('invisible')!='true'
+                    and first.system==second.system
+                    and first.time+first.dur==second.time
+                    and first.dur==second.dur
+                    and len(first_heads)==len(second_heads)==1
+                    and first_heads[0].get('pitch')==second_heads[0].get('pitch')
+                    and first_heads[0].get('silent')!='true'
+                    and set(capella_glyphs(second)) & {'L','M'}):
+                continue
+            overrides[id(first)]={'kind':'note',
+                                  'marks':children(second.node,'articulation'),
+                                  'suppress_ties':True}
+            overrides[id(second)]={'kind':'rest','graphic':True,
+                                   'suppress_ties':True}
+    return overrides
+
+
+def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False, rest_rewrite=None):
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
     heads = children(child(ob,'heads'),'head') if event.kind=='chord' else [None]
     dnode=child(ob,'duration')
-    marks=children(ob,'articulation')
+    rewrite=rest_rewrite or {}
+    marks=children(ob,'articulation')+rewrite.get('marks',[])
     # Capella's 0xCA music-font symbol (Ê) is a printed accent,
     # distinct from the source's generic strongBeat playback convention.
     glyphs=capella_glyphs(event)
@@ -1025,13 +1079,13 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
         and re.fullmatch(r'[1-9]\d*',dnode.get('base','')) is not None)
     tuplet = child(dnode, 'tuplet')
     display=child(ob,'display')
-    invisible=display is not None and display.get('invisible')=='true'
+    invisible=display is not None and display.get('invisible')=='true' and not rewrite
     for hi,head in enumerate(heads):
         note=sub(meas,'note',**({'print_object':'no'} if invisible else {}))
         if is_grace:sub(note,'grace',slash='yes')
         if hi>0:sub(note,'chord')
         accidental=None; shape=None; ties=[]
-        if head is None or (invisible and head.get('silent')=='true'):
+        if head is None or rewrite.get('kind')=='rest' or (invisible and head.get('silent')=='true'):
             # Silent placeholder heads in older Capella scores are visual
             # spacing/rhythm events, not audible pitched notes. Keep their
             # duration, but don't synthesize a sounding pitch.
@@ -1069,6 +1123,8 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                 if ti.get('end')=='true':ties.append('stop')
                 if ti.get('begin')=='true':ties.append('start')
         if not is_grace:sub(note,'duration',to_div(event.dur, divisions))
+        if rewrite.get('suppress_ties'):
+            ties=[]
         for tp in ties:sub(note,'tie',type=tp)
         sub(note,'voice',voice)
         if dnode is not None and not is_full_measure_rest:
@@ -1637,6 +1693,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         pr=sub(score,'part',id=f'P{pi+1}')
         events=sorted(p.events,key=lambda x:(x.time,x.voice))
         slur_starts,slur_ends=make_slur_links(events)
+        rest_rewrites=graphical_rest_rewrites(events)
         graphic_links=make_graphic_links(events)
         wedge_starts,wedge_stops=make_wedge_links(events)
         tuplet_links=make_tuplet_links(events)
@@ -1702,7 +1759,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                             f'Overlapping notes in {p.name}, voice {voice}, measure {mi+1}'
                         )
                     if e.kind in ('chord','rest') and e.time>=start:
-                        emit_glyph_directions(measure,e,voice)
+                        if not rest_rewrites.get(id(e),{}).get('graphic'):
+                            emit_glyph_directions(measure,e,voice)
                         emit_grouped_metronome_direction(measure,e,voice)
                         if pi>0:
                             emit_staff_solo_direction(measure,e,voice)
@@ -1719,6 +1777,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                             sub(dtype,'wedge',**props)
                             sub(direction,'voice',voice)
                     if (pi==0 and voice==1 and e.kind in ('chord','rest')
+                            and start<=e.time<stop
                             and e.time not in placed_directions):
                         for words in score_directions.get(e.time,()):
                             add_score_direction(measure,words,
@@ -1768,7 +1827,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                         nnotes+=make_note(measure,event_for_note,voice,state,
                                           slur_starts,slur_ends,active_divisions,
                                           graphic_links,tuplet_links,
-                                          suppress_uniform_strongbeat=pi in uniform_strongbeat)
+                                          suppress_uniform_strongbeat=pi in uniform_strongbeat,
+                                          rest_rewrite=rest_rewrites.get(id(e)))
                         cursor=event_for_note.time+event_for_note.dur
                 if cursor<stop:
                     sub(sub(measure,'forward'),'duration',to_div(stop-cursor,active_divisions))
