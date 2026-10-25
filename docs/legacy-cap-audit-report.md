@@ -1,0 +1,164 @@
+# Legacy CAP corpus audit
+
+## Scope and inventory
+
+The reference set contains 140 pairs selected conservatively from the local
+folders:
+
+- `Cap/`: legacy binary Capella files with an exact `.cap` extension.
+- `Pdf/`: PDFs whose embedded PDF `Title` ends in `.cap` and matches one
+  unique CAP basename, case-insensitively.
+
+The repository contains only the manifest, not the user-owned music files.
+`legacy-cap-pdf-inventory.csv` records relative paths, PDF metadata, byte sizes
+and SHA-256 hashes. The roots are intentionally represented as `Cap/` and
+`Pdf/` so the manifest is portable and the hashes identify the exact corpus
+members.
+
+## Findings from all 140 pairs
+
+The corpus is internally consistent:
+
+- Every CAP begins with the binary signature `cap3-v:a`.
+- CAP sizes range from 2,636 to 73,172 bytes; the median is 17,057 bytes.
+- PDF page counts are: 17 one-page, 35 two-page, 37 three-page, 45 four-page,
+  5 five-page and 1 fifteen-page score.
+- PDF creation years are concentrated in 2013 (107 files), 2014 (8), 2015
+  (15), with a small tail from 2017-2021.
+- The PDFs were produced by several PDFCreator versions, so their metadata
+  must not be used as a rendering baseline. The score image and page content
+  are the useful reference.
+
+Printable-string inspection of the binary corpus also shows a strongly shared
+Capella 3 environment: all files contain Times New Roman references, 126
+contain the `capella3` music-font name, 116 contain Arial, 99 contain MS Sans
+Serif, and 100 contain embedded RTF payloads. These counts are diagnostic
+signals, not a complete notation parser; binary fields and music-font glyphs
+cannot safely be inferred from strings alone.
+
+Visual inspection of representative pages confirms that the corpus exercises
+the important legacy cases: multi-part scores, titles and bylines, section
+headings, changing meters, multiple voices, beams and tuplets, slurs, ties,
+accents, ornaments, dynamics, hairpins, repeat signs, numbered endings,
+multi-measure rests and editorial text. The PDFs are valuable engraving
+references, but they do not contain a reliable machine-readable note ledger.
+
+## Audit of the current CAP path
+
+The current application accepts `.cap`, but its path is still a best-effort
+delegation chain:
+
+1. MuseScore imports CAP and exports MusicXML.
+2. CapellaBridge imports that MusicXML back into MuseScore to create MSCZ.
+3. The MSCZ is structurally checked and round-tripped again.
+
+The semantic audit therefore validates the MusicXML-to-MSCZ round trip, not the
+original CAP-to-MusicXML conversion. A CAP can consequently receive a
+successful native round-trip result even when the first legacy import already
+lost a tie, articulation, voice, navigation object or text element. The CAP
+report also currently has no source event counts, no CAP-specific provenance,
+and no source-to-output certification state.
+
+This is the central reliability gap. The existing CAPX path has a structured
+CapXML source audit; the CAP path does not.
+
+## Recommended implementation
+
+This should be a deterministic regression and normalization pipeline, not a
+machine-learning model. The legacy binary format is proprietary and the
+reference PDFs are visual output, not training labels for note-level recovery.
+
+### 1. Use one pinned legacy importer
+
+Use the MuseScore Capella importer already shipped in the container as the
+binary decoder rather than reverse-engineering a second CAP parser. The
+upstream importer has explicit models for notes, rests, clefs, keys, meters,
+barlines, voices and Capella draw objects including text, slurs, wedges,
+voltas, brackets and trills.
+
+For CAP input, import directly to a native MSCZ first. Do not make the
+production score by importing CAP to MusicXML and then importing that XML back
+to MSCZ. Export MusicXML from the final native score only as a secondary
+deliverable. This removes one lossy conversion boundary and keeps the
+MuseScore legacy importer as the source decoder.
+
+### 2. Add a CAP-specific pipeline and report
+
+Add a `legacy_cap` adapter that:
+
+- verifies the `cap3-v:a` signature and rejects unsupported legacy signatures
+  with a precise manual-review message;
+- imports directly to MSCZ;
+- runs the native ZIP, measure-duration, voice and tuplet audits;
+- exports MusicXML and PDF from the same final MSCZ;
+- records importer version, source hash, output hash, page count, staff count,
+  measure count, warnings and every structural diagnostic;
+- always retains a valid MSCZ even when certification fails;
+- labels a result `manual-review` unless CAP-specific checks pass.
+
+The existing CAPX converter and its source audit remain unchanged. CAP and CAPX
+should share only the native-score validation and output packaging layers.
+
+### 3. Add corpus regression checks
+
+The manifest should drive an opt-in reference job, not a public CI dependency
+on private music files. When the two local roots are mounted, the job should:
+
+- convert all 140 CAP files in isolation and in controlled batches;
+- record import failures, timeouts, corrupt MSCZ files and missing outputs;
+- compare output page count and staff/system structure to the paired PDF;
+- render output pages at a normalized size and produce visual difference images
+  for human review;
+- inspect the native MSCX for hidden pitched events, missing voices, malformed
+  durations, repeat/ending objects, ties, slurs, articulations and navigation;
+- preserve a per-pair JSON result so a later importer or MuseScore upgrade can
+  be compared against the same baseline.
+
+The PDF comparison must be treated as engraving evidence, not as proof that
+playback is correct. Any visual discrepancy affecting notes, rests, accidentals,
+ties, slurs, articulations, dynamics or repeat routing is a blocking review
+item. Spacing and page breaks are lower-priority diagnostics.
+
+### 4. Pin and test the engine
+
+The Dockerfile currently installs an unpinned `musescore3` package. Pin the
+engine version or image digest used for CAP imports. A MuseScore upgrade must
+rerun the 140-pair corpus because legacy import behavior is engine-dependent.
+The CI suite should continue using synthetic fixtures for normal pull requests,
+with the private corpus audit run locally or in a protected workflow.
+
+### 5. Define certification honestly
+
+For CAP, distinguish these states:
+
+- `native-valid`: MuseScore created a readable MSCZ and all structural checks
+  pass;
+- `reference-reviewed`: the paired PDF review and corpus checks pass;
+- `manual-review`: the MSCZ exists but a source comparison, importer warning or
+  structural check is unresolved.
+
+This prevents a successful CAP-to-MusicXML-to-MSCZ round trip from being
+mistaken for proof that the original legacy score survived intact.
+
+## Main risks to address
+
+- Music-font glyphs can encode visible rests, accents, ornaments and editorial
+  marks without appearing as ordinary text.
+- Binary CAP draw objects may be semantically attached to a note or span a
+  range of notes; flattening them into text loses playback or notation meaning.
+- Repeat endings and D.C./D.S./Coda navigation require native playback checks,
+  not just page-image comparison.
+- A valid PDF can coexist with a malformed or semantically incomplete MSCZ.
+- The 140 PDFs establish what was printed, but they cannot prove invisible
+  playback events. The native score and explicit audit diagnostics must decide
+  whether an output is certified.
+
+## Implementation order
+
+1. Keep this manifest and report as the fixed reference contract.
+2. Add the direct-CAP-to-MSCZ adapter and CAP-specific report fields.
+3. Add native-score audits and honest certification states.
+4. Add the local 140-pair corpus runner and normalized PDF comparison tools.
+5. Run the corpus against the pinned engine, inspect every blocking diff, and
+   only then merge the converter changes into `main`.
+
