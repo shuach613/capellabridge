@@ -38,6 +38,7 @@ def native(score_note="<pitch>84</pitch>"):
     return f"""<museScore version="3.02"><Score>
       <Part><Staff id="1"/><Instrument><transposeChromatic>12</transposeChromatic></Instrument></Part>
       <Staff id="1"><Measure len="1/4"><voice>
+        <TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>
         <Chord><durationType>quarter</durationType><Articulation><subtype>articAccentAbove</subtype></Articulation>
           <Spanner type="Slur"><Slur/><next/></Spanner><Note>{score_note}</Note></Chord>
         <Chord><durationType>quarter</durationType><Articulation><subtype>articMarcatoAbove</subtype></Articulation>
@@ -95,6 +96,78 @@ def test_fermata_is_a_playback_relevant_native_mark(tmp_path):
     native_zip(output, native_xml)
     result = audit_musicxml_against_mscz(source, output)
     assert result["source_events"] == result["native_events"] == 2
+
+
+def test_standalone_native_fermata_is_attached_to_the_next_event(tmp_path):
+    source = tmp_path / "source.musicxml"
+    source.write_text(SOURCE.replace(
+        '<articulations><accent/></articulations>',
+        '<fermata type="upright"/>',
+    ), encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    native_xml = native().replace(
+        '<Chord><durationType>quarter</durationType><Articulation><subtype>articAccentAbove</subtype></Articulation>',
+        '<Fermata><subtype>fermataAbove</subtype></Fermata><Chord><durationType>quarter</durationType>',
+    )
+    native_zip(output, native_xml)
+    result = audit_musicxml_against_mscz(source, output)
+    assert result["source_events"] == result["native_events"] == 2
+
+
+def test_musescore3_inverted_native_name_means_musicxml_mordent(tmp_path):
+    source = tmp_path / "source.musicxml"
+    source.write_text(SOURCE.replace(
+        '<articulations><accent/></articulations>',
+        '<ornaments><mordent/></ornaments>',
+    ), encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    native_xml = native().replace(
+        '<subtype>articAccentAbove</subtype>',
+        '<subtype>ornamentMordentInverted</subtype>',
+    )
+    native_zip(output, native_xml)
+    result = audit_musicxml_against_mscz(source, output)
+    assert result["source_events"] == result["native_events"] == 2
+
+    source.write_text(SOURCE.replace(
+        '<articulations><accent/></articulations>',
+        '<ornaments><inverted-mordent/></ornaments>',
+    ), encoding="utf-8")
+    native_zip(output, native().replace(
+        '<subtype>articAccentAbove</subtype>',
+        '<subtype>ornamentMordent</subtype>',
+    ))
+    result = audit_musicxml_against_mscz(source, output)
+    assert result["source_events"] == result["native_events"] == 2
+
+
+def test_dynamics_hairpins_and_tempo_are_compared_at_exact_onsets(tmp_path):
+    source = tmp_path / "source.musicxml"
+    direction = (
+        '<direction><direction-type><dynamics><f/></dynamics>'
+        '<wedge type="crescendo"/></direction-type><voice>1</voice>'
+        '<sound tempo="90"/></direction>'
+    )
+    source.write_text(SOURCE.replace('<note>', direction + '<note>', 1),
+                      encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    native_xml = native().replace(
+        '<TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>',
+        '<TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>'
+        '<Dynamic><subtype>f</subtype></Dynamic>'
+        '<Tempo><tempo>1.5</tempo></Tempo>'
+        '<Spanner type="HairPin"><HairPin><subtype>0</subtype></HairPin></Spanner>',
+    )
+    native_zip(output, native_xml)
+    result = audit_musicxml_against_mscz(source, output)
+    assert result["source_dynamics"] == result["native_dynamics"] == 1
+    assert result["source_hairpins"] == result["native_hairpins"] == 1
+    assert result["source_tempos"] == result["native_tempos"] == 1
+
+    native_zip(output, native_xml.replace(
+        '<Dynamic><subtype>f</subtype></Dynamic>', ''))
+    with pytest.raises(SemanticIntegrityError, match="Dynamics changed"):
+        audit_musicxml_against_mscz(source, output)
 
 
 def test_volta_starts_are_checked_as_semantic_boundaries(tmp_path):

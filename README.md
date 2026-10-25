@@ -16,7 +16,7 @@ CapellaBridge is for musicians and arrangers who need to continue working with s
 - **No application account**: a single simple web interface; no registration.
 - **Private deployment**: the conversion engine runs on your Docker host, not an external conversion API.
 - **Editable output**: staves, pitches, voices, meters, and supported music symbols are translated into notation data, not merely rendered as images.
-- **Batch conversion**: upload multiple files, view results independently, or download a combined ZIP.
+- **Batch conversion**: upload up to 30 files, view results independently, or download a combined ZIP.
 - **Transparent validation**: warnings and a JSON report explain notation elements that may need manual review.
 - **Progress you can see**: a measured upload indicator and an animated engraving stage.
 
@@ -67,15 +67,14 @@ This recreates the container with the latest image while retaining the named vol
 2. Select **Balanced** (recommended), **Compact**, or **Original systems**.
 3. Convert, preview the results, and download MuseScore, MusicXML, PDF or the full batch ZIP.
 
-Conversion is strict by default. Before an MSCZ is offered, CapellaBridge
-compares playback-relevant events against the native MuseScore score,
-including pitches, durations, voices, tuplets, ties, slurs, articulations,
-breath marks, repeats and transposition. Scores with unresolved hidden pitched
-events or detected musical changes are reported as needing attention and do
-not receive a verified MSCZ. The optional **Allow unverified export** checkbox
-creates an MSCZ for manual review when the score is structurally readable but
-the semantic audit cannot certify it; the result and report are labelled
-accordingly. Structural corruption and invalid measure timing remain blocked.
+Every score for which MuseScore creates a genuine native archive receives an
+MSCZ. CapellaBridge separately certifies the result by comparing pitches,
+durations, voices, tuplets, ties, slurs, articulations, dynamics, hairpins,
+tempo, breath marks, repeats, endings, key and time signatures, navigation and
+transposition. A score that passes is labelled **verified**. If a structural or
+musical check cannot certify it, the MSCZ is retained and labelled **manual
+review**, with the full diagnostics in its JSON report. A failure to render a
+PDF or preview likewise does not remove an already-created editable score.
 
 After a batch finishes, use **Start over** to clear the queue and results
 before selecting another batch.
@@ -158,7 +157,6 @@ docker-compose.yml
 | `/health` | Application version and engine health |
 | `/api/info` | Upload limits and renderer details |
 | `POST /api/convert?layout=balanced` | Multipart request with one or more `files` fields |
-| `POST /api/convert?layout=balanced&review=1` | Explicit manual-review export for structurally valid but semantically uncertified scores |
 | `POST /api/convert?layout=balanced&background=1` | Start a background batch job and return a `status_url` without holding the upload request open |
 | `GET /api/jobs/{job_id}` | Poll a background job until its per-file results and optional `batch_url` are ready |
 | `/api/files/…` | Time-limited download of generated artifacts |

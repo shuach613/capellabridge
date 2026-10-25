@@ -8,7 +8,8 @@ import pytest
 from lxml import etree as ET
 
 from app.converter import (
-    duration_of, read_capx, serialize_musicxml, tuplet_normal_notes,
+    duration_of, notation_for_duration, read_capx, serialize_musicxml,
+    tuplet_normal_notes,
 )
 from app.engraving import prepare_print_ready
 from app.score_validation import ScoreIntegrityError, audit_mscz
@@ -22,6 +23,13 @@ def capx(document):
     with zipfile.ZipFile(buf, "w") as archive:
         archive.writestr("score.xml", document.encode("utf-8"))
     return buf.getvalue()
+
+
+def test_irregular_cross_bar_fragment_gets_exact_tuplet_notation():
+    # Altfrangg m73 contains a 7/96 fragment. An exact duration without a
+    # written type made MuseScore round it and overfill the native measure.
+    assert notation_for_duration(Fraction(7, 96)) == (
+        '16th', 2, (3, 2))
 
 
 def native_zip(path, score_xml):
@@ -79,9 +87,14 @@ def test_multiple_voices_slurs_lyrics_and_sparse_timing():
     assert report["measures"] == 1
     assert len(measure.findall("backup")) == 1
     assert measure.findtext("backup/duration") == "40320"
-    assert measure.findtext("forward/duration") == "10080"
+    trailing = measure.findall('note')[-1]
+    assert trailing.get('print-object') == 'no'
+    assert trailing.find('rest') is not None
+    assert trailing.findtext('duration') == '10080'
+    assert trailing.findtext('type') == 'quarter'
+    assert measure.find('forward') is None
     voices = [n.findtext("voice") for n in measure.findall("note")]
-    assert voices == ["1", "1", "2", "2", "2"]
+    assert voices == ["1", "1", "2", "2", "2", "2"]
     # The slurs only belong to voice 2 and must have distinct numbers.
     starts = measure.findall('.//slur[@type="start"]')
     stops = measure.findall('.//slur[@type="stop"]')
@@ -146,6 +159,24 @@ def test_integrity_audit_rejects_real_missing_voice_beats(tmp_path):
     )
     with pytest.raises(ScoreIntegrityError, match="staff 1, measure 1, voice 1"):
         audit_mscz(path, repair=True)
+
+
+def test_integrity_audit_reports_all_measure_discrepancies(tmp_path):
+    path = tmp_path / "several-bad.mscz"
+    native_zip(path,
+        '<museScore version="3.01"><Score><Staff id="1">'
+        '<Measure><voice><Chord><durationType>quarter</durationType></Chord>'
+        '</voice><voice><Rest><durationType>half</durationType></Rest></voice>'
+        '</Measure><Measure><voice><Chord><durationType>half</durationType>'
+        '</Chord></voice></Measure></Staff></Score></museScore>'
+    )
+    with pytest.raises(ScoreIntegrityError) as caught:
+        audit_mscz(path, repair=False)
+    message = str(caught.value)
+    assert '3 structural measure issue(s)' in message
+    assert 'measure 1, voice 1' in message
+    assert 'measure 1, voice 2' in message
+    assert 'measure 2, voice 1' in message
 
 
 def test_score_title_frame_multiline_is_single_subtitle(tmp_path):

@@ -173,6 +173,47 @@ def test_silent_invisible_capella_chord_with_visible_rest_glyph_becomes_timed_re
     assert len(doc.findall('.//direction-type/words[.="𝄾"]'))==0
 
 
+def test_mixed_silent_hidden_chord_with_rest_glyph_is_a_timed_rest():
+    # Fyyrvogel m45 has a normal and a silent companion head on one hidden
+    # engraving object. The attached Capella3 rest glyph establishes the
+    # musical meaning; head cardinality must not turn it into playback notes.
+    rest=(
+        '<chord><duration base="1/8"/><display invisible="true"/>'
+        +grp(graphic('L','capella3',18))+
+        '<heads><head pitch="C7"/><head pitch="C8" silent="true"/></heads></chord>')
+    doc,report=convert([('Piccolo',rest+obj(dur='1/8')+obj(dur='1/4'))],
+                       metre='2/4')
+    first=doc.find('./part/measure/note')
+    assert first.find('rest') is not None
+    assert first.find('pitch') is None
+    assert first.get('print-object')!='no'
+    assert report['unresolved_hidden_sounding_chords']==0
+    assert report['source_transformation_counts']=={'attached-rest-glyph':1}
+
+
+def test_three_object_shifted_tie_idiom_becomes_note_rest_note():
+    hidden=(
+        '<chord><duration base="1/8"/><display invisible="true" xShift="0.25"/>'
+        '<heads><head pitch="D6"><tie begin="true"/></head></heads></chord>')
+    shifted=(
+        '<chord><duration base="1/8"/><display xShift="-1.75"/>'
+        '<heads><head pitch="G5"><tie end="true"/></head></heads></chord>')
+    following=(
+        '<chord><duration base="1/8"/>'+grp(graphic('L','capella3',18))+
+        '<heads><head pitch="B5"/></heads></chord>')
+    doc,report=convert([('Piccolo',hidden+shifted+following+obj(dur='1/8'))],
+                       metre='2/4')
+    notes=doc.findall('./part/measure/note')
+    assert notes[0].findtext('pitch/step')=='G'
+    assert notes[0].find('tie') is None
+    assert notes[1].find('rest') is not None
+    assert notes[2].findtext('pitch/step')=='B'
+    assert doc.find('.//direction-type/words[.="𝄾"]') is None
+    assert report['unresolved_hidden_sounding_chords']==0
+    assert report['source_transformation_counts']=={
+        'shifted-tie-note-rest-note':3}
+
+
 def test_hidden_playback_note_without_proven_rest_pattern_is_preserved():
     # No guessing: a hidden but *sounding* note without a known source
     # engraving workaround is not automatically turned into a rest.

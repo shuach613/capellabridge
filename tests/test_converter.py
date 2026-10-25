@@ -8,6 +8,7 @@ from lxml import etree as ET
 from fastapi.testclient import TestClient
 from app import converter
 from app.source_audit import audit_capx_against_musicxml
+from app.semantic_audit import SemanticIntegrityError
 
 
 def capx(xml):
@@ -42,6 +43,21 @@ def test_source_audit_catches_the_capx_boundary_before_musescore():
     audit = audit_capx_against_musicxml(capx(MINIMAL), xml)
     assert audit['status'] == 'strict'
     assert audit['source_events'] == audit['musicxml_events'] == report['notes']
+
+
+def test_source_audit_rejects_a_dropped_dynamic():
+    dynamic_source=MINIMAL.replace(
+        b'<heads><head pitch="C5"/></heads>',
+        b'<drawObjects><drawObj><text><font face="capella3"/>'
+        b'<content>f</content></text></drawObj></drawObjects>'
+        b'<heads><head pitch="C5"/></heads>',1)
+    raw=capx(dynamic_source)
+    xml,_=converter.serialize_musicxml(raw)
+    document=ET.fromstring(xml)
+    dynamic=document.xpath('.//direction[direction-type/dynamics]')[0]
+    dynamic.getparent().remove(dynamic)
+    with pytest.raises(SemanticIntegrityError,match='dynamics changed'):
+        audit_capx_against_musicxml(raw,ET.tostring(document))
 
 
 
@@ -117,9 +133,9 @@ def test_web_upload_without_login(monkeypatch,tmp_path):
     homepage=client.get('/')
     assert homepage.status_code==200
     assert homepage.headers['cache-control']=='no-store'
-    assert 'v1.7.6' in homepage.text
+    assert 'v1.7.7' in homepage.text
     assert 'start-over' in homepage.text
-    assert 'allow-review' in homepage.text
+    assert 'Every score produces an editable result' in homepage.text
     assert client.get('/api/info').status_code==200
     app_js=client.get('/static/app.js')
     assert app_js.status_code==200
@@ -137,7 +153,7 @@ def test_web_upload_without_login(monkeypatch,tmp_path):
     assert client.post('/api/account/password',json={'current_password':'x','new_password':'abcdefghijkl'}).status_code==404
 
 
-def test_background_batch_accepts_seven_files(monkeypatch,tmp_path):
+def test_background_batch_accepts_maximum_thirty_files(monkeypatch,tmp_path):
     from app import main
     monkeypatch.setattr(main,'JOBS',tmp_path/'jobs')
 
@@ -162,23 +178,49 @@ def test_background_batch_accepts_seven_files(monkeypatch,tmp_path):
     monkeypatch.setattr(main,'process_score',fake_process)
     data=capx(MINIMAL)
     files=[('files',(f'Score {index}.capx',data,'application/octet-stream'))
-           for index in range(7)]
+           for index in range(30)]
     with TestClient(main.app) as client:
         response=client.post('/api/convert?layout=balanced&background=1',files=files)
         assert response.status_code==202,response.text
         payload=response.json()
-        assert payload['total']==7
+        assert payload['total']==30
         status=None
-        for _ in range(50):
+        for _ in range(200):
             status=client.get(payload['status_url'])
             assert status.status_code==200,status.text
             if status.json()['state'] in ('completed','failed'):break
         result=status.json()
         assert result['state']=='completed',result
-        assert result['completed']==7
-        assert len(result['results'])==7
+        assert result['completed']==30
+        assert len(result['results'])==30
         assert all(item['ok'] for item in result['results'])
         assert client.get(result['batch_url']).status_code==200
+
+
+def test_structurally_uncertified_mscz_is_retained_for_manual_review(
+        monkeypatch,tmp_path):
+    from app import main
+    source=tmp_path/'source.musicxml'
+    source.write_text('<score-partwise version="4.0"/>',encoding='utf-8')
+    target=tmp_path/'result.mscz'
+
+    def fake_convert(_source,output):
+        with zipfile.ZipFile(output,'w') as archive:
+            archive.writestr(
+                'score.mscx',
+                '<museScore version="3.02"><Score><Staff id="1">'
+                '<Measure><voice><Chord><durationType>quarter</durationType>'
+                '</Chord></voice></Measure></Staff></Score></museScore>')
+
+    monkeypatch.setattr(main,'convert',fake_convert)
+    warnings=[]
+    report={}
+    status=main.save_validated_mscz(source,target,report,warnings)
+    assert status=='manual-review'
+    assert target.is_file()
+    assert report['verification']=='manual-review'
+    assert report['verification_diagnostics']
+    assert any('structural measure issue' in warning for warning in warnings)
 
 
 def test_only_top_staff_has_ending_brackets_and_measure_numbers():

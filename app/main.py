@@ -22,7 +22,7 @@ from .score_validation import audit_mscz, ScoreIntegrityError
 from .semantic_audit import audit_musicxml_against_mscz, SemanticIntegrityError
 from .source_audit import audit_capx_against_musicxml
 
-VERSION='1.7.6'
+VERSION='1.7.7'
 BASE=Path(os.environ.get('CAPELLABRIDGE_DATA','/data')).resolve()
 JOBS=BASE/'jobs'
 STATIC=Path(__file__).parent/'static'
@@ -147,47 +147,32 @@ def pdf_page_count(path: Path) -> int | None:
 
 
 def save_validated_mscz(source_xml: Path, final_mscz: Path,
-                        report: dict | None, warnings: list[str],
-                        allow_unverified: bool = False) -> None:
-    """Round-trip native score via MuseScore and verify all timed measures.
+                        report: dict | None, warnings: list[str]) -> str:
+    """Create a native score, returning ``verified`` or ``manual-review``.
 
-    MuseScore 3 can emit a readable MSCZ ZIP containing slightly incomplete
-    measures; MuseScore Studio 4 then flags those scores as corrupted. A
-    successful PDF export alone cannot verify score integrity.
+    Validation remains fail-closed for certification, but not for delivery.
+    If MuseScore produced a genuine MSCZ, keep it and expose every diagnostic
+    instead of deleting the user's only editable result.
     """
-    if report and report.get('unresolved_hidden_sounding_chords') and not allow_unverified:
-        locations = report.get('unresolved_hidden_sounding_locations', [])
-        detail = '; '.join(
-            f"{item['part']} measure {item['measure']} voice {item['voice']}"
-            for item in locations[:8]
-        )
-        if len(locations) > 8:
-            detail += f'; and {len(locations) - 8} more'
-        raise SemanticIntegrityError(
-            'Playback-ambiguous invisible pitched events remain: ' + detail
-        )
-    if report is not None:
-        report['verification'] = 'manual-review' if allow_unverified else 'strict'
     if report and report.get('unresolved_hidden_sounding_chords'):
         warnings.append(
             'Manual-review export: invisible pitched events remain ambiguous; '
             'verify playback before relying on this MSCZ.'
         )
 
-    def validate_round_trip(path: Path) -> None:
+    def validate_round_trip(path: Path) -> dict:
         # Production conversion is fail-closed: a tiny gap is not silently
         # padded unless a future source-aware ledger explicitly permits it.
-        warnings.extend(audit_mscz(path, repair=True, allow_repairs=False))
+        errors=[]
+        try:
+            warnings.extend(audit_mscz(path, repair=True, allow_repairs=False))
+        except ScoreIntegrityError as exc:
+            errors.append('Structural audit: ' + str(exc))
         try:
             semantic = audit_musicxml_against_mscz(source_xml, path)
         except SemanticIntegrityError as exc:
-            if not allow_unverified:
-                raise
-            warnings.append(
-                'Manual-review export: semantic audit could not certify this '
-                f'score: {str(exc)[:400]}'
-            )
-            semantic = {'status': 'unverified', 'error': str(exc)[:500]}
+            errors.append('Semantic audit: ' + str(exc))
+            semantic = {'status':'unverified','error':str(exc)[:500]}
         if report is not None:
             report['semantic_audit'] = semantic
         if semantic.get('ignored_grace_rests', 0):
@@ -200,22 +185,48 @@ def save_validated_mscz(source_xml: Path, final_mscz: Path,
                 'MuseScore added a silent trailing rounding rest of '
                 f"{semantic.get('source_tail_padding', '0')}; no playback time was added."
             )
+        if errors:
+            raise SemanticIntegrityError(' | '.join(errors))
+        return semantic
 
     convert(source_xml, final_mscz)
     prepare_print_ready(final_mscz, report)
-    validate_round_trip(final_mscz)
-    canonical = final_mscz.with_name(final_mscz.stem + '-canonical.mscz')
+    validation_errors=[]
     try:
-        convert(final_mscz, canonical)
-        prepare_print_ready(canonical, report)
-        validate_round_trip(canonical)
-        os.replace(canonical, final_mscz)
-    finally:
-        canonical.unlink(missing_ok=True)
-    audit_mscz(final_mscz, repair=False)
+        validate_round_trip(final_mscz)
+    except (ScoreIntegrityError, SemanticIntegrityError) as exc:
+        validation_errors.append(str(exc))
+    canonical = final_mscz.with_name(final_mscz.stem + '-canonical.mscz')
+    if not validation_errors:
+        try:
+            convert(final_mscz, canonical)
+            prepare_print_ready(canonical, report)
+            validate_round_trip(canonical)
+            os.replace(canonical, final_mscz)
+            audit_mscz(final_mscz, repair=False)
+        except (ConversionFailure, ScoreIntegrityError,
+                SemanticIntegrityError, zipfile.BadZipFile) as exc:
+            validation_errors.append(
+                'Canonical MuseScore round trip was not certified: ' + str(exc))
+        finally:
+            canonical.unlink(missing_ok=True)
+    source_unverified = bool(
+        report and report.get('source_audit', {}).get('status') == 'unverified')
+    verification = ('manual-review' if validation_errors or source_unverified or
+                    (report and report.get('unresolved_hidden_sounding_chords'))
+                    else 'verified')
+    if validation_errors:
+        warnings.extend(
+            'Manual-review export: ' + error[:500]
+            for error in validation_errors
+        )
+    if report is not None:
+        report['verification'] = verification
+        report['verification_diagnostics'] = validation_errors
+    return verification
 
 
-def process_score(name,ext,raw,work,layout,allow_unverified=False):
+def process_score(name,ext,raw,work,layout):
     stem=Path(name).stem
     prefix=safe_filename(stem)
     inp=work/name
@@ -229,8 +240,6 @@ def process_score(name,ext,raw,work,layout,allow_unverified=False):
         try:
             report['source_audit']=audit_capx_against_musicxml(raw, xml)
         except SemanticIntegrityError as exc:
-            if not allow_unverified:
-                raise
             report['source_audit']={'status':'unverified','error':str(exc)[:500]}
             warnings.append(
                 'Manual-review export: CAPX-to-MusicXML audit could not certify '
@@ -243,13 +252,17 @@ def process_score(name,ext,raw,work,layout,allow_unverified=False):
         report={'title':stem,'source_format':'cap','parts':[],'measures':None,'warnings':[],'layout':'musescore-import'}
         warnings.append('Legacy .cap uses MuseScore’s import engine, not the CAPX native parser. Review layout and voices.')
     mscz=work/(prefix+'.mscz')
-    save_validated_mscz(xml_path, mscz, report if ext=='.capx' else None,
-                        warnings, allow_unverified)
+    verification=save_validated_mscz(
+        xml_path, mscz, report if ext=='.capx' else None,
+        warnings)
     pdf=work/(prefix+'.pdf')
-    convert(mscz,pdf)
+    try:
+        convert(mscz,pdf)
+    except ConversionFailure as exc:
+        warnings.append(f'PDF export failed, but the MuseScore file was retained: {exc}')
     # Restore a readable layout if an exact Capella system arrangement
     # expands into far more pages than the source's system count warrants.
-    if ext=='.capx' and layout=='original':
+    if ext=='.capx' and layout=='original' and pdf.is_file():
         source_systems=report.get('source_systems',0)
         pages=pdf_page_count(pdf)
         reasonable_pages=max(4,(source_systems+1)//2+1)
@@ -259,29 +272,44 @@ def process_score(name,ext,raw,work,layout,allow_unverified=False):
             try:
                 balanced_report['source_audit']=audit_capx_against_musicxml(raw, xml)
             except SemanticIntegrityError as exc:
-                if not allow_unverified:
-                    raise
                 balanced_report['source_audit']={'status':'unverified','error':str(exc)[:500]}
                 warnings.append(
                     'Manual-review export: CAPX-to-MusicXML audit could not certify '
                     f'the balanced fallback: {str(exc)[:400]}'
                 )
-            save_validated_mscz(xml_path, mscz, balanced_report, warnings,
-                                allow_unverified)
-            convert(mscz,pdf)
+            verification=save_validated_mscz(
+                xml_path, mscz, balanced_report, warnings)
+            try:
+                convert(mscz,pdf)
+            except ConversionFailure as exc:
+                pdf.unlink(missing_ok=True)
+                warnings.append(
+                    f'Balanced PDF export failed, but the MuseScore file was retained: {exc}')
             report['layout']='balanced-fallback'
             warnings.append(
                 f'Original system breaks would produce {pages} pages; '
                 f'used a balanced print layout instead.'
             )
     png=work/(prefix+'-preview.png')
-    create_preview(pdf,png)
+    if pdf.is_file():
+        try:
+            create_preview(pdf,png)
+        except ConversionFailure as exc:
+            warnings.append(f'Preview creation failed: {exc}')
     # Verify the resulting MSCZ ZIP contains a genuine MuseScore score.
     with zipfile.ZipFile(mscz) as archive:
         if not any(x.endswith('.mscx') for x in archive.namelist()):
             raise ConversionFailure('MuseScore produced an invalid MSCZ file')
-    info={**report,'source_filename':name,'warnings':sorted(set(warnings)),'files':{
-        'mscz':mscz.name,'musicxml':xml_path.name,'pdf':pdf.name,'preview':png.name}}
+    files={'mscz':mscz.name,'musicxml':xml_path.name}
+    if pdf.is_file():files['pdf']=pdf.name
+    if png.is_file():files['preview']=png.name
+    report['verification']=verification
+    report.setdefault('warning_categories',{})['verification']=[
+        warning for warning in sorted(set(warnings))
+        if warning.startswith('Manual-review export:')
+    ]
+    info={**report,'source_filename':name,'warnings':sorted(set(warnings)),
+          'files':files}
     (work/(prefix+'-report.json')).write_text(json.dumps(info,ensure_ascii=False,indent=2),encoding='utf-8')
     info['files']['report']=prefix+'-report.json'
     # Never retain the original uploaded file once conversion is done.
@@ -289,7 +317,41 @@ def process_score(name,ext,raw,work,layout,allow_unverified=False):
     return info
 
 
-async def run_batch(job_id, incoming, layout, review):
+def retain_partial_mscz(work: Path, name: str, error: Exception) -> dict | None:
+    """Return a downloadable manual-review result after a late-stage error."""
+    mscz = next(work.glob('*.mscz'), None)
+    if mscz is None:
+        return None
+    try:
+        with zipfile.ZipFile(mscz) as archive:
+            if archive.testzip() is not None or not any(
+                    member.endswith('.mscx') for member in archive.namelist()):
+                return None
+    except zipfile.BadZipFile:
+        return None
+    prefix=safe_filename(Path(name).stem)
+    files={'mscz':mscz.name}
+    for key,suffix in (('musicxml','.musicxml'),('pdf','.pdf'),
+                       ('preview','-preview.png')):
+        candidate=work/(prefix+suffix)
+        if candidate.is_file():files[key]=candidate.name
+    diagnostic=(
+        'Manual-review export: a later conversion stage failed after MuseScore '
+        f'created the editable score: {str(error)[:500]}')
+    report={
+        'source_filename':name,'title':Path(name).stem,'parts':[],
+        'measures':None,'layout':'unknown','verification':'manual-review',
+        'verification_diagnostics':[str(error)[:500]],'warnings':[diagnostic],
+        'files':files,
+    }
+    report_path=work/(prefix+'-report.json')
+    report_path.write_text(json.dumps(report,ensure_ascii=False,indent=2),
+                           encoding='utf-8')
+    report['files']['report']=report_path.name
+    return report
+
+
+async def run_batch(job_id, incoming, layout):
     """Convert a batch outside the browser's long-running upload request."""
     folder=JOBS/job_id
     total=len(incoming)
@@ -306,7 +368,7 @@ async def run_batch(job_id, incoming, layout, review):
                 try:
                     result=await asyncio.to_thread(
                         process_score, name, ext, input_path.read_bytes(),
-                        out, layout, review
+                        out, layout
                     )
                     result['downloads']={
                         k:f'/api/files/{job_id}/{index+1:02d}/{quote(v)}'
@@ -315,16 +377,32 @@ async def run_batch(job_id, incoming, layout, review):
                     results.append({'ok':True,**result})
                 except (CapellaError,ConversionFailure,ScoreIntegrityError,
                         ValueError,zipfile.BadZipFile) as exc:
-                    shutil.rmtree(out,ignore_errors=True)
-                    results.append({'ok':False,'source_filename':name,
-                                    'stage':'conversion',
-                                    'error':str(exc)[:500]})
+                    partial=retain_partial_mscz(out,name,exc)
+                    if partial:
+                        partial['downloads']={
+                            k:f'/api/files/{job_id}/{index+1:02d}/{quote(v)}'
+                            for k,v in partial['files'].items()
+                        }
+                        results.append({'ok':True,**partial})
+                    else:
+                        shutil.rmtree(out,ignore_errors=True)
+                        results.append({'ok':False,'source_filename':name,
+                                        'stage':'conversion',
+                                        'error':str(exc)[:500]})
                 except Exception as exc:
-                    shutil.rmtree(out,ignore_errors=True)
-                    results.append({'ok':False,'source_filename':name,
-                                    'stage':'internal',
-                                    'error':'Internal conversion error. Check server logs.',
-                                    'detail':str(exc)[:200]})
+                    partial=retain_partial_mscz(out,name,exc)
+                    if partial:
+                        partial['downloads']={
+                            k:f'/api/files/{job_id}/{index+1:02d}/{quote(v)}'
+                            for k,v in partial['files'].items()
+                        }
+                        results.append({'ok':True,**partial})
+                    else:
+                        shutil.rmtree(out,ignore_errors=True)
+                        results.append({'ok':False,'source_filename':name,
+                                        'stage':'internal',
+                                        'error':'Internal conversion error. Check server logs.',
+                                        'detail':str(exc)[:200]})
                 finally:
                     input_path.unlink(missing_ok=True)
                 write_job_status(folder, {
@@ -374,7 +452,7 @@ def retain_background_task(task):
 
 @app.post('/api/convert')
 async def upload(files: Annotated[list[UploadFile],File(...)],layout: str='balanced',
-                 review: bool = False, background: bool = False):
+                 background: bool = False):
     if layout not in ('balanced','compact','original'):
         raise HTTPException(400,'Unknown layout setting')
     if not 1<=len(files)<=MAX_BATCH:
@@ -402,14 +480,14 @@ async def upload(files: Annotated[list[UploadFile],File(...)],layout: str='balan
         'completed':0, 'results':[], 'batch_url':None,
     })
     if background:
-        task=asyncio.create_task(run_batch(job_id,input_entries,layout,review))
+        task=asyncio.create_task(run_batch(job_id,input_entries,layout))
         retain_background_task(task)
         return JSONResponse(status_code=202,content={
             'job_id':job_id, 'state':'queued', 'total':len(input_entries),
             'completed':0, 'results':[], 'batch_url':None,
             'status_url':f'/api/jobs/{job_id}',
         })
-    await run_batch(job_id,input_entries,layout,review)
+    await run_batch(job_id,input_entries,layout)
     status=read_job_status(job_id)
     if not any(result['ok'] for result in status['results']):
         shutil.rmtree(folder,ignore_errors=True)

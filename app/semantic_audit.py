@@ -55,9 +55,13 @@ class SemanticSnapshot:
     repeats: set[tuple[int, str]]
     ignored_grace_rests: int = 0
     volta_starts: set[tuple[int, str]] = field(default_factory=set)
-    hairpins: set[tuple[int, int, str]] = field(default_factory=set)
+    hairpins: set[tuple[int, int, int, Fraction, str]] = field(default_factory=set)
     tuplets: set[tuple[int, int, str]] = field(default_factory=set)
-    tempos: set[tuple[int, str]] = field(default_factory=set)
+    tempos: set[tuple[int, int, int, Fraction, Fraction]] = field(default_factory=set)
+    dynamics: set[tuple[int, int, int, Fraction, str]] = field(default_factory=set)
+    time_signatures: set[tuple[int, int, int, int]] = field(default_factory=set)
+    key_signatures: set[tuple[int, int, int]] = field(default_factory=set)
+    navigation: set[tuple[int, int, int, Fraction, str, str]] = field(default_factory=set)
 
 
 SOURCE_MARKS = {
@@ -96,8 +100,10 @@ NATIVE_MARKS = {
     "ornamentTrill": "trill",
     "ornamentTurn": "turn",
     "ornamentTurnInverted": "inverted-turn",
-    "ornamentMordent": "mordent",
-    "ornamentMordentInverted": "inverted-mordent",
+    "ornamentMordent": "inverted-mordent",
+    # MuseScore 3 uses this counter-intuitive native name for MusicXML's
+    # ordinary <mordent>. Treating it as inverted rejected correct imports.
+    "ornamentMordentInverted": "mordent",
     "ornamentShortMordent": "mordent",
     "ornamentPrall": "inverted-mordent",
 }
@@ -164,9 +170,13 @@ def _source_snapshot(root) -> SemanticSnapshot:
     breaths: set[tuple[int, int, int, Fraction]] = set()
     repeats: set[tuple[int, str]] = set()
     volta_starts: set[tuple[int, str]] = set()
-    hairpins: set[tuple[int, int, str]] = set()
+    hairpins: set[tuple[int, int, int, Fraction, str]] = set()
     tuplets: set[tuple[int, int, str]] = set()
-    tempos: set[tuple[int, str]] = set()
+    tempos: set[tuple[int, int, int, Fraction, Fraction]] = set()
+    dynamics: set[tuple[int, int, int, Fraction, str]] = set()
+    time_signatures: dict[tuple[int, int], tuple[int, int, int, int]] = {}
+    key_signatures: dict[tuple[int, int], tuple[int, int, int]] = {}
+    navigation: set[tuple[int, int, int, Fraction, str, str]] = set()
     ignored_grace_rests = 0
     for part_index, part in enumerate(root.findall("part"), 1):
         divisions = 1
@@ -180,6 +190,16 @@ def _source_snapshot(root) -> SemanticSnapshot:
                     value = item.findtext("divisions")
                     if value:
                         divisions = int(value)
+                    key = item.findtext("key/fifths")
+                    if key is not None:
+                        key_signatures[(part_index, measure_index)] = (
+                            part_index, measure_index, int(key))
+                    beats = item.findtext("time/beats")
+                    beat_type = item.findtext("time/beat-type")
+                    if beats and beat_type:
+                        time_signatures[(part_index, measure_index)] = (
+                            part_index, measure_index,
+                            int(beats), int(beat_type))
                     continue
                 if name in ("backup", "forward"):
                     duration = _fraction(item.findtext("duration", "0"),
@@ -201,16 +221,44 @@ def _source_snapshot(root) -> SemanticSnapshot:
                     continue
                 if name == "direction":
                     voice = int(item.findtext("voice", "1"))
+                    offset = (_fraction(item.findtext("offset", "0"),
+                                        "MusicXML direction offset") /
+                              (divisions * 4))
+                    direction_onset = cursor + offset
                     for sound in item.findall("sound"):
                         if sound.get("tempo"):
-                            tempos.add((measure_index, sound.get("tempo")))
+                            tempos.add((part_index, measure_index, voice,
+                                        direction_onset,
+                                        _fraction(sound.get("tempo"), "tempo")))
+                        for attribute in ("dacapo", "dalsegno", "tocoda",
+                                          "coda", "segno", "fine"):
+                            if sound.get(attribute):
+                                navigation.add((part_index, measure_index, voice,
+                                                direction_onset, attribute,
+                                                sound.get(attribute)))
+                    for dynamic in item.findall("direction-type/dynamics/*"):
+                        dynamics.add((part_index, measure_index, voice,
+                                      direction_onset,
+                                      ET.QName(dynamic).localname))
                     for wedge in item.findall("direction-type/wedge"):
                         # Native MuseScore stores one HairPin spanner per
                         # wedge, with the endpoint represented by next/prev;
                         # count only the MusicXML start marker here.
                         if wedge.get("type") != "stop":
-                            hairpins.add((measure_index, voice,
+                            hairpins.add((part_index, measure_index, voice,
+                                          direction_onset,
                                           wedge.get("type", "")))
+                    continue
+                if name == "sound":
+                    if item.get("tempo"):
+                        tempos.add((part_index, measure_index, 1, cursor,
+                                    _fraction(item.get("tempo"), "tempo")))
+                    for attribute in ("dacapo", "dalsegno", "tocoda",
+                                      "coda", "segno", "fine"):
+                        if item.get(attribute):
+                            navigation.add((part_index, measure_index, 1,
+                                            cursor, attribute,
+                                            item.get(attribute)))
                     continue
                 if name != "note":
                     continue
@@ -268,7 +316,8 @@ def _source_snapshot(root) -> SemanticSnapshot:
     return SemanticSnapshot(
         sorted(events.values(), key=lambda e: (e.part, e.measure, e.voice, e.onset)),
         breaths, repeats, ignored_grace_rests, volta_starts, hairpins,
-        tuplets, tempos,
+        tuplets, tempos, dynamics, set(time_signatures.values()),
+        set(key_signatures.values()), navigation,
     )
 
 
@@ -320,9 +369,13 @@ def _native_snapshot(root) -> SemanticSnapshot:
     breaths: set[tuple[int, int, int, Fraction]] = set()
     repeats: set[tuple[int, str]] = set()
     volta_starts: set[tuple[int, str]] = set()
-    hairpins: set[tuple[int, int, str]] = set()
+    hairpins: set[tuple[int, int, int, Fraction, str]] = set()
     tuplets: set[tuple[int, int, str]] = set()
-    tempos: set[tuple[int, str]] = set()
+    tempos: set[tuple[int, int, int, Fraction, Fraction]] = set()
+    dynamics: set[tuple[int, int, int, Fraction, str]] = set()
+    time_signatures: set[tuple[int, int, int, int]] = set()
+    key_signatures: set[tuple[int, int, int]] = set()
+    navigation: set[tuple[int, int, int, Fraction, str, str]] = set()
     for part_index, staff in enumerate(score.findall("Staff"), 1):
         staff_id = staff.get("id", str(part_index))
         transposition = transpose.get(staff_id, 0)
@@ -333,10 +386,18 @@ def _native_snapshot(root) -> SemanticSnapshot:
             for voice in measure.findall("voice"):
                 for signature in voice.findall("TimeSig"):
                     try:
-                        meter = Fraction(int(signature.findtext("sigN", "4")),
-                                         int(signature.findtext("sigD", "4")))
+                        numerator = int(signature.findtext("sigN", "4"))
+                        denominator = int(signature.findtext("sigD", "4"))
+                        meter = Fraction(numerator, denominator)
+                        time_signatures.add((part_index, measure_index,
+                                             numerator, denominator))
                     except (ValueError, ZeroDivisionError) as exc:
                         raise SemanticIntegrityError("Invalid native time signature") from exc
+                for signature in voice.findall("KeySig"):
+                    value = (signature.findtext("concertKey") or
+                             signature.findtext("accidental"))
+                    if value is not None:
+                        key_signatures.add((part_index, measure_index, int(value)))
             if measure.get("len"):
                 measure_meter = _fraction(measure.get("len"), "native measure length")
             else:
@@ -357,17 +418,9 @@ def _native_snapshot(root) -> SemanticSnapshot:
                     if volta is not None and volta.findtext("endings"):
                         volta_starts.add((measure_index,
                                           volta.findtext("endings", "")))
-                for spanner in voice.findall('Spanner[@type="HairPin"]'):
-                    hairpin = spanner.find("HairPin")
-                    if hairpin is not None:
-                        subtype = hairpin.findtext("subtype", "")
-                        hairpins.add((measure_index, voice_index, subtype))
-                for tempo in voice.findall("Tempo"):
-                    value = tempo.findtext("tempo") or tempo.get("tempo")
-                    if value:
-                        tempos.add((measure_index, value))
                 cursor = Fraction(0)
                 tuplet_stack: list[Fraction] = []
+                pending_marks: set[str] = set()
                 for item in voice:
                     if item.tag == "Tuplet":
                         tuplets.add((measure_index, voice_index, "start"))
@@ -386,6 +439,45 @@ def _native_snapshot(root) -> SemanticSnapshot:
                         continue
                     if item.tag == "Breath":
                         breaths.add((part_index, measure_index, voice_index, cursor))
+                        continue
+                    if item.tag == "Fermata":
+                        subtype = item.findtext("subtype", "fermata")
+                        pending_marks.add(NATIVE_MARKS.get(subtype, "fermata"))
+                        continue
+                    if item.tag == "Dynamic":
+                        subtype = item.findtext("subtype")
+                        if subtype:
+                            dynamics.add((part_index, measure_index, voice_index,
+                                          cursor, subtype))
+                        continue
+                    if item.tag == "Tempo":
+                        value = item.findtext("tempo") or item.get("tempo")
+                        if value:
+                            # MSCX stores quarter notes per second.
+                            tempos.add((part_index, measure_index, voice_index,
+                                        cursor, _fraction(value, "native tempo") * 60))
+                        continue
+                    if item.tag == "Spanner" and item.get("type") == "HairPin":
+                        hairpin = item.find("HairPin")
+                        if hairpin is not None:
+                            subtype = hairpin.findtext("subtype", "")
+                            kind = {"0": "crescendo", "1": "diminuendo"}.get(
+                                subtype, subtype)
+                            hairpins.add((part_index, measure_index, voice_index,
+                                          cursor, kind))
+                        continue
+                    if item.tag == "Marker":
+                        label = item.findtext("label") or item.findtext("text", "")
+                        marker_type = item.findtext("subtype", "marker")
+                        navigation.add((part_index, measure_index, voice_index,
+                                        cursor, marker_type, label))
+                        continue
+                    if item.tag == "Jump":
+                        value = "|".join((item.findtext("jumpTo", ""),
+                                          item.findtext("playUntil", ""),
+                                          item.findtext("continueAt", "")))
+                        navigation.add((part_index, measure_index, voice_index,
+                                        cursor, "jump", value))
                         continue
                     if item.tag not in ("Chord", "Rest"):
                         continue
@@ -426,16 +518,20 @@ def _native_snapshot(root) -> SemanticSnapshot:
                             slurs.add("start")
                         if spanner.find("prev") is not None:
                             slurs.add("stop")
+                    marks = _native_marks(item)
+                    marks.update(pending_marks)
+                    pending_marks.clear()
                     events.append(SemanticEvent(
                         part_index, measure_index, voice_index, cursor,
                         "chord" if item.tag == "Chord" else "rest", duration,
                         tuple(sorted(pitches)), hidden_chord, grace,
-                        _native_marks(item), ties, slurs,
+                        marks, ties, slurs,
                     ))
                     cursor += duration
     return SemanticSnapshot(
         sorted(events, key=lambda e: (e.part, e.measure, e.voice, e.onset)),
         breaths, repeats, 0, volta_starts, hairpins, tuplets, tempos,
+        dynamics, time_signatures, key_signatures, navigation,
     )
 
 
@@ -559,18 +655,46 @@ def audit_musicxml_against_mscz(source_xml: Path, mscz: Path) -> dict:
         raise SemanticIntegrityError(
             f"Repeat markers changed: source={sorted(source.repeats)} "
             f"native={sorted(native.repeats)}")
-    if source.breaths and len(source.breaths) != len(native.breaths):
+    if source.breaths != native.breaths:
         raise SemanticIntegrityError(
-            f"Breath-mark count changed: source {len(source.breaths)}, "
-            f"native {len(native.breaths)}")
+            f"Breath marks changed: source={sorted(source.breaths)} "
+            f"native={sorted(native.breaths)}")
     if source.volta_starts != native.volta_starts:
         raise SemanticIntegrityError(
             f"Volta starts changed: source={sorted(source.volta_starts)} "
             f"native={sorted(native.volta_starts)}")
-    if source.hairpins and len(source.hairpins) != len(native.hairpins):
+    if source.hairpins != native.hairpins:
         raise SemanticIntegrityError(
-            f"Hairpin count changed: source {len(source.hairpins)}, "
-            f"native {len(native.hairpins)}")
+            f"Hairpins changed: source={sorted(source.hairpins)} "
+            f"native={sorted(native.hairpins)}")
+    for label, left, right in (
+        ("Dynamics", source.dynamics, native.dynamics),
+        ("Tempos", source.tempos, native.tempos),
+        ("Time signatures", source.time_signatures, native.time_signatures),
+        # MuseScore omits an explicit initial C-major KeySig because zero is
+        # its native default. Later changes back to zero remain significant.
+        ("Key signatures",
+         {item for item in source.key_signatures
+          if not (item[1] == 1 and item[2] == 0)},
+         native.key_signatures),
+    ):
+        if left != right:
+            raise SemanticIntegrityError(
+                f"{label} changed: source={sorted(left)} native={sorted(right)}")
+    source_navigation = {
+        (part, measure, voice, onset,
+         "marker" if kind in ("segno", "coda", "fine") else "jump")
+        for part, measure, voice, onset, kind, _ in source.navigation
+    }
+    native_navigation = {
+        (part, measure, voice, onset,
+         "jump" if kind == "jump" else "marker")
+        for part, measure, voice, onset, kind, _ in native.navigation
+    }
+    if source_navigation != native_navigation:
+        raise SemanticIntegrityError(
+            "Navigation markers changed: "
+            f"source={sorted(source_navigation)} native={sorted(native_navigation)}")
     # MuseScore is allowed to coalesce adjacent tuplets into one native
     # container. Event durations and the source MusicXML tuplet markers still
     # protect playback; boundary counts are reported for review but are not a
@@ -590,6 +714,14 @@ def audit_musicxml_against_mscz(source_xml: Path, mscz: Path) -> dict:
         "native_tuplet_boundaries": len(native.tuplets),
         "source_tempos": len(source.tempos),
         "native_tempos": len(native.tempos),
+        "source_dynamics": len(source.dynamics),
+        "native_dynamics": len(native.dynamics),
+        "source_time_signatures": len(source.time_signatures),
+        "native_time_signatures": len(native.time_signatures),
+        "source_key_signatures": len(source.key_signatures),
+        "native_key_signatures": len(native.key_signatures),
+        "source_navigation": len(source.navigation),
+        "native_navigation": len(native.navigation),
         "ignored_grace_rests": source.ignored_grace_rests,
         "source_tail_padding": str(tail_padding),
     }

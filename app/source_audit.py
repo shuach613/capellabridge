@@ -8,6 +8,7 @@ the generated MusicXML to decide what the source meant.
 """
 from __future__ import annotations
 
+from fractions import Fraction
 from pathlib import Path
 
 from lxml import etree as ET
@@ -66,7 +67,8 @@ def _direct_marks(node, glyphs: set[str]) -> set[str]:
 def _direct_pitches(event, state, override, invisible):
     if event.kind != "chord" or override.get("print_as_rest"):
         return ()
-    heads = converter.children(converter.child(event.node, "heads"), "head")
+    source_event = override.get("pitch_source", event)
+    heads = converter.children(converter.child(source_event.node, "heads"), "head")
     values = []
     for head in heads:
         if invisible and head.get("silent") == "true":
@@ -140,7 +142,8 @@ def _direct_snapshot(root):
                 if "visible" in override:
                     invisible = not override["visible"]
                 pitches = _direct_pitches(event, state, override, invisible)
-                heads = converter.children(converter.child(event.node, "heads"), "head")
+                source_event = override.get("pitch_source", event)
+                heads = converter.children(converter.child(source_event.node, "heads"), "head")
                 is_rest = event.kind == "rest" or bool(override.get("print_as_rest"))
                 if event.kind == "chord" and heads and invisible and not pitches:
                     is_rest = True
@@ -207,13 +210,66 @@ def _direct_snapshot(root):
                         slurs if onset == segment_start - measure_start else set(),
                     ))
                     onset += duration
-    return events, rest_overrides
+    # The converter intentionally materializes every silent voice gap as a
+    # hidden rest. Include those source-owned timing events in this ledger;
+    # MusicXML <forward> elements are not reliable across MuseScore import.
+    for part_index, part in enumerate(parts, 1):
+        for measure_index, (measure_start, measure_stop) in enumerate(
+                zip(boundaries, boundaries[1:]), 1):
+            source_voices = {
+                item.voice for item in part.events
+                if (measure_start <= item.time < measure_stop or
+                    (item.kind in ("chord", "rest") and
+                     item.time < measure_start < item.time + item.dur))
+            } or {1}
+            measure_duration = measure_stop - measure_start
+            for voice in source_voices:
+                timed = sorted((item for item in events
+                                if item.part == part_index and
+                                item.measure == measure_index and
+                                item.voice == voice and item.duration > 0),
+                               key=lambda item: item.onset)
+                cursor = Fraction(0)
+                additions = []
+                for item in timed:
+                    if item.onset > cursor:
+                        additions.append(SemanticEvent(
+                            part_index, measure_index, voice, cursor,
+                            "rest", item.onset - cursor, (), True))
+                    cursor = max(cursor, item.onset + item.duration)
+                if cursor < measure_duration:
+                    additions.append(SemanticEvent(
+                        part_index, measure_index, voice, cursor,
+                        "rest", measure_duration - cursor, (), True))
+                events.extend(additions)
+    controls = {"dynamics": set(), "hairpins": set()}
+    for part_index, part in enumerate(parts, 1):
+        ordered = sorted(part.events, key=lambda item: (item.time, item.voice))
+        wedge_starts, _ = converter.make_wedge_links(ordered)
+        for event in ordered:
+            if event.kind not in ("chord", "rest") or not (0 <= event.time < end):
+                continue
+            measure_index = next(
+                (index for index in range(len(boundaries) - 1)
+                 if boundaries[index] <= event.time < boundaries[index + 1]),
+                len(boundaries) - 2)
+            onset = event.time - boundaries[measure_index]
+            for glyph in converter.capella_glyphs(event):
+                dynamic = converter.CAPELLA_DYNAMICS.get(glyph)
+                if dynamic:
+                    controls["dynamics"].add((
+                        part_index, measure_index + 1, event.voice,
+                        onset, dynamic))
+            for _, kind, _ in wedge_starts.get(id(event), ()):
+                controls["hairpins"].add((
+                    part_index, measure_index + 1, event.voice, onset, kind))
+    return events, rest_overrides, controls
 
 
 def audit_capx_against_musicxml(raw: bytes, musicxml: bytes | Path) -> dict:
     """Fail if the generated MusicXML changes CAPX events or playback marks."""
     root = converter.read_capx(raw)
-    expected_events, overrides = _direct_snapshot(root)
+    expected_events, overrides, controls = _direct_snapshot(root)
     try:
         xml_root = ET.fromstring(
             musicxml if isinstance(musicxml, bytes)
@@ -242,6 +298,14 @@ def audit_capx_against_musicxml(raw: bytes, musicxml: bytes | Path) -> dict:
             f"source={expected_fingerprints[first] if first < len(expected_fingerprints) else None} "
             f"musicxml={actual_fingerprints[first] if first < len(actual_fingerprints) else None}"
         )
+    for label in ("dynamics", "hairpins"):
+        expected_controls = controls[label]
+        actual_controls = getattr(actual, label)
+        if expected_controls != actual_controls:
+            raise SemanticIntegrityError(
+                f"CAPX-to-MusicXML {label} changed: "
+                f"source={sorted(expected_controls)} "
+                f"musicxml={sorted(actual_controls)}")
     return {
         "status": "strict",
         "source_events": len(expected.events),
@@ -251,4 +315,12 @@ def audit_capx_against_musicxml(raw: bytes, musicxml: bytes | Path) -> dict:
         "musicxml_fermata_events": sum("fermata" in e.marks for e in actual_events),
         "source_hidden_pitched_events": sum(e.hidden and bool(e.pitches) for e in expected.events),
         "source_hidden_rest_events": sum(e.hidden and e.kind == "rest" for e in expected.events),
+        "source_dynamics": len(controls["dynamics"]),
+        "musicxml_dynamics": len(actual.dynamics),
+        "source_hairpins": len(controls["hairpins"]),
+        "musicxml_hairpins": len(actual.hairpins),
+        "transformation_counts": dict(converter.collections.Counter(
+            override.get("rule", "legacy-rest-normalization")
+            for override in overrides.values()
+        )),
     }

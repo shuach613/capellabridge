@@ -884,6 +884,79 @@ def note_type_for_duration(duration):
     return None
 
 
+def notation_for_duration(duration):
+    """Return an exact written value and optional tuplet ratio.
+
+    MusicXML's ``duration`` is exact, but MuseScore also needs a coherent
+    written ``type``.  Without one it guesses, and can round fragments such
+    as 7/96 to 3/32.  Prefer an ordinary/dotted value; otherwise find a
+    compact standard tuplet representation whose performed duration is
+    exactly ``duration``.
+    """
+    ordinary = note_type_for_duration(duration)
+    if ordinary:
+        return ordinary[0], ordinary[1], None
+    ratios = (
+        (2, 3), (3, 2), (4, 5), (4, 6), (4, 7), (4, 9),
+        (8, 9), (8, 10), (8, 11), (8, 12), (8, 13), (8, 15),
+    )
+    written_values = []
+    for unit, name in DURATION_TYPES.items():
+        for dots in range(5):
+            written = unit * sum(
+                (Fraction(1, 2 ** power) for power in range(dots + 1)),
+                Fraction(0),
+            )
+            written_values.append((dots, -written, name, written))
+    for normal, actual in ratios:
+        for dots, _, name, written in sorted(written_values):
+            if written * Fraction(normal, actual) == duration:
+                return name, dots, (actual, normal)
+    # CapXML permits uncommon prime tuplets. Keep a bounded exact fallback
+    # rather than dropping the type or rounding the performed duration.
+    candidates=[]
+    for dots, _, name, written in written_values:
+        ratio=duration/written
+        if (Fraction(1, 8) <= ratio <= 8 and
+                ratio.numerator <= 128 and ratio.denominator <= 128):
+            candidates.append((abs(float(ratio)-1), ratio.denominator,
+                               ratio.numerator, dots, name, ratio))
+    if candidates:
+        _, _, _, dots, name, ratio=min(candidates)
+        return name, dots, (ratio.denominator, ratio.numerator)
+    return None
+
+
+def add_exact_duration_notation(note, duration):
+    """Attach a type/dots/time-modification that exactly means duration."""
+    notation = notation_for_duration(duration)
+    if notation is None:
+        raise CapellaError(
+            f'Cannot express rhythmic duration {duration} without rounding.'
+        )
+    name, dots, ratio = notation
+    sub(note, 'type', name)
+    for _ in range(dots):
+        sub(note, 'dot')
+    if ratio:
+        actual, normal = ratio
+        modified = sub(note, 'time-modification')
+        sub(modified, 'actual-notes', actual)
+        sub(modified, 'normal-notes', normal)
+
+
+def emit_hidden_rest(measure, duration, voice, divisions):
+    """Encode a silent voice gap as an explicit, exact hidden rest."""
+    if duration <= 0:
+        return 0
+    note = sub(measure, 'note', print_object='no')
+    sub(note, 'rest')
+    sub(note, 'duration', to_div(duration, divisions))
+    sub(note, 'voice', voice)
+    add_exact_duration_notation(note, duration)
+    return 1
+
+
 def rest_duration_parts(duration):
     """Split a duration into two representable rests when possible."""
     # Prefer simple undotted values. This keeps a 2/4 rest as quarter +
@@ -914,15 +987,27 @@ def split_multimeasure_rest(measure, duration, divisions):
         replacement.find('duration').text = str(to_div(part, divisions))
         for dot in replacement.findall('dot'):
             replacement.remove(dot)
+        for modified in replacement.findall('time-modification'):
+            replacement.remove(modified)
         type_node = replacement.find('type')
         if type_node is None:
             type_node = ET.Element('type')
             voice = replacement.find('voice')
             replacement.insert(list(replacement).index(voice) + 1, type_node)
-        note_name, dot_count = note_type_for_duration(part)
-        type_node.text = note_name
-        for _ in range(dot_count):
-            replacement.append(ET.Element('dot'))
+        notation=notation_for_duration(part)
+        if notation is None:
+            raise CapellaError(f'Cannot express rest duration {part} exactly.')
+        note_name,dot_count,ratio=notation
+        type_node.text=note_name
+        type_index=list(replacement).index(type_node)
+        for offset in range(dot_count):
+            replacement.insert(type_index+1+offset,ET.Element('dot'))
+        if ratio:
+            actual,normal=ratio
+            modified=ET.Element('time-modification')
+            sub(modified,'actual-notes',actual)
+            sub(modified,'normal-notes',normal)
+            replacement.insert(type_index+1+dot_count,modified)
         replacements.append(replacement)
     measure.remove(note)
     for offset, replacement in enumerate(replacements):
@@ -1130,6 +1215,49 @@ def shifted_tied_rest_pairs(parts):
     their source semantics. Preserve source accents at the note onset.
     """
     overrides={}
+    # A three-object variant stores a hidden tie-start anchor, the printed
+    # note shifted back onto that anchor, and an L rest glyph on the following
+    # object. Its musical sequence is note + rest + note. Move the printed
+    # pitch to the first onset, make the shifted object's time a real rest,
+    # and keep the third note while suppressing only its helper glyph.
+    for part in parts:
+        voices=collections.defaultdict(list)
+        for event in sorted(part.events,key=lambda e:(e.time,e.voice)):
+            if event.kind=='chord':voices[event.voice].append(event)
+        for chords in voices.values():
+            for first,second,third in zip(chords,chords[1:],chords[2:]):
+                if (first.time+first.dur!=second.time or
+                        second.time+second.dur!=third.time or
+                        first.dur!=second.dur or second.dur!=third.dur):
+                    continue
+                d1=child(first.node,'display');d2=child(second.node,'display')
+                if (d1 is None or d2 is None or
+                        d1.get('invisible')!='true' or
+                        float(d2.get('xShift','0'))>=0 or
+                        'L' not in capella_glyphs(third) or
+                        'L' in capella_glyphs(second)):
+                    continue
+                heads1=children(child(first.node,'heads'),'head')
+                heads2=children(child(second.node,'heads'),'head')
+                if (not heads1 or not heads2 or
+                        not any(child(h,'tie') is not None and
+                                child(h,'tie').get('begin')=='true'
+                                for h in heads1) or
+                        not any(child(h,'tie') is not None and
+                                child(h,'tie').get('end')=='true'
+                                for h in heads2)):
+                    continue
+                overrides[id(first)]={
+                    'visible':True,'replace_source_tie':True,
+                    'pitch_source':second,'rule':'shifted-tie-note-rest-note',
+                    'extra_articulations':children(second.node,'articulation')}
+                overrides[id(second)]={
+                    'print_as_rest':True,'visible':True,
+                    'replace_source_tie':True,
+                    'rule':'shifted-tie-note-rest-note'}
+                overrides[id(third)]={
+                    'suppress_glyph_directions':True,
+                    'rule':'shifted-tie-note-rest-note'}
     for part in parts:
         voices=collections.defaultdict(list)
         for event in sorted(part.events,key=lambda e:(e.time,e.voice)):
@@ -1137,6 +1265,8 @@ def shifted_tied_rest_pairs(parts):
                 voices[event.voice].append(event)
         for chords in voices.values():
             for first,second in zip(chords,chords[1:]):
+                if id(first) in overrides or id(second) in overrides:
+                    continue
                 if first.time+first.dur != second.time or first.dur!=second.dur:
                     continue
                 d1=child(first.node,'display')
@@ -1148,21 +1278,22 @@ def shifted_tied_rest_pairs(parts):
                     continue
                 heads1=children(child(first.node,'heads'),'head')
                 heads2=children(child(second.node,'heads'),'head')
-                if len(heads1)!=1 or len(heads2)!=1:
+                if not heads1 or not heads2:
                     continue
-                h1,h2=heads1[0],heads2[0]
-                if h1.get('pitch')!=h2.get('pitch'):
-                    continue
-                if (child(h1,'tie') is None or child(h2,'tie') is None
-                        or child(h1,'tie').get('begin')!='true'
-                        or child(h2,'tie').get('end')!='true'):
+                if (not any(child(h,'tie') is not None and
+                            child(h,'tie').get('begin')=='true' for h in heads1)
+                        or not any(child(h,'tie') is not None and
+                                   child(h,'tie').get('end')=='true' for h in heads2)):
                     continue
                 if 'L' not in capella_glyphs(second):
                     continue
                 overrides[id(first)]={'visible':True,'replace_source_tie':True,
+                    'pitch_source':second,
+                    'rule':'shifted-tie-note-rest',
                     'extra_articulations':children(second.node,'articulation')}
                 overrides[id(second)]={'print_as_rest':True,
-                    'replace_source_tie':True}
+                    'replace_source_tie':True,
+                    'rule':'shifted-tie-note-rest'}
     # Another legacy construction places a real graphical rest over an
     # invisible, *silent* chord to achieve custom beaming. The hidden pitch
     # was never musical content. Replace the complete object with a timed
@@ -1174,7 +1305,7 @@ def shifted_tied_rest_pairs(parts):
             display=child(event.node,'display')
             heads=children(child(event.node,'heads'),'head')
             if (display is None or display.get('invisible')!='true'
-                    or not heads or not all(h.get('silent')=='true' for h in heads)):
+                    or not heads):
                 continue
             rest_glyphs=set(capella_glyphs(event)).intersection({'L','M'})
             d=child(event.node,'duration')
@@ -1187,7 +1318,8 @@ def shifted_tied_rest_pairs(parts):
                        (glyph=='M' and d.get('base')=='1/16')
                        for glyph in rest_glyphs):
                 continue
-            overrides[id(event)]={'print_as_rest':True,'visible':True}
+            overrides[id(event)]={'print_as_rest':True,'visible':True,
+                                  'rule':'attached-rest-glyph'}
     return overrides
 
 
@@ -1195,7 +1327,10 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
     linked_id=id(link_event) if link_event is not None else id(event)
-    heads = (children(child(ob,'heads'),'head') if event.kind=='chord'
+    pitch_ob = (display_override.get('pitch_source').node
+                if display_override and display_override.get('pitch_source')
+                else ob)
+    heads = (children(child(pitch_ob,'heads'),'head') if event.kind=='chord'
              and not (display_override and display_override.get('print_as_rest'))
              else [None])
     dnode=child(ob,'duration')
@@ -1304,12 +1439,9 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             if split_before or split_after or is_multi_measure_rest:
                 # Rhythmic note values can change at a barline; a 3/8
                 # chord spanning 1/8+1/4 must be written as those two types.
-                fragment_type = note_type_for_duration(event.dur)
-                if fragment_type:
-                    sub(note,'type',fragment_type[0])
-                    for _ in range(fragment_type[1]):sub(note,'dot')
-                # Irregular fragments retain exact <duration> without an
-                # invented incorrect note type or unearned tuplet ratio.
+                # Every fragment gets exact notation. MuseScore rounds an
+                # untyped 7/96 fragment to 3/32, corrupting the measure.
+                add_exact_duration_notation(note, event.dur)
             else:
                 sub(note,'type',note_type(dnode))
                 for _ in range(int(dnode.get('dots','0'))):sub(note,'dot')
@@ -1470,11 +1602,8 @@ def source_notation_audit(root):
                 unsupported[name]+=1
     beams=root.xpath('//c:chord/c:beam',namespaces=N)
     custom_beams=[e for e in beams if e.get('group','auto')!='auto']
-    tempos=root.xpath('//c:chord[@tempo]',namespaces=N)
     if custom_beams:
         unsupported['custom_beaming']+=len(custom_beams)
-    if tempos:
-        unsupported['tempo_changes']+=len(tempos)
     feature_counts={
         'chords':len(root.xpath('//c:chord',namespaces=N)),
         'rests':len(root.xpath('//c:rest',namespaces=N)),
@@ -1492,6 +1621,7 @@ def source_notation_audit(root):
             '//c:barline[starts-with(@type,"rep")]',namespaces=N
         )),
         'ending_brackets':len(root.xpath('//c:volta',namespaces=N)),
+        'playback_tempo_changes':len(root.xpath('//c:chord[@tempo]',namespaces=N)),
         'hidden_chords':len(root.xpath(
             '//c:chord[c:display[@invisible="true"]]',namespaces=N)),
         'hidden_silent_chords':len(root.xpath(
@@ -1646,6 +1776,19 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             'notation model; review proprietary graphics and advanced symbols.'
         )
     graphical_rest_overrides=shifted_tied_rest_pairs(parts)
+    transformation_ledger=[]
+    for part in parts:
+        for event in part.events:
+            override=graphical_rest_overrides.get(id(event))
+            if not override:
+                continue
+            transformation_ledger.append({
+                'rule':override.get('rule','legacy-rest-normalization'),
+                'part':part.name,
+                'voice':event.voice,
+                'time':str(event.time),
+                'result':'rest' if override.get('print_as_rest') else 'note',
+            })
     # Articulations describe PRINTED MUSIC, not a statistical pattern.
     # Near-universal strongBeat markings are intentional in historic march
     # parts such as Alte Schwytzer: dropping them removes thousands of
@@ -1983,7 +2126,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 placed_directions=set()
                 for e in ve:
                     if e.time>cursor:
-                        sub(sub(measure,'forward'),'duration',to_div(e.time-cursor,active_divisions))
+                        nnotes += emit_hidden_rest(
+                            measure, e.time-cursor, voice, active_divisions)
                         cursor=e.time
                     if (e.kind in ('chord','rest') and e.time<cursor
                             and not (e.time<start and e.time+e.dur>start)):
@@ -1991,7 +2135,9 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                             f'Overlapping notes in {p.name}, voice {voice}, measure {mi+1}'
                         )
                     if e.kind in ('chord','rest') and e.time>=start:
-                        if not graphical_rest_overrides.get(id(e),{}).get('print_as_rest'):
+                        if not (graphical_rest_overrides.get(id(e),{}).get('print_as_rest')
+                                or graphical_rest_overrides.get(id(e),{}).get(
+                                    'suppress_glyph_directions')):
                             emit_glyph_directions(measure,e,voice)
                         emit_grouped_metronome_direction(measure,e,voice)
                         emit_local_performance_text(measure,e,voice)
@@ -2074,7 +2220,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                                 measure, event_for_note.dur, active_divisions)
                         cursor=event_for_note.time+event_for_note.dur
                 if cursor<stop:
-                    sub(sub(measure,'forward'),'duration',to_div(stop-cursor,active_divisions))
+                    nnotes += emit_hidden_rest(
+                        measure, stop-cursor, voice, active_divisions)
             left_repeat=repeat_start(start)
             if left_repeat or (pi==0 and start in ending_starts):
                 bl=sub(measure,'barline',location='left')
@@ -2186,6 +2333,28 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 'normalized_graphical_rest':hidden_normalized,
                 'silent_rest_placeholder':hidden_total-hidden_normalized-hidden_sounding,
                 'unresolved_playback_note':len(unresolved_hidden),
+            },
+            'source_transformations':transformation_ledger,
+            'source_transformation_counts':dict(collections.Counter(
+                item['rule'] for item in transformation_ledger
+            )),
+            'warning_categories':{
+                'music':sorted(set(
+                    [warning for warning in warnings
+                     if ('invisible sounding' in warning
+                         or 'Sustained notes/rests' in warning)]
+                )),
+                'notation':sorted(set(
+                    [warning for warning in warnings
+                     if ('notation review' in warning
+                         or 'music-font symbols' in warning
+                         or 'trill' in warning)]
+                )),
+                'layout':sorted(set(
+                    [warning for warning in warnings
+                     if ('system breaks' in warning
+                         or 'ending brackets' in warning)]
+                )),
             },
             'print_review_recommended':True,
             'normalized_uniform_strongbeat':sum(uniform_strongbeat.values()),

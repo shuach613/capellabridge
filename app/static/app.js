@@ -1,6 +1,5 @@
 'use strict';
-const picker=document.getElementById('picker');const drop=document.getElementById('dropzone');const selected=document.getElementById('selected');const button=document.getElementById('convert');const queue=document.getElementById('queue-label');const results=document.getElementById('results');const resultsList=document.getElementById('result-list');const batch=document.getElementById('batch');const startOver=document.getElementById('start-over');let files=[];let max=12;
-const reviewToggle=document.getElementById('allow-review');
+const picker=document.getElementById('picker');const drop=document.getElementById('dropzone');const selected=document.getElementById('selected');const button=document.getElementById('convert');const queue=document.getElementById('queue-label');const results=document.getElementById('results');const resultsList=document.getElementById('result-list');const batch=document.getElementById('batch');const startOver=document.getElementById('start-over');let files=[];let max=30;
 const human=n=>n>=1048576?(n/1048576).toFixed(1)+' MB':Math.round(n/1024)+' KB';
 function putFile(list){for(const f of list){if(!/\.(capx|cap)$/i.test(f.name))continue;if(files.length<max&&!files.some(x=>x.name===f.name&&x.size===f.size))files.push(f);}paint();}
 function paint(){selected.replaceChildren();for(const [index,f] of files.entries()){const line=document.createElement('div');line.className='selected-file';const a=document.createElement('span');a.textContent='♫  '+f.name+'  ·  '+human(f.size);const b=document.createElement('button');b.type='button';b.textContent='×';b.setAttribute('aria-label','Remove '+f.name);b.onclick=()=>{files.splice(index,1);paint()};line.append(a,b);selected.append(line);}queue.textContent=files.length?files.length+' FILE'+(files.length>1?'S':''):'0 FILES';button.disabled=!files.length;}
@@ -11,7 +10,8 @@ function link(label,url,other=false){const a=node('a','↓ '+label,'download'+(o
 function display(r){
   const card=node('article',undefined,'result-item');
   const heading=node('div',undefined,'result-title');
-  heading.append(node('strong',r.source_filename),node('span',r.ok?`${r.measures??'—'} measures · ${(r.parts||[]).length} parts`:'Needs attention'));
+  const status=r.verification==='manual-review'?'MuseScore ready · manual review':`${r.measures??'—'} measures · ${(r.parts||[]).length} parts`;
+  heading.append(node('strong',r.source_filename),node('span',r.ok?status:'Needs attention'));
   card.append(heading);
   if(!r.ok){
     card.append(node('p',r.error,'error'));
@@ -19,11 +19,12 @@ function display(r){
     return card;
   }
   const body=node('div',undefined,'result-body');
-  const img=node('img');img.className='thumbnail';img.loading='lazy';img.src=r.downloads.preview;img.alt='First page score preview';
-  body.append(img);
+  if(r.downloads.preview){const img=node('img');img.className='thumbnail';img.loading='lazy';img.src=r.downloads.preview;img.alt='First page score preview';body.append(img);}else{body.classList.add('no-preview');}
   const side=node('div');
   const links=node('div',undefined,'links');
-  links.append(link('MuseScore',r.downloads.mscz),link('MusicXML',r.downloads.musicxml,true),link('PDF',r.downloads.pdf,true),link('Report',r.downloads.report,true));
+  links.append(link('MuseScore',r.downloads.mscz),link('MusicXML',r.downloads.musicxml,true));
+  if(r.downloads.pdf)links.append(link('PDF',r.downloads.pdf,true));
+  links.append(link('Report',r.downloads.report,true));
   side.append(links);
   if(r.warnings?.length){
     const details=node('details',undefined,'review-details');
@@ -87,12 +88,11 @@ document.getElementById('form').addEventListener('submit',async ev=>{
   startOver.hidden=true;
   const data=new FormData();for(const f of files)data.append('files',f);
   const layout=document.querySelector('input[name=layout]:checked').value;
-  const review=reviewToggle.checked?'&review=1':'';
   progress('upload',0,'Sending '+files.length+' score'+(files.length===1?'':'s')+' to your NAS.');
   try{
     const response=await new Promise((resolve,reject)=>{
       const xhr=new XMLHttpRequest();
-      xhr.open('POST','/api/convert?layout='+encodeURIComponent(layout)+review+'&background=1');
+      xhr.open('POST','/api/convert?layout='+encodeURIComponent(layout)+'&background=1');
       xhr.timeout=600000;
       xhr.upload.onprogress=event=>{
         if(event.lengthComputable)progress('upload',Math.min(100,Math.round(event.loaded/event.total*100)),'Uploading '+files.length+' score'+(files.length===1?'':'s')+'…');

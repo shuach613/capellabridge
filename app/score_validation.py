@@ -118,6 +118,7 @@ def audit_mscz(path: Path, repair: bool = False,
             score = root.find("Score")
             if score is None:
                 raise ScoreIntegrityError("MSCX contains no Score element")
+            discrepancies = []
             for staff_index, staff in enumerate(score.findall("Staff"), 1):
                 meter = Fraction(4, 4)
                 for measure_index, measure in enumerate(staff.findall("Measure"), 1):
@@ -145,17 +146,22 @@ def audit_mscz(path: Path, repair: bool = False,
                             native.text = str(old_duration + gap)
                             new_actual, _ = _measure_duration(voice, intended)
                             if new_actual != intended:
-                                raise ScoreIntegrityError(
+                                discrepancies.append(
                                     f"Automatic repair failed in {location}: "
-                                    f"{new_actual} instead of {intended}"
-                                )
+                                    f"{new_actual} instead of {intended}")
+                                continue
                             repairs.append(f"Repaired silent rounding gap {gap} in {location}")
                             continue
                         direction = "short" if gap > 0 else "overfull"
-                        raise ScoreIntegrityError(
+                        discrepancies.append(
                             f"{location} is {direction}: {actual} of {intended} "
-                            f"whole notes (difference {gap}); refusing a corrupted MSCZ"
-                        )
+                            f"whole notes (difference {gap})")
+            if discrepancies:
+                detail = "; ".join(discrepancies[:12])
+                if len(discrepancies) > 12:
+                    detail += f"; and {len(discrepancies) - 12} more"
+                raise ScoreIntegrityError(
+                    f"{len(discrepancies)} structural measure issue(s): {detail}")
             if repairs:
                 with tempfile.NamedTemporaryFile(
                     prefix=".validated-", suffix=".mscz",
