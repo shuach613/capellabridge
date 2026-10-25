@@ -46,6 +46,23 @@ def main():
         return body, 'multipart/form-data; boundary='+boundary
 
 
+    def make_batch_upload(xml_bytes=xml, count=7):
+        boundary='CAPELLABRIDGE_BATCH_SMOKE_BOUNDARY'
+        body=bytearray()
+        for index in range(count):
+            score=io.BytesIO()
+            with zipfile.ZipFile(score,'w') as z:z.writestr('score.xml',xml_bytes)
+            body.extend(
+                (f'--{boundary}\r\nContent-Disposition: form-data; '
+                 f'name="files"; filename="Batch-{index}.capx"\r\n'
+                 'Content-Type: application/octet-stream\r\n\r\n').encode()
+            )
+            body.extend(score.getvalue())
+            body.extend(b'\r\n')
+        body.extend(f'--{boundary}--\r\n'.encode())
+        return bytes(body), 'multipart/form-data; boundary='+boundary
+
+
     for attempt in range(40):
         try:
             with urllib.request.urlopen(BASE+'/health',timeout=3) as response:
@@ -81,6 +98,28 @@ def main():
         with zipfile.ZipFile(io.BytesIO(get(result['batch_url']))) as z:
             assert any(name.endswith('.mscz') for name in z.namelist())
         print(f'{layout}: MuseScore MSCZ, PDF, PNG, MusicXML and ZIP verified')
+
+    # The browser uses the background endpoint so a reverse proxy does not
+    # have to keep a seven-score conversion request open.
+    body,ctype=make_batch_upload(count=7)
+    queued=json.loads(get('/api/convert?layout=balanced&background=1',body,ctype))
+    assert queued['state']=='queued', queued
+    assert queued['total']==7, queued
+    deadline=time.time()+300
+    while True:
+        batch_status=json.loads(get(queued['status_url']))
+        if batch_status['state'] in ('completed','failed'):
+            break
+        if time.time()>deadline:
+            raise AssertionError(f'Background batch timed out: {batch_status}')
+        time.sleep(1)
+    assert batch_status['state']=='completed', batch_status
+    assert batch_status['completed']==7, batch_status
+    assert len(batch_status['results'])==7, batch_status
+    assert all(result['ok'] for result in batch_status['results']), batch_status
+    with zipfile.ZipFile(io.BytesIO(get(batch_status['batch_url']))) as z:
+        assert sum(name.endswith('.mscz') for name in z.namelist())==7
+    print('background batch: seven scores and ZIP verified')
     # Diagnostic: MuseScore's handling of four grouped independent parts.
     staff_xml = ''
     for n in range(1, 5):

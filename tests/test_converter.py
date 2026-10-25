@@ -108,11 +108,14 @@ def test_web_upload_without_login(monkeypatch,tmp_path):
     client=TestClient(main.app)
     homepage=client.get('/')
     assert homepage.status_code==200
+    assert homepage.headers['cache-control']=='no-store'
+    assert 'v1.7.5' in homepage.text
     assert 'start-over' in homepage.text
     assert 'allow-review' in homepage.text
     assert client.get('/api/info').status_code==200
     app_js=client.get('/static/app.js')
     assert app_js.status_code==200
+    assert app_js.headers['cache-control']=='no-store'
     assert 'background=1' in app_js.text
     with client:
         response=client.post('/api/convert?layout=balanced',files=[('files',('Tiny.capx',capx(MINIMAL),'application/octet-stream'))])

@@ -15,14 +15,13 @@ from urllib.parse import quote
 from typing import Annotated
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 from .converter import CapellaError, serialize_musicxml
 from .musescore import ConversionFailure, convert, create_preview, musescore_path
 from .engraving import prepare_print_ready
 from .score_validation import audit_mscz, ScoreIntegrityError
 from .semantic_audit import audit_musicxml_against_mscz, SemanticIntegrityError
 
-VERSION='1.7.4'
+VERSION='1.7.5'
 BASE=Path(os.environ.get('CAPELLABRIDGE_DATA','/data')).resolve()
 JOBS=BASE/'jobs'
 STATIC=Path(__file__).parent/'static'
@@ -88,13 +87,17 @@ def health():
 
 
 @app.get('/')
-def index():return FileResponse(STATIC/'index.html',media_type='text/html')
+def index():
+    return FileResponse(STATIC/'index.html',media_type='text/html',
+                        headers={'Cache-Control':'no-store'})
 
 
 @app.get('/static/{filename}')
 def static(filename:str):
     if filename not in ('app.css','app.js','mark.svg'):raise HTTPException(404)
-    return FileResponse(STATIC/filename,media_type='image/svg+xml' if filename.endswith('.svg') else None)
+    return FileResponse(STATIC/filename,
+                        media_type='image/svg+xml' if filename.endswith('.svg') else None,
+                        headers={'Cache-Control':'no-store'})
 
 
 @app.get('/api/info')
