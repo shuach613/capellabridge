@@ -2,7 +2,7 @@ name: Build and publish CapellaBridge
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/legacy-cap-engine]
     tags: ['v*']
   pull_request:
     branches: [main]
@@ -119,6 +119,17 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ghcr.io/shuach613/capellabridge:latest
+
+      - name: Publish legacy CAP test image
+        if: github.ref == 'refs/heads/feature/legacy-cap-engine' && github.event_name == 'push'
+        uses: docker/build-push-action@v6
+        with:
+          context: "."
+          file: "./Dockerfile"
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/shuach613/capellabridge:legacy-cap-engine
+
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: docker/build-push-action@v6
