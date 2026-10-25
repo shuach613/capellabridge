@@ -7,6 +7,7 @@ import pytest
 from lxml import etree as ET
 from fastapi.testclient import TestClient
 from app import converter
+from app.source_audit import audit_capx_against_musicxml
 
 
 def capx(xml):
@@ -34,6 +35,13 @@ def test_single_staff_and_octave():
     assert notes[0].findtext('./pitch/octave')=='4'  # Capella's middle C is C5
     assert notes[1].findtext('./pitch/alter') is None
     assert notes[1].findtext('./accidental')=='natural'
+
+
+def test_source_audit_catches_the_capx_boundary_before_musescore():
+    xml, report = converter.serialize_musicxml(capx(MINIMAL))
+    audit = audit_capx_against_musicxml(capx(MINIMAL), xml)
+    assert audit['status'] == 'strict'
+    assert audit['source_events'] == audit['musicxml_events'] == report['notes']
 
 
 
@@ -109,7 +117,7 @@ def test_web_upload_without_login(monkeypatch,tmp_path):
     homepage=client.get('/')
     assert homepage.status_code==200
     assert homepage.headers['cache-control']=='no-store'
-    assert 'v1.7.5' in homepage.text
+    assert 'v1.7.6' in homepage.text
     assert 'start-over' in homepage.text
     assert 'allow-review' in homepage.text
     assert client.get('/api/info').status_code==200

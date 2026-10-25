@@ -27,9 +27,10 @@ def make_source(first, later=None, page='', meter='1/4', version='2.0', staves=1
         joined=''
         for i in range(staves):
             name=f'Staff {i+1}'
+            repeated=chord()*xml.count('<chord>')
             joined+=(
                 f'<staff layout="{name}"><voices><voice><noteObjects>'
-                f'<timeSign time="{meter}"/>{xml if i==0 else chord()*xml.count('<chord>')}'
+                f'<timeSign time="{meter}"/>{xml if i==0 else repeated}'
                 '</noteObjects></voice></voices></staff>'
             )
         body+='<system><staves>'+joined+'</staves></system>'

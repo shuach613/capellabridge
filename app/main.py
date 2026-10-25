@@ -20,14 +20,15 @@ from .musescore import ConversionFailure, convert, create_preview, musescore_pat
 from .engraving import prepare_print_ready
 from .score_validation import audit_mscz, ScoreIntegrityError
 from .semantic_audit import audit_musicxml_against_mscz, SemanticIntegrityError
+from .source_audit import audit_capx_against_musicxml
 
-VERSION='1.7.5'
+VERSION='1.7.6'
 BASE=Path(os.environ.get('CAPELLABRIDGE_DATA','/data')).resolve()
 JOBS=BASE/'jobs'
 STATIC=Path(__file__).parent/'static'
 TTL=int(os.environ.get('CAPELLABRIDGE_TTL_HOURS','24'))*3600
 MAX_FILE=int(os.environ.get('CAPELLABRIDGE_MAX_UPLOAD_MB','15'))*1024*1024
-MAX_BATCH=max(1,min(30,int(os.environ.get('CAPELLABRIDGE_MAX_BATCH','12'))))
+MAX_BATCH=max(1,min(30,int(os.environ.get('CAPELLABRIDGE_MAX_BATCH','30'))))
 async def expire_loop():
     while True:
         await asyncio.to_thread(cleanup)
@@ -225,6 +226,16 @@ def process_score(name,ext,raw,work,layout,allow_unverified=False):
         xml_path=work/(prefix+'.musicxml')
         xml_path.write_bytes(xml)
         warnings.extend(report.get('warnings',[]))
+        try:
+            report['source_audit']=audit_capx_against_musicxml(raw, xml)
+        except SemanticIntegrityError as exc:
+            if not allow_unverified:
+                raise
+            report['source_audit']={'status':'unverified','error':str(exc)[:500]}
+            warnings.append(
+                'Manual-review export: CAPX-to-MusicXML audit could not certify '
+                f'this score: {str(exc)[:400]}'
+            )
     else:
         # Legacy binary CAP handled by the installed MuseScore engine.
         xml_path=work/(prefix+'.musicxml')
@@ -245,6 +256,16 @@ def process_score(name,ext,raw,work,layout,allow_unverified=False):
         if pages is not None and pages>reasonable_pages:
             xml,balanced_report=serialize_musicxml(raw,'balanced',filename=name)
             xml_path.write_bytes(xml)
+            try:
+                balanced_report['source_audit']=audit_capx_against_musicxml(raw, xml)
+            except SemanticIntegrityError as exc:
+                if not allow_unverified:
+                    raise
+                balanced_report['source_audit']={'status':'unverified','error':str(exc)[:500]}
+                warnings.append(
+                    'Manual-review export: CAPX-to-MusicXML audit could not certify '
+                    f'the balanced fallback: {str(exc)[:400]}'
+                )
             save_validated_mscz(xml_path, mscz, balanced_report, warnings,
                                 allow_unverified)
             convert(mscz,pdf)
@@ -296,11 +317,14 @@ async def run_batch(job_id, incoming, layout, review):
                         ValueError,zipfile.BadZipFile) as exc:
                     shutil.rmtree(out,ignore_errors=True)
                     results.append({'ok':False,'source_filename':name,
+                                    'stage':'conversion',
                                     'error':str(exc)[:500]})
-                except Exception:
+                except Exception as exc:
                     shutil.rmtree(out,ignore_errors=True)
                     results.append({'ok':False,'source_filename':name,
-                                    'error':'Internal conversion error. Check server logs.'})
+                                    'stage':'internal',
+                                    'error':'Internal conversion error. Check server logs.',
+                                    'detail':str(exc)[:200]})
                 finally:
                     input_path.unlink(missing_ok=True)
                 write_job_status(folder, {

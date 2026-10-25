@@ -1479,6 +1479,10 @@ def source_notation_audit(root):
         'chords':len(root.xpath('//c:chord',namespaces=N)),
         'rests':len(root.xpath('//c:rest',namespaces=N)),
         'ties':len(root.xpath('//c:tie',namespaces=N)),
+        'articulations':len(root.xpath('//c:chord/c:articulation',namespaces=N)),
+        'fermata_glyphs':len(root.xpath(
+            '//c:drawObj/c:text[c:font[translate(@face,"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="capella3" or translate(@face,"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="capella"] and (c:content="u" or c:content="k")]',
+            namespaces=N)),
         'slurs':annotations['slur'],
         'hairpins':annotations['wedge'],
         'tuplets':len(root.xpath('//c:tuplet',namespaces=N)),
@@ -1487,6 +1491,12 @@ def source_notation_audit(root):
         'repeat_barlines':len(root.xpath(
             '//c:barline[starts-with(@type,"rep")]',namespaces=N
         )),
+        'ending_brackets':len(root.xpath('//c:volta',namespaces=N)),
+        'hidden_chords':len(root.xpath(
+            '//c:chord[c:display[@invisible="true"]]',namespaces=N)),
+        'hidden_silent_chords':len(root.xpath(
+            '//c:chord[c:display[@invisible="true"] and '
+            'not(c:heads/c:head[not(@silent="true")])]',namespaces=N)),
         'time_signatures':sorted(set(root.xpath('//c:timeSign/@time',namespaces=N))),
     }
     return feature_counts,dict(sorted(unsupported.items()))
@@ -2125,14 +2135,24 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     # rest-engraving pattern are not safe to rewrite automatically. Surface
     # them for score inspection instead of silently claiming print fidelity.
     unresolved_hidden=[]
+    hidden_total=0
+    hidden_normalized=0
+    hidden_sounding=0
     for part in parts:
         for event in part.events:
-            if event.kind!='chord' or not event.dur or id(event) in graphical_rest_overrides:
+            if event.kind!='chord' or not event.dur:
                 continue
             visibility=child(event.node,'display')
             heads=children(child(event.node,'heads'),'head')
-            if (visibility is not None and visibility.get('invisible')=='true'
-                    and any(h.get('silent')!='true' for h in heads)):
+            hidden = visibility is not None and visibility.get('invisible')=='true'
+            if not hidden:
+                continue
+            hidden_total += 1
+            if id(event) in graphical_rest_overrides:
+                hidden_normalized += 1
+                continue
+            if any(h.get('silent')!='true' for h in heads):
+                hidden_sounding += 1
                 measure_number = bisect_right(boundaries, event.time)
                 unresolved_hidden.append({
                     'part': part.name,
@@ -2161,6 +2181,12 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             'notation_not_fully_interpreted':unsupported,
             'unresolved_hidden_sounding_chords':len(unresolved_hidden),
             'unresolved_hidden_sounding_locations':unresolved_hidden,
+            'hidden_event_classification':{
+                'total_invisible_chords':hidden_total,
+                'normalized_graphical_rest':hidden_normalized,
+                'silent_rest_placeholder':hidden_total-hidden_normalized-hidden_sounding,
+                'unresolved_playback_note':len(unresolved_hidden),
+            },
             'print_review_recommended':True,
             'normalized_uniform_strongbeat':sum(uniform_strongbeat.values()),
             'variable_staff_systems':any(
@@ -2170,4 +2196,9 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 'forward':sum(repeat_start(p) for p in boundaries),
                 'backward':sum(repeat_end(p) for p in boundaries)
             }}
+    report['ending_starts']=[
+        {'measure':boundaries.index(time)+1,'number':number}
+        for time,number in sorted(ending_starts.items())
+        if time in boundaries
+    ]
     return data,report
