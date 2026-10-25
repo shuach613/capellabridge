@@ -105,8 +105,14 @@ def test_multimeasure_rest_label_printed_once_not_each_measure():
     # twice and shift all following playback.
     assert doc.find('.//measure-style/multiple-rest') is None
     assert len(doc.findall('./part/measure'))==4
-    assert all(measure.find('./note/rest').get('measure')=='yes'
-               for measure in doc.findall('./part/measure')[:3])
+    # Multi-measure rests are split into ordinary typed rests. Repeating
+    # measure="yes" makes MuseScore 3 coalesce the bars and can change the
+    # native playback timeline on re-import.
+    first_measures=doc.findall('./part/measure')[:3]
+    assert all(measure.find('./note/rest').get('measure') is None
+               for measure in first_measures)
+    assert [measure.findtext('./note/type') for measure in first_measures] == [
+        'half','half','half']
 
 
 def test_breath_comma_and_small_blue_source_annotations():

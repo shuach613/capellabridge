@@ -870,6 +870,19 @@ def note_type(dur_node):
     return DURATION_TYPES.get(Fraction(dur_node.get('base','1/4')), 'quarter')
 
 
+def note_type_for_duration(duration):
+    """Return a MusicXML note type/dot pair for an exact duration."""
+    for unit, name in DURATION_TYPES.items():
+        for dots in range(5):
+            written = unit * sum(
+                (Fraction(1, 2 ** power) for power in range(dots + 1)),
+                Fraction(0),
+            )
+            if written == duration:
+                return name, dots
+    return None
+
+
 # Single characters from capella3 are music glyph IDs, not literal text.
 # Use the same mapping as the MuseScore Capella legacy importer.
 CAPELLA_DYNAMICS={
@@ -1176,8 +1189,16 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                for mark in marks]
         marks=[mark for mark in marks if mark.get('type')]
     is_grace = dnode is not None and dnode.get('noDuration') == 'true'
-    is_full_measure_rest = (event.kind == 'rest' and dnode is not None
-        and re.fullmatch(r'[1-9]\d*',dnode.get('base','')) is not None)
+    measure_rest_base = (dnode.get('base', '') if dnode is not None else '')
+    is_measure_rest = (event.kind == 'rest' and
+                       re.fullmatch(r'[1-9]\d*', measure_rest_base) is not None)
+    is_multi_measure_rest = is_measure_rest and measure_rest_base != '1'
+    # A Capella multi-measure rest is split into explicit destination bars.
+    # Marking every fragment as a MusicXML measure-rest makes MuseScore 3
+    # coalesce the run again, producing a native Rest that spans (for example)
+    # 7/2 at the second bar. Use ordinary typed rests for those fragments so
+    # the native score retains the same bar-by-bar playback timeline.
+    is_full_measure_rest = is_measure_rest and not is_multi_measure_rest
     tuplet = child(dnode, 'tuplet')
     display=child(ob,'display')
     invisible=display is not None and display.get('invisible')=='true'
@@ -1233,17 +1254,10 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
         for tp in ties:sub(note,'tie',type=tp)
         sub(note,'voice',voice)
         if dnode is not None and not is_full_measure_rest:
-            if split_before or split_after:
+            if split_before or split_after or is_multi_measure_rest:
                 # Rhythmic note values can change at a barline; a 3/8
                 # chord spanning 1/8+1/4 must be written as those two types.
-                fragment_type=None
-                for unit,name in DURATION_TYPES.items():
-                    for dots in range(5):
-                        written=unit*sum((Fraction(1,2**k) for k in range(dots+1)),Fraction(0))
-                        if written==event.dur:
-                            fragment_type=(name,dots)
-                            break
-                    if fragment_type:break
+                fragment_type = note_type_for_duration(event.dur)
                 if fragment_type:
                     sub(note,'type',fragment_type[0])
                     for _ in range(fragment_type[1]):sub(note,'dot')
