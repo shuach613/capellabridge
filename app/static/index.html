@@ -44,6 +44,7 @@
               <label class="option"><input type="radio" name="layout" value="compact"><span class="option-mark"></span><span><strong>Compact</strong><small>Fit more per page</small></span></label>
               <label class="option"><input type="radio" name="layout" value="original"><span class="option-mark"></span><span><strong>Original</strong><small>Source system breaks</small></span></label>
             </div>
+            <label class="review-toggle"><input id="allow-review" type="checkbox"><span><strong>Allow unverified export</strong><small>Creates an MSCZ for manual playback review when the converter cannot certify hidden notes.</small></span></label>
           </div>
           <button id="convert" class="primary-action" type="submit" disabled><span>Convert to MuseScore</span><span aria-hidden="true">→</span></button>
           <section id="conversion-progress" class="progress-panel" hidden aria-live="polite" aria-atomic="true">
@@ -62,7 +63,7 @@
       </aside>
     </section>
     <section id="results" class="results" hidden aria-live="polite">
-      <div class="results-heading"><div><span class="step">04 / COMPLETE</span><h2>Your converted scores</h2></div><a id="batch" class="batch-link" hidden>Download all as ZIP ↓</a></div>
+      <div class="results-heading"><div><span class="step">04 / COMPLETE</span><h2>Your converted scores</h2></div><div class="result-actions"><button id="start-over" class="reset-action" type="button" hidden>Start over</button><a id="batch" class="batch-link" hidden>Download all as ZIP ↓</a></div></div>
       <div id="result-list" class="results-list"></div>
     </section>
     <footer><span>CapellaBridge v1.7.4</span><span>Independent, self-hosted notation conversion</span></footer>

@@ -9,6 +9,7 @@ import io
 import re
 import zipfile
 import collections
+from bisect import bisect_right
 from math import lcm
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -1973,11 +1974,13 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                             # A source seven-/eight-measure rest must be
                             # represented in each destination measure, not
                             # treated as a giant single note crossing bars.
+                            # Do not also emit MusicXML <multiple-rest> here:
+                            # these explicit destination measures are the
+                            # source of truth. MuseScore otherwise counts the
+                            # multimeasure declaration and the explicit rests,
+                            # shifting all following playback by one measure.
                             event_for_note=Event(start,e.kind,e.node,e.system,
                                                  e.voice,stop-start)
-                            if start==e.time:
-                                style=sub(sub(measure,'attributes'),'measure-style')
-                                sub(style,'multiple-rest',rest_base)
                         elif e.time<start or e.time+e.dur>stop:
                             seg_start=max(e.time,start)
                             seg_end=min(e.time+e.dur,stop)
@@ -2066,7 +2069,13 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             heads=children(child(event.node,'heads'),'head')
             if (visibility is not None and visibility.get('invisible')=='true'
                     and any(h.get('silent')!='true' for h in heads)):
-                unresolved_hidden.append((part.name,str(event.time)))
+                measure_number = bisect_right(boundaries, event.time)
+                unresolved_hidden.append({
+                    'part': part.name,
+                    'measure': measure_number,
+                    'voice': event.voice,
+                    'time': str(event.time),
+                })
     if unresolved_hidden:
         warnings.append(
             f'{len(unresolved_hidden)} invisible sounding source chords remain '
@@ -2087,6 +2096,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             'notation_features':features,
             'notation_not_fully_interpreted':unsupported,
             'unresolved_hidden_sounding_chords':len(unresolved_hidden),
+            'unresolved_hidden_sounding_locations':unresolved_hidden,
             'print_review_recommended':True,
             'normalized_uniform_strongbeat':sum(uniform_strongbeat.values()),
             'variable_staff_systems':any(

@@ -67,6 +67,19 @@ This recreates the container with the latest image while retaining the named vol
 2. Select **Balanced** (recommended), **Compact**, or **Original systems**.
 3. Convert, preview the results, and download MuseScore, MusicXML, PDF or the full batch ZIP.
 
+Conversion is strict by default. Before an MSCZ is offered, CapellaBridge
+compares playback-relevant events against the native MuseScore score,
+including pitches, durations, voices, tuplets, ties, slurs, articulations,
+breath marks, repeats and transposition. Scores with unresolved hidden pitched
+events or detected musical changes are reported as needing attention and do
+not receive a verified MSCZ. The optional **Allow unverified export** checkbox
+creates an MSCZ for manual review when the score is structurally readable but
+the semantic audit cannot certify it; the result and report are labelled
+accordingly. Structural corruption and invalid measure timing remain blocked.
+
+After a batch finishes, use **Start over** to clear the queue and results
+before selecting another batch.
+
 Results are temporary and normally expire after 24 hours. Uploaded originals are discarded following processing. The application stores its job files in the Docker volume.
 
 | Layout | Intended behavior |
@@ -125,6 +138,7 @@ app/
   converter.py          CapXML 1.0–4.0 parser → structured MusicXML
   engraving.py          MuseScore printing and layout adjustments
   score_validation.py   Native-score integrity checks
+  semantic_audit.py     Playback-level MusicXML ↔ MSCX equivalence checks
   musescore.py          MuseScore CLI and PDF rendering
   main.py               FastAPI routes, upload handling and downloads
   static/               Desktop/mobile web interface
@@ -144,6 +158,7 @@ docker-compose.yml
 | `/health` | Application version and engine health |
 | `/api/info` | Upload limits and renderer details |
 | `POST /api/convert?layout=balanced` | Multipart request with one or more `files` fields |
+| `POST /api/convert?layout=balanced&review=1` | Explicit manual-review export for structurally valid but semantically uncertified scores |
 | `/api/files/…` | Time-limited download of generated artifacts |
 
 ---

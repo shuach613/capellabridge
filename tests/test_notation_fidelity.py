@@ -128,6 +128,8 @@ def test_integrity_audit_repairs_small_hidden_rest_gap(tmp_path):
     native_zip(path, xml)
     with pytest.raises(ScoreIntegrityError, match="measure 1"):
         audit_mscz(path)
+    with pytest.raises(ScoreIntegrityError, match="measure 1"):
+        audit_mscz(path, repair=True, allow_repairs=False)
     repairs = audit_mscz(path, repair=True)
     assert len(repairs) == 1 and "1/384" in repairs[0]
     assert audit_mscz(path, repair=False) == []

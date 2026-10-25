@@ -104,8 +104,12 @@ def test_web_upload_without_login(monkeypatch,tmp_path):
     def fake_preview(pdf,png):Path(png).write_bytes(b'\x89PNG\r\n\x1a\n')
     monkeypatch.setattr(main,'convert',fake_convert)
     monkeypatch.setattr(main,'create_preview',fake_preview)
+    monkeypatch.setattr(main,'audit_musicxml_against_mscz',lambda source,path: {})
     client=TestClient(main.app)
-    assert client.get('/').status_code==200
+    homepage=client.get('/')
+    assert homepage.status_code==200
+    assert 'start-over' in homepage.text
+    assert 'allow-review' in homepage.text
     assert client.get('/api/info').status_code==200
     assert client.get('/static/app.js').status_code==200
     with client:
@@ -301,6 +305,7 @@ def test_original_mode_avoids_pathological_pagination(tmp_path, monkeypatch):
     monkeypatch.setattr(main,'convert',fake_convert)
     monkeypatch.setattr(main,'create_preview',
                         lambda pdf,png:Path(png).write_bytes(b'PNG'))
+    monkeypatch.setattr(main,'audit_musicxml_against_mscz',lambda source,path: {})
     monkeypatch.setattr(main,'pdf_page_count',lambda path:40)
     data=capx(MINIMAL)
     work=tmp_path/'one';work.mkdir()

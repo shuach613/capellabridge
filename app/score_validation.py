@@ -93,11 +93,15 @@ def _measure_duration(voice, meter):
     return total, timed
 
 
-def audit_mscz(path: Path, repair: bool = False) -> list[str]:
+def audit_mscz(path: Path, repair: bool = False,
+               allow_repairs: bool = True) -> list[str]:
     """Verify all staffed voices against the measure's actual duration.
 
     Returns a list of safe, precisely identified automatic repairs. Raises
     ScoreIntegrityError for any unresolved underfilled or overfilled measure.
+    Production conversion can set ``allow_repairs=False`` so that even a
+    tiny silent gap must be explained by the source semantic audit instead of
+    being silently padded.
     """
     path = Path(path)
     repairs = []
@@ -131,7 +135,7 @@ def audit_mscz(path: Path, repair: bool = False) -> list[str]:
                         gap = intended - actual
                         location = (f"staff {staff_index}, measure {measure_index}, "
                                     f"voice {voice_index}")
-                        if (repair and 0 < gap <= Fraction(1, 64)
+                        if (repair and allow_repairs and 0 < gap <= Fraction(1, 64)
                                 and timed[-1][0].tag == "Rest"
                                 and timed[-1][0].findtext("visible") == "0"):
                             rest, old_duration = timed[-1]

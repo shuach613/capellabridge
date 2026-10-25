@@ -100,8 +100,13 @@ def test_multimeasure_rest_label_printed_once_not_each_measure():
     doc,report=convert([('Piccolo',multi+tail)],metre='2/4')
     assert report['printed_directions'].count('Trommelsolo')==1
     assert len(doc.findall('.//direction-type/words[.="Trommelsolo"]'))==1
-    assert doc.findtext('.//measure-style/multiple-rest')=='3'
+    # Explicit destination measures are the source of truth. A second
+    # multiple-rest declaration would make MuseScore count the same silence
+    # twice and shift all following playback.
+    assert doc.find('.//measure-style/multiple-rest') is None
     assert len(doc.findall('./part/measure'))==4
+    assert all(measure.find('./note/rest').get('measure')=='yes'
+               for measure in doc.findall('./part/measure')[:3])
 
 
 def test_breath_comma_and_small_blue_source_annotations():

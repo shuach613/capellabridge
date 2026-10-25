@@ -1,5 +1,6 @@
 'use strict';
-const picker=document.getElementById('picker');const drop=document.getElementById('dropzone');const selected=document.getElementById('selected');const button=document.getElementById('convert');const queue=document.getElementById('queue-label');const results=document.getElementById('results');const resultsList=document.getElementById('result-list');const batch=document.getElementById('batch');let files=[];let max=12;
+const picker=document.getElementById('picker');const drop=document.getElementById('dropzone');const selected=document.getElementById('selected');const button=document.getElementById('convert');const queue=document.getElementById('queue-label');const results=document.getElementById('results');const resultsList=document.getElementById('result-list');const batch=document.getElementById('batch');const startOver=document.getElementById('start-over');let files=[];let max=12;
+const reviewToggle=document.getElementById('allow-review');
 const human=n=>n>=1048576?(n/1048576).toFixed(1)+' MB':Math.round(n/1024)+' KB';
 function putFile(list){for(const f of list){if(!/\.(capx|cap)$/i.test(f.name))continue;if(files.length<max&&!files.some(x=>x.name===f.name&&x.size===f.size))files.push(f);}paint();}
 function paint(){selected.replaceChildren();for(const [index,f] of files.entries()){const line=document.createElement('div');line.className='selected-file';const a=document.createElement('span');a.textContent='♫  '+f.name+'  ·  '+human(f.size);const b=document.createElement('button');b.type='button';b.textContent='×';b.setAttribute('aria-label','Remove '+f.name);b.onclick=()=>{files.splice(index,1);paint()};line.append(a,b);selected.append(line);}queue.textContent=files.length?files.length+' FILE'+(files.length>1?'S':''):'0 FILES';button.disabled=!files.length;}
@@ -46,18 +47,28 @@ function progress(stage,value,detail){
   if(stage==='upload'&&value!==null){track.setAttribute('aria-valuenow',String(value));track.setAttribute('aria-valuemin','0');track.setAttribute('aria-valuemax','100');}
   else{track.removeAttribute('aria-valuenow');track.removeAttribute('aria-valuemin');track.removeAttribute('aria-valuemax');}
 }
+function resetWorkspace(){
+  files=[];picker.value='';paint();resultsList.replaceChildren();results.hidden=true;
+  batch.hidden=true;batch.removeAttribute('href');startOver.hidden=true;
+  progressPanel.hidden=true;progressPanel.classList.remove('working','failed');
+  progressDetail.textContent='Processing your files locally.';progressFill.style.width='0';
+  button.querySelector('span').textContent='Convert to MuseScore';
+}
+startOver.addEventListener('click',resetWorkspace);
 document.getElementById('form').addEventListener('submit',async ev=>{
   ev.preventDefault();if(!files.length)return;
   button.disabled=true;button.querySelector('span').textContent='Converting…';
   results.hidden=false;resultsList.replaceChildren(node('p','Uploading your scores…'));
   batch.hidden=true;
+  startOver.hidden=true;
   const data=new FormData();for(const f of files)data.append('files',f);
   const layout=document.querySelector('input[name=layout]:checked').value;
+  const review=reviewToggle.checked?'&review=1':'';
   progress('upload',0,'Sending '+files.length+' score'+(files.length===1?'':'s')+' to your NAS.');
   try{
     const response=await new Promise((resolve,reject)=>{
       const xhr=new XMLHttpRequest();
-      xhr.open('POST','/api/convert?layout='+encodeURIComponent(layout));
+      xhr.open('POST','/api/convert?layout='+encodeURIComponent(layout)+review);
       xhr.timeout=600000;
       xhr.upload.onprogress=event=>{
         if(event.lengthComputable)progress('upload',Math.min(100,Math.round(event.loaded/event.total*100)),'Uploading '+files.length+' score'+(files.length===1?'':'s')+'…');
@@ -77,11 +88,13 @@ document.getElementById('form').addEventListener('submit',async ev=>{
     resultsList.replaceChildren();
     for(const r of json.results)resultsList.append(display(r));
     if(json.batch_url){batch.href=json.batch_url;batch.hidden=false;batch.download='CapellaBridge-batch.zip';}
+    startOver.hidden=false;
     progress('done',100,'Your converted files are ready below.');
     results.scrollIntoView({behavior:'smooth',block:'start'});
   }catch(error){
     progress('error',null,String(error.message));
     resultsList.replaceChildren(node('p',String(error.message),'error'));
+    startOver.hidden=false;
   }finally{
     button.querySelector('span').textContent='Convert to MuseScore';
     button.disabled=!files.length;
