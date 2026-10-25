@@ -99,6 +99,8 @@ def _direct_snapshot(root):
     for part_index, part in enumerate(parts, 1):
         ordered = sorted(part.events, key=lambda item: (item.time, item.voice))
         slur_starts, slur_ends = converter.make_slur_links(ordered)
+        source_tie_links = converter.make_source_tie_links(
+            ordered, rest_overrides)
         state = {"key": 0, "accidentals": {}}
         current_measure = None
         for event in ordered:
@@ -181,9 +183,12 @@ def _direct_snapshot(root):
                         split_after = segment_stop < stop_time
                         tie = converter.child(head, "tie")
                         if tie is not None:
-                            if tie.get("end") == "true" and not split_before:
+                            raw_pitch = head.get("pitch")
+                            if ((id(event), raw_pitch) in source_tie_links[1]
+                                    and not split_before):
                                 ties.add((pitch, "stop"))
-                            if tie.get("begin") == "true" and not split_after:
+                            if ((id(event), raw_pitch) in source_tie_links[0]
+                                    and not split_after):
                                 ties.add((pitch, "start"))
                         if split_before:
                             ties.add((pitch, "stop"))

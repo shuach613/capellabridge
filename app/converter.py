@@ -1323,7 +1323,7 @@ def shifted_tied_rest_pairs(parts):
     return overrides
 
 
-def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False, display_override=None, split_before=False, split_after=False, link_event=None):
+def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False, display_override=None, split_before=False, split_after=False, link_event=None, source_tie_links=None):
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
     linked_id=id(link_event) if link_event is not None else id(event)
@@ -1425,9 +1425,16 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             sub(pitch,'octave',octave)
             shape=head.get('shape')
             ti=child(head,'tie')
+            raw_pitch=head.get('pitch')
             if ti is not None:
-                if ti.get('end')=='true' and not split_before:ties.append('stop')
-                if ti.get('begin')=='true' and not split_after:ties.append('start')
+                if source_tie_links is None:
+                    valid_stop=ti.get('end')=='true'
+                    valid_start=ti.get('begin')=='true'
+                else:
+                    valid_start=(linked_id,raw_pitch) in source_tie_links[0]
+                    valid_stop=(linked_id,raw_pitch) in source_tie_links[1]
+                if valid_stop and not split_before:ties.append('stop')
+                if valid_start and not split_after:ties.append('start')
             if split_before and 'stop' not in ties:ties.append('stop')
             if split_after and 'start' not in ties:ties.append('start')
             if display_override and display_override.get('replace_source_tie'):
@@ -1645,8 +1652,8 @@ def make_wedge_links(events):
     for event in events:
         if event.kind in ('chord','rest'):
             per_voice[event.voice].append(event)
-    serial=0
     for voice,notes in per_voice.items():
+        serial=0
         for index,event in enumerate(notes):
             for draw in children(child(event.node,'drawObjects'),'drawObj'):
                 wedge=child(draw,'wedge')
@@ -1659,7 +1666,10 @@ def make_wedge_links(events):
                 if span<1 or index+span>=len(notes):
                     continue
                 serial+=1
-                number=1+((serial-1)%16)
+                # MuseScore 3 silently drops MusicXML wedges numbered above
+                # six. Recycle the portable slots per voice instead of using
+                # an ever-increasing score-wide identifier.
+                number=1+((serial-1)%6)
                 kind=('diminuendo' if wedge.get('decrescendo')=='true'
                       else 'crescendo')
                 raw_color=wedge.get('color','')
@@ -1667,6 +1677,67 @@ def make_wedge_links(events):
                        else None)
                 starts[id(event)].append((number,kind,color))
                 stops[id(notes[index+span])].append(number)
+    return starts,stops
+
+
+def make_source_tie_links(events, display_overrides=None):
+    """Return only balanced Capella tie endpoints for each voice and pitch.
+
+    Historic Capella engraving tricks can leave lone tie-end markers on
+    later notes. MuseScore discards those orphans, so exporting them creates
+    a false semantic mismatch and misleading notation. Other scores contain
+    intentional start-only ties across hidden rests or intervening notation;
+    MuseScore closes those at the next occurrence of the same pitch. Follow
+    that playback rule in source order: retain a start only when a later
+    sounding chord can receive it, and retain an explicit stop only when it
+    closes an active start. Lone end markers are discarded.
+    """
+    display_overrides=display_overrides or {}
+    starts=set()
+    stops=set()
+    per_voice=collections.defaultdict(list)
+    for event in sorted(events,key=lambda item:(item.time,item.voice)):
+        if event.kind=='chord':
+            per_voice[event.voice].append(event)
+    for chords in per_voice.values():
+        sounding=[]
+        for event in chords:
+            override=display_overrides.get(id(event),{})
+            if (override.get('replace_source_tie') or
+                    override.get('print_as_rest')):
+                sounding.append(set())
+            else:
+                sounding.append({
+                    head.get('pitch')
+                    for head in children(child(event.node,'heads'),'head')
+                    if head.get('pitch')
+                })
+        future=collections.Counter(
+            pitch for pitches in sounding for pitch in pitches)
+        active=set()
+        for event,pitches in zip(chords,sounding):
+            for pitch in pitches:
+                future[pitch]-=1
+            if not pitches:
+                continue
+            heads=children(child(event.node,'heads'),'head')
+            ties={head.get('pitch'):child(head,'tie') for head in heads
+                  if child(head,'tie') is not None and head.get('pitch')}
+            # Any sounding occurrence closes a preceding start, whether or
+            # not Capella repeated an explicit end marker on the target.
+            for pitch in pitches.intersection(active):
+                tie=ties.get(pitch)
+                if tie is not None and tie.get('end')=='true':
+                    stops.add((id(event),pitch))
+                active.discard(pitch)
+            for head in heads:
+                tie=child(head,'tie')
+                pitch=head.get('pitch')
+                if tie is None or not pitch:
+                    continue
+                if tie.get('begin')=='true' and future[pitch]>0:
+                    starts.add((id(event),pitch))
+                    active.add(pitch)
     return starts,stops
 
 
@@ -2039,6 +2110,25 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             volta=child(obj,'volta')
             if volta is not None and volta.get('firstNumber'):
                 ending_starts[event.time]=volta.get('firstNumber')
+    # A Capella volta graphic marks its first measure, while the backward
+    # repeat barline defines the end of a first ending. The previous exporter
+    # stopped every volta at the end of its first measure, which made
+    # multi-measure endings play the wrong route even when they looked
+    # plausible. Preserve the complete first-ending span. Later endings keep
+    # their explicit source start and a one-measure visual span unless a
+    # future source format provides an unambiguous semantic endpoint.
+    ending_ranges={}
+    ending_stops=collections.defaultdict(list)
+    for ending_start,number in sorted(ending_starts.items()):
+        if ending_start not in boundaries[:-1]:
+            continue
+        start_index=boundaries.index(ending_start)
+        ending_stop=boundaries[start_index+1]
+        if number=='1':
+            ending_stop=next((position for position in boundaries[start_index+1:]
+                              if repeat_end(position)),ending_stop)
+        ending_ranges[ending_start]=(number,ending_stop)
+        ending_stops[ending_stop].append(number)
 
     # Staves introduced or removed later need a system boundary even when
     # the user selected Balanced/Compact; otherwise a fourth part can appear
@@ -2075,6 +2165,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         graphic_links=make_graphic_links(events)
         wedge_starts,wedge_stops=make_wedge_links(events)
         tuplet_links=make_tuplet_links(events)
+        source_tie_links=make_source_tie_links(
+            events,graphical_rest_overrides)
         state={'key':0,'time':opening_time,'clef':'treble','accidentals':{}}
         nnotes=0
         for mi in range(measure_count):
@@ -2214,7 +2306,8 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                                           display_override=graphical_rest_overrides.get(id(e)),
                                           split_before=e.time<start and not is_multi_rest,
                                           split_after=e.time+e.dur>stop and not is_multi_rest,
-                                          link_event=e)
+                                          link_event=e,
+                                          source_tie_links=source_tie_links)
                         if is_multi_rest:
                             nnotes += split_multimeasure_rest(
                                 measure, event_for_note.dur, active_divisions)
@@ -2222,22 +2315,31 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 if cursor<stop:
                     nnotes += emit_hidden_rest(
                         measure, stop-cursor, voice, active_divisions)
+            # MusicXML permits an incomplete final bar when it is marked
+            # implicit. Without this flag MuseScore rounds an exact short
+            # coda to the prevailing meter by inventing a hidden tail rest.
+            # That caused Altfrangg's four spurious 1/96 native events.
+            if (mi==measure_count-1 and
+                    stop-start<meter_fraction(state['time'])):
+                measure.set('implicit','yes')
             left_repeat=repeat_start(start)
-            if left_repeat or (pi==0 and start in ending_starts):
+            if left_repeat or (pi==0 and start in ending_ranges):
                 bl=sub(measure,'barline',location='left')
-                if pi==0 and start in ending_starts:
-                    num=ending_starts[start]
+                if pi==0 and start in ending_ranges:
+                    num=ending_ranges[start][0]
                     sub(bl,'ending',f'{num}.',number=num,type='start')
                 if left_repeat:sub(bl,'repeat',direction='forward')
             right_type=other_barline(stop)
             right_repeat=repeat_end(stop)
-            if right_repeat or right_type or (pi==0 and start in ending_starts):
+            if right_repeat or right_type or (pi==0 and stop in ending_stops):
                 bl=sub(measure,'barline',location='right')
                 if right_type:
                     sub(bl,'bar-style',{'double':'light-light','end':'light-heavy',
                                         'dashed':'dashed'}[right_type])
-                if pi==0 and start in ending_starts:
-                    sub(bl,'ending',number=ending_starts[start],type='stop' if ending_starts[start]=='1' else 'discontinue')
+                if pi==0:
+                    for num in ending_stops.get(stop,()):
+                        sub(bl,'ending',number=num,
+                            type='stop' if num=='1' else 'discontinue')
                 if right_repeat:sub(bl,'repeat',direction='backward')
             if mi==0 and start==0 and stop<meter:
                 measure.set('implicit','yes')
@@ -2369,5 +2471,12 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         {'measure':boundaries.index(time)+1,'number':number}
         for time,number in sorted(ending_starts.items())
         if time in boundaries
+    ]
+    report['ending_ranges']=[
+        {'start_measure':boundaries.index(start)+1,
+         'end_measure':boundaries.index(stop),
+         'number':number}
+        for start,(number,stop) in sorted(ending_ranges.items())
+        if start in boundaries and stop in boundaries
     ]
     return data,report

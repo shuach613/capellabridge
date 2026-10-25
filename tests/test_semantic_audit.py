@@ -164,6 +164,13 @@ def test_dynamics_hairpins_and_tempo_are_compared_at_exact_onsets(tmp_path):
     assert result["source_hairpins"] == result["native_hairpins"] == 1
     assert result["source_tempos"] == result["native_tempos"] == 1
 
+    # Native MuseScore stores BPM as quarter notes per second. Harmless
+    # floating-point serialization noise must not reject the score.
+    native_zip(output, native_xml.replace(
+        '<Tempo><tempo>1.5</tempo></Tempo>',
+        '<Tempo><tempo>1.4999966667</tempo></Tempo>'))
+    audit_musicxml_against_mscz(source, output)
+
     native_zip(output, native_xml.replace(
         '<Dynamic><subtype>f</subtype></Dynamic>', ''))
     with pytest.raises(SemanticIntegrityError, match="Dynamics changed"):
@@ -185,3 +192,27 @@ def test_volta_starts_are_checked_as_semantic_boundaries(tmp_path):
     native_zip(output, native_xml)
     result = audit_musicxml_against_mscz(source, output)
     assert result["source_volta_starts"] == result["native_volta_starts"] == 1
+    assert result["source_volta_spans"] == result["native_volta_spans"] == 1
+
+    native_zip(output, native_xml.replace(
+        '</Volta></Spanner>',
+        '</Volta><next><location><measures>2</measures></location></next></Spanner>'))
+    with pytest.raises(SemanticIntegrityError, match="Volta spans changed"):
+        audit_musicxml_against_mscz(source, output)
+
+
+def test_measure_level_native_navigation_is_audited(tmp_path):
+    source = tmp_path / "source.musicxml"
+    source.write_text(SOURCE.replace(
+        '<note>',
+        '<direction><direction-type><coda/></direction-type>'
+        '<sound coda="coda"/></direction><note>',1),encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    native_xml = native().replace(
+        '<Staff id="1"><Measure len="1/4">',
+        '<Staff id="1"><Measure len="1/4"><Marker>'
+        '<text>&lt;sym&gt;coda&lt;/sym&gt;</text><label>codab</label>'
+        '</Marker>',1)
+    native_zip(output,native_xml)
+    result=audit_musicxml_against_mscz(source,output)
+    assert result["source_navigation"]==result["native_navigation"]==1

@@ -133,7 +133,7 @@ def test_web_upload_without_login(monkeypatch,tmp_path):
     homepage=client.get('/')
     assert homepage.status_code==200
     assert homepage.headers['cache-control']=='no-store'
-    assert 'v1.7.7' in homepage.text
+    assert 'v1.7.8' in homepage.text
     assert 'start-over' in homepage.text
     assert 'Every score produces an editable result' in homepage.text
     assert client.get('/api/info').status_code==200
@@ -251,6 +251,102 @@ def test_only_top_staff_has_ending_brackets_and_measure_numbers():
     assert bottom.find('./measure/print/measure-numbering') is None
     assert top.xpath('count(.//barline/repeat)')==1
     assert bottom.xpath('count(.//barline/repeat)')==1
+
+
+def test_multimeasure_first_ending_runs_through_backward_repeat():
+    xml = b'''<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">
+    <layout><staves><staffLayout description="Piccolo"/></staves></layout>
+    <systems><system><staves><staff layout="Piccolo"><voices><voice><noteObjects>
+    <timeSign time="2/4"/><barline type="repBegin"/>
+    <chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>
+    <chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>
+    <chord><duration base="1/4"/><heads><head pitch="E5"/></heads>
+      <drawObjects><drawObj><volta firstNumber="1"/></drawObj></drawObjects></chord>
+    <chord><duration base="1/4"/><heads><head pitch="F5"/></heads></chord>
+    <chord><duration base="1/4"/><heads><head pitch="G5"/></heads></chord>
+    <chord><duration base="1/4"/><heads><head pitch="A5"/></heads></chord>
+    <barline type="repEnd"/>
+    <chord><duration base="1/4"/><heads><head pitch="B5"/></heads>
+      <drawObjects><drawObj><volta firstNumber="2"/></drawObj></drawObjects></chord>
+    <chord><duration base="1/4"/><heads><head pitch="C6"/></heads></chord>
+    </noteObjects></voice></voices></staff></staves></system></systems></score>'''
+    result,report=converter.serialize_musicxml(capx(xml))
+    score=ET.fromstring(result)
+    first_start=score.find('./part/measure[2]/barline[@location="left"]/ending')
+    first_stop=score.find('./part/measure[3]/barline[@location="right"]/ending')
+    assert (first_start.get('number'),first_start.get('type'))==('1','start')
+    assert (first_stop.get('number'),first_stop.get('type'))==('1','stop')
+    assert score.find('./part/measure[2]/barline[@location="right"]/ending') is None
+    assert report['ending_ranges'][0]=={
+        'start_measure':2,'end_measure':3,'number':'1'}
+
+
+def test_short_final_measure_is_implicit_without_invented_tail_padding():
+    xml = b'''<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">
+    <layout><staves><staffLayout description="Piccolo"/></staves></layout>
+    <systems><system><staves><staff layout="Piccolo"><voices><voice><noteObjects>
+    <timeSign time="2/4"/>
+    <chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>
+    <chord><duration base="1/4"/><heads><head pitch="D5"/></heads></chord>
+    <chord><duration base="1/4"/><heads><head pitch="E5"/></heads></chord>
+    </noteObjects></voice></voices></staff></staves></system></systems></score>'''
+    result,_=converter.serialize_musicxml(capx(xml))
+    measures=ET.fromstring(result).findall('./part/measure')
+    assert len(measures)==2
+    assert measures[0].get('implicit') is None
+    assert measures[1].get('implicit')=='yes'
+
+
+def test_only_balanced_matching_ties_are_exported():
+    xml = MINIMAL.replace(
+        b'<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>',
+        b'<chord><duration base="1/8"/><heads><head pitch="C5"><tie begin="true"/></head></heads></chord>'
+        b'<chord><duration base="1/8"/><heads><head pitch="C5"><tie end="true"/></head></heads></chord>',1
+    ).replace(
+        b'<chord><duration base="1/4"/><heads><head pitch="F5"><alter step="0"/></head></heads></chord>',
+        b'<chord><duration base="1/8"/><heads><head pitch="D5"/></heads></chord>'
+        b'<chord><duration base="1/8"/><heads><head pitch="D5"><tie end="true"/></head></heads></chord>',1
+    )
+    result,_=converter.serialize_musicxml(capx(xml))
+    score=ET.fromstring(result)
+    notes=score.findall('./part/measure/note')
+    assert [tie.get('type') for tie in notes[0].findall('tie')]==['start']
+    assert [tie.get('type') for tie in notes[1].findall('tie')]==['stop']
+    assert notes[3].find('tie') is None
+
+
+def test_balanced_start_only_ties_may_span_intervening_notes():
+    xml = MINIMAL.replace(
+        b'<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>',
+        b'<chord><duration base="1/4"/><heads><head pitch="C5"><tie begin="true"/></head></heads></chord>',1
+    ).replace(
+        b'<chord><duration base="1/4"/><heads><head pitch="F5"><alter step="0"/></head></heads></chord>',
+        b'<chord><duration base="1/4"/><heads><head pitch="F5"><alter step="0"/></head></heads></chord>'
+        b'<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>',1
+    )
+    result,_=converter.serialize_musicxml(capx(xml))
+    score=ET.fromstring(result)
+    tied=score.xpath('./part/measure/note[tie]')
+    assert [note.findtext('pitch/step') for note in tied]==['C']
+    assert [note.find('tie').get('type') for note in tied]==['start']
+
+
+def test_wedge_numbers_stay_in_musescore3_portable_range():
+    notes=[]
+    for index in range(14):
+        wedge=(b'<drawObjects><drawObj><basic noteRange="1"/>'
+               b'<wedge/></drawObj></drawObjects>' if index%2==0 else b'')
+        notes.append(b'<chord><duration base="1/4"/>'+wedge+
+                     b'<heads><head pitch="C5"/></heads></chord>')
+    xml=(b'<?xml version="1.0"?><score xmlns="http://www.capella.de/CapXML/2.0">'
+         b'<layout><staves><staffLayout description="Piccolo"/></staves></layout>'
+         b'<systems><system><staves><staff layout="Piccolo"><voices><voice><noteObjects>'
+         b'<timeSign time="4/4"/>'+b''.join(notes)+
+         b'</noteObjects></voice></voices></staff></staves></system></systems></score>')
+    result,_=converter.serialize_musicxml(capx(xml))
+    score=ET.fromstring(result)
+    starts=score.findall('.//wedge[@type="crescendo"]')
+    assert [int(wedge.get('number')) for wedge in starts]==[1,2,3,4,5,6,1]
 
 
 def test_print_ready_mscz_preserves_score_and_styles(tmp_path):

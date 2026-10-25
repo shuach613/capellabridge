@@ -62,6 +62,7 @@ class SemanticSnapshot:
     time_signatures: set[tuple[int, int, int, int]] = field(default_factory=set)
     key_signatures: set[tuple[int, int, int]] = field(default_factory=set)
     navigation: set[tuple[int, int, int, Fraction, str, str]] = field(default_factory=set)
+    volta_spans: set[tuple[int, int, str]] = field(default_factory=set)
 
 
 SOURCE_MARKS = {
@@ -177,9 +178,11 @@ def _source_snapshot(root) -> SemanticSnapshot:
     time_signatures: dict[tuple[int, int], tuple[int, int, int, int]] = {}
     key_signatures: dict[tuple[int, int], tuple[int, int, int]] = {}
     navigation: set[tuple[int, int, int, Fraction, str, str]] = set()
+    volta_spans: set[tuple[int, int, str]] = set()
     ignored_grace_rests = 0
     for part_index, part in enumerate(root.findall("part"), 1):
         divisions = 1
+        active_endings: dict[str, int] = {}
         for measure_index, measure in enumerate(part.findall("measure"), 1):
             cursor = Fraction(0)
             last_onset = Fraction(0)
@@ -216,8 +219,15 @@ def _source_snapshot(root) -> SemanticSnapshot:
                         if direction:
                             repeats.add((measure_index, direction))
                     for ending in item.findall("ending"):
+                        number = ending.get("number", "")
                         if ending.get("type") == "start":
-                            volta_starts.add((measure_index, ending.get("number", "")))
+                            volta_starts.add((measure_index, number))
+                            active_endings[number] = measure_index
+                        elif ending.get("type") in ("stop", "discontinue"):
+                            start_measure = active_endings.pop(number, None)
+                            if start_measure is not None:
+                                volta_spans.add((start_measure, measure_index,
+                                                 number))
                     continue
                 if name == "direction":
                     voice = int(item.findtext("voice", "1"))
@@ -317,7 +327,7 @@ def _source_snapshot(root) -> SemanticSnapshot:
         sorted(events.values(), key=lambda e: (e.part, e.measure, e.voice, e.onset)),
         breaths, repeats, ignored_grace_rests, volta_starts, hairpins,
         tuplets, tempos, dynamics, set(time_signatures.values()),
-        set(key_signatures.values()), navigation,
+        set(key_signatures.values()), navigation, volta_spans,
     )
 
 
@@ -376,6 +386,7 @@ def _native_snapshot(root) -> SemanticSnapshot:
     time_signatures: set[tuple[int, int, int, int]] = set()
     key_signatures: set[tuple[int, int, int]] = set()
     navigation: set[tuple[int, int, int, Fraction, str, str]] = set()
+    volta_spans: set[tuple[int, int, str]] = set()
     for part_index, staff in enumerate(score.findall("Staff"), 1):
         staff_id = staff.get("id", str(part_index))
         transposition = transpose.get(staff_id, 0)
@@ -412,12 +423,36 @@ def _native_snapshot(root) -> SemanticSnapshot:
                 repeats.add((measure_index, "forward"))
             if measure.find("endRepeat") is not None:
                 repeats.add((measure_index, "backward"))
+            # MuseScore stores imported Markers and Jumps as direct Measure
+            # children, not necessarily inside a voice. They still apply to
+            # the leading voice at this measure boundary.
+            for item in list(measure):
+                if item.tag == "Marker":
+                    label = item.findtext("label") or item.findtext("text", "")
+                    marker_type = item.findtext("subtype", "marker")
+                    navigation.add((part_index, measure_index, 1,
+                                    Fraction(0), marker_type, label))
+                elif item.tag == "Jump":
+                    value = "|".join((item.findtext("jumpTo", ""),
+                                      item.findtext("playUntil", ""),
+                                      item.findtext("continueAt", "")))
+                    navigation.add((part_index, measure_index, 1,
+                                    Fraction(0), "jump", value))
             for voice_index, voice in enumerate(measure.findall("voice"), 1):
                 for spanner in voice.findall('Spanner[@type="Volta"]'):
                     volta = spanner.find("Volta")
                     if volta is not None and volta.findtext("endings"):
-                        volta_starts.add((measure_index,
-                                          volta.findtext("endings", "")))
+                        number = volta.findtext("endings", "")
+                        volta_starts.add((measure_index, number))
+                        try:
+                            span = int(spanner.findtext(
+                                "next/location/measures", "1"))
+                        except ValueError as exc:
+                            raise SemanticIntegrityError(
+                                "Invalid native volta span") from exc
+                        volta_spans.add((measure_index,
+                                         measure_index + max(1, span) - 1,
+                                         number))
                 cursor = Fraction(0)
                 tuplet_stack: list[Fraction] = []
                 pending_marks: set[str] = set()
@@ -531,7 +566,7 @@ def _native_snapshot(root) -> SemanticSnapshot:
     return SemanticSnapshot(
         sorted(events, key=lambda e: (e.part, e.measure, e.voice, e.onset)),
         breaths, repeats, 0, volta_starts, hairpins, tuplets, tempos,
-        dynamics, time_signatures, key_signatures, navigation,
+        dynamics, time_signatures, key_signatures, navigation, volta_spans,
     )
 
 
@@ -663,13 +698,16 @@ def audit_musicxml_against_mscz(source_xml: Path, mscz: Path) -> dict:
         raise SemanticIntegrityError(
             f"Volta starts changed: source={sorted(source.volta_starts)} "
             f"native={sorted(native.volta_starts)}")
+    if source.volta_spans != native.volta_spans:
+        raise SemanticIntegrityError(
+            f"Volta spans changed: source={sorted(source.volta_spans)} "
+            f"native={sorted(native.volta_spans)}")
     if source.hairpins != native.hairpins:
         raise SemanticIntegrityError(
             f"Hairpins changed: source={sorted(source.hairpins)} "
             f"native={sorted(native.hairpins)}")
     for label, left, right in (
         ("Dynamics", source.dynamics, native.dynamics),
-        ("Tempos", source.tempos, native.tempos),
         ("Time signatures", source.time_signatures, native.time_signatures),
         # MuseScore omits an explicit initial C-major KeySig because zero is
         # its native default. Later changes back to zero remain significant.
@@ -681,15 +719,29 @@ def audit_musicxml_against_mscz(source_xml: Path, mscz: Path) -> dict:
         if left != right:
             raise SemanticIntegrityError(
                 f"{label} changed: source={sorted(left)} native={sorted(right)}")
+    source_tempos = {
+        (part, measure, voice, onset): value
+        for part, measure, voice, onset, value in source.tempos
+    }
+    native_tempos = {
+        (part, measure, voice, onset): value
+        for part, measure, voice, onset, value in native.tempos
+    }
+    if (source_tempos.keys() != native_tempos.keys() or any(
+            abs(source_tempos[key] - native_tempos[key]) > Fraction(1, 1000)
+            for key in source_tempos)):
+        raise SemanticIntegrityError(
+            f"Tempos changed: source={sorted(source.tempos)} "
+            f"native={sorted(native.tempos)}")
     source_navigation = {
-        (part, measure, voice, onset,
+        (part, measure,
          "marker" if kind in ("segno", "coda", "fine") else "jump")
-        for part, measure, voice, onset, kind, _ in source.navigation
+        for part, measure, _voice, _onset, kind, _ in source.navigation
     }
     native_navigation = {
-        (part, measure, voice, onset,
+        (part, measure,
          "jump" if kind == "jump" else "marker")
-        for part, measure, voice, onset, kind, _ in native.navigation
+        for part, measure, _voice, _onset, kind, _ in native.navigation
     }
     if source_navigation != native_navigation:
         raise SemanticIntegrityError(
@@ -708,6 +760,8 @@ def audit_musicxml_against_mscz(source_xml: Path, mscz: Path) -> dict:
         "native_repeats": len(native.repeats),
         "source_volta_starts": len(source.volta_starts),
         "native_volta_starts": len(native.volta_starts),
+        "source_volta_spans": len(source.volta_spans),
+        "native_volta_spans": len(native.volta_spans),
         "source_hairpins": len(source.hairpins),
         "native_hairpins": len(native.hairpins),
         "source_tuplet_boundaries": len(source.tuplets),

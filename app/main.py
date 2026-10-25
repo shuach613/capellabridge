@@ -22,7 +22,7 @@ from .score_validation import audit_mscz, ScoreIntegrityError
 from .semantic_audit import audit_musicxml_against_mscz, SemanticIntegrityError
 from .source_audit import audit_capx_against_musicxml
 
-VERSION='1.7.7'
+VERSION='1.7.8'
 BASE=Path(os.environ.get('CAPELLABRIDGE_DATA','/data')).resolve()
 JOBS=BASE/'jobs'
 STATIC=Path(__file__).parent/'static'
