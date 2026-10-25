@@ -27,6 +27,7 @@ from .musescore import (
 )
 from .engraving import prepare_print_ready
 from .legacy_cap import LegacyCapError, inspect_cap, inspect_native_mscz
+from .legacy_cap_normalize import normalize_legacy_cap_mscz
 from .score_validation import audit_mscz, ScoreIntegrityError
 from .semantic_audit import audit_musicxml_against_mscz, SemanticIntegrityError
 from .source_audit import audit_capx_against_musicxml
@@ -245,8 +246,20 @@ def validate_imported_cap(mscz: Path, report: dict, warnings: list[str]) -> str:
     round-trip.
     """
     errors=[]
+    native_repairs=[]
+    report['source_audit']={
+        'status':'unverified',
+        'scope':'native CAP importer output; no lossless CAP semantic ledger exists',
+    }
     try:
-        prepare_print_ready(mscz, report)
+        normalized=normalize_legacy_cap_mscz(mscz)
+        native_repairs.extend(normalized.get('repairs', []))
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        errors.append('Native CAP normalization: ' + str(exc))
+    try:
+        engraving=prepare_print_ready(mscz, report, source_format='cap')
+        native_repairs.extend(engraving.get('repairs', []))
+        report['engraving_repairs']=engraving
     except (OSError, ValueError, zipfile.BadZipFile) as exc:
         errors.append('Native print preparation: ' + str(exc))
     try:
@@ -257,7 +270,8 @@ def validate_imported_cap(mscz: Path, report: dict, warnings: list[str]) -> str:
         native=inspect_native_mscz(mscz)
         report['native_audit']=native
         counts=native.get('counts',{})
-        report['measures']=counts.get('measures')
+        report['measures']=counts.get('timeline_measures', counts.get('measures'))
+        report['measures_total']=counts.get('measures_total', counts.get('measures'))
         report['notes']=counts.get('notes',0)
         report['parts']=[f'Staff {index}' for index in range(
             1, int(counts.get('staves',0))+1
@@ -268,6 +282,10 @@ def validate_imported_cap(mscz: Path, report: dict, warnings: list[str]) -> str:
         )
     except LegacyCapError as exc:
         errors.append('Native CAP audit: ' + str(exc))
+    report['native_repairs']=native_repairs
+    if native_repairs:
+        report.setdefault('diagnostics', []).extend(native_repairs)
+    report['verification_scope']='native-structural-only'
     report['verification_diagnostics']=errors
     if errors or report.get('native_audit', {}).get('warnings'):
         report['certification']='manual-review'
@@ -275,7 +293,11 @@ def validate_imported_cap(mscz: Path, report: dict, warnings: list[str]) -> str:
         warnings.extend('Manual-review export: ' + error for error in errors)
     else:
         report['certification']='native-valid'
-        report['verification']='verified'
+        report['verification']='native-valid'
+        warnings.append(
+            'CAP source equivalence is not independently certified; '
+            'native structural checks passed.'
+        )
     return report['verification']
 
 

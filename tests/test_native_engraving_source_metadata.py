@@ -119,3 +119,46 @@ def test_graphical_rests_use_native_symbols_not_font_dependent_text(tmp_path):
     assert names==['rest8th','rest16th']
     prepare_print_ready(path, {'variable_staff_systems':False})
     assert [n.text for n in reread(path).findall('.//Symbol/name')] == names
+
+
+def test_legacy_cap_text_chords_and_rest_only_staff_are_normalized(tmp_path):
+    path=tmp_path/'legacy-cap.mscz'
+    root=ET.Element('museScore')
+    score=ET.SubElement(root,'Score')
+    staff=ET.SubElement(score,'Staff',id='1')
+    frame=ET.SubElement(staff,'VBox')
+    ET.SubElement(frame,'height').text='8'
+    measure=ET.SubElement(staff,'Measure')
+    voice=ET.SubElement(measure,'voice')
+    opening=ET.SubElement(voice,'StaffText')
+    ET.SubElement(opening,'autoplace').text='0'
+    ET.SubElement(opening,'text').text='A'
+    title=ET.SubElement(voice,'StaffText')
+    ET.SubElement(title,'autoplace').text='0'
+    ET.SubElement(title,'text').text='S Äffli'
+    chord=ET.SubElement(voice,'Chord')
+    lyric=ET.SubElement(chord,'Lyrics')
+    ET.SubElement(lyric,'text').text='Hm'
+    ET.SubElement(chord,'durationType').text='whole'
+    lyric_chord=ET.SubElement(voice,'Chord')
+    lyric=ET.SubElement(lyric_chord,'Lyrics')
+    ET.SubElement(lyric,'text').text='Alle'
+    ET.SubElement(lyric_chord,'durationType').text='whole'
+    rest_staff=ET.SubElement(score,'Staff',id='2')
+    rest_measure=ET.SubElement(rest_staff,'Measure')
+    rest_voice=ET.SubElement(rest_measure,'voice')
+    rest=ET.SubElement(rest_voice,'Rest')
+    ET.SubElement(rest,'durationType').text='whole'
+    with zipfile.ZipFile(path,'w') as z:
+        z.writestr('score.mscx',ET.tostring(root))
+
+    changes=prepare_print_ready(path,source_format='cap')
+    native=reread(path)
+
+    assert changes['chord_annotations']==1
+    assert native.find('.//Harmony/root').text=='19'
+    assert native.find('.//Harmony/name').text=='m'
+    assert native.find('.//Lyrics/text').text=='Alle'
+    assert native.find('./Score/Staff[1]/VBox/Text[style="Title"]/text').text=='S Äffli'
+    assert native.find('./Score/Staff[1]/Measure/voice/StaffText[text="A"]/autoplace').text=='1'
+    assert native.find('./Score/Staff[2]/visible').text=='0'

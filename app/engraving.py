@@ -7,6 +7,7 @@ and PNG previews all share the same staff/measure numbering preferences.
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import textwrap
 import zipfile
@@ -28,9 +29,205 @@ STYLE_VALUES = {
     'showFooter': '0',
 }
 
-def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
+_CHORD_ROOTS = {
+    'C': 14, 'D': 16, 'E': 18, 'F': 13,
+    'G': 15, 'A': 17, 'B': 19, 'H': 19,
+}
+_CAP_DATE = re.compile(r'\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b')
+_CAP_ROOT = re.compile(
+    r'^\s*([A-GH](?:(?:is|es)|[#b♯♭])?)(.*)$', re.IGNORECASE
+)
+_CAP_CHORD_SUFFIX = re.compile(
+    r'^(?:(?:m|min|maj|dim|aug|sus|add|no|omit)|[0-9]+|'
+    r'[+\-°øΔM#b()])*$', re.IGNORECASE
+)
+_CAP_NON_TITLE = {
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'intro', 'coda', 'solo',
+    'tutti', 'fine', 'rip', 'rit.', 'rall.', 'accelerando', '1', '2',
+    '3', '1.', '2.', '3.',
+}
+
+
+def _native_text(item) -> str:
+    text = item.find('text')
+    return ' '.join(''.join(text.itertext()).split()) if text is not None else ''
+
+
+def _cap_title_candidate(label: str) -> bool:
+    folded = label.casefold().strip()
+    if len(folded) < 4 or folded in _CAP_NON_TITLE:
+        return False
+    if _CAP_DATE.search(label):
+        return True
+    if re.search(
+        r'\b(arr\.?|arrangiert|arranged|bearb\.?|vom|von|by|eingerichtet|'
+        r'edit|intermezzo|abspielversion)\b', folded
+    ):
+        return True
+    if folded in {'reihenfolge', 'instrumental'}:
+        return False
+    # The legacy importer places the title in the opening measures.  Keep
+    # short performance directions in the staff and move only ordinary title
+    # text from that narrow opening window.
+    return not any(word in folded for word in (
+        'crescendo', 'diminuendo', 'piano', 'forte', 'refrain',
+    ))
+
+
+def _append_frame_text(frame, style, value) -> bool:
+    value = value.strip()
+    if not value:
+        return False
+    for item in frame.findall('Text'):
+        if item.findtext('style') == style and _native_text(item) == value:
+            return False
+    item = ET.SubElement(frame, 'Text')
+    ET.SubElement(item, 'style').text = style
+    ET.SubElement(item, 'text').text = value
+    return True
+
+
+def _normalize_cap_opening_text(score, frame, changes: dict) -> None:
+    """Move importer title/credit StaffText into a real title frame."""
+    leading = score.find('Staff')
+    if leading is None:
+        return
+    candidates = []
+    for measure in leading.findall('Measure')[:3]:
+        for voice in measure.findall('voice'):
+            for item in list(voice.findall('StaffText')):
+                label = _native_text(item)
+                if label and _cap_title_candidate(label):
+                    candidates.append((voice, item, label))
+    if not candidates:
+        return
+    title = next((label for _, _, label in candidates
+                  if not _CAP_DATE.search(label) and not re.search(
+                      r'\b(arr\.?|arrangiert|arranged|bearb\.?|vom|von|by|'
+                      r'eingerichtet|edit)\b', label, re.I)), None)
+    if title is None:
+        title = candidates[0][2]
+    subtitles = []
+    for voice, item, label in candidates:
+        if label != title:
+            subtitles.append(label)
+        voice.remove(item)
+    if _append_frame_text(frame, 'Title', title):
+        changes['repairs'].append(f'Moved CAP title into title frame: {title}')
+    if subtitles:
+        value = '\n'.join(dict.fromkeys(subtitles))
+        if _append_frame_text(frame, 'Subtitle', value):
+            changes['repairs'].append('Moved CAP opening credits into title frame')
+    changes['title_text'] = title
+
+
+def _parse_chord_label(label: str):
+    match = _CAP_ROOT.match(label)
+    if not match:
+        return None
+    root_text, suffix = match.groups()
+    root_name = root_text[0].upper()
+    accidental = root_text[1:].casefold()
+    root = _CHORD_ROOTS[root_name]
+    if accidental in ('#', '♯', 'is'):
+        root += 7
+    elif accidental in ('b', '♭', 'es'):
+        root -= 7
+    suffix = suffix.strip()
+    base = None
+    slash = re.search(r'/\s*([A-GH](?:(?:is|es)|[#b♯♭])?)\s*$', suffix,
+                      re.IGNORECASE)
+    if slash:
+        base_text = slash.group(1)
+        base = _CHORD_ROOTS[base_text[0].upper()]
+        accidental = base_text[1:].casefold()
+        if accidental in ('#', '♯', 'is'):
+            base += 7
+        elif accidental in ('b', '♭', 'es'):
+            base -= 7
+        suffix = suffix[:slash.start()].strip()
+    if suffix and not _CAP_CHORD_SUFFIX.fullmatch(suffix):
+        return None
+    return root, suffix, base
+
+
+def _normalize_cap_chord_annotations(score, changes: dict) -> None:
+    """Turn CAP-imported Lyrics chord labels into native Harmony objects."""
+    for voice in score.findall('.//voice'):
+        for chord in list(voice.findall('Chord')):
+            labels = []
+            for lyric in list(chord.findall('Lyrics')):
+                label = ' '.join(''.join(lyric.itertext()).split())
+                parsed = _parse_chord_label(label) if label else None
+                # Lyrics can be genuine sung text. Only remove a label when
+                # its root/suffix grammar proves that it is a chord symbol;
+                # unknown text remains a lyric instead of being relabelled.
+                if parsed is not None:
+                    labels.append((lyric, label, parsed))
+            if not labels:
+                continue
+            for lyric, _, parsed in labels:
+                chord.remove(lyric)
+            # One chord symbol is the meaningful annotation at this onset;
+            # retain any additional parsed source labels as separate objects.
+            for label_index, (_, _, parsed) in enumerate(labels):
+                root, suffix, base = parsed
+                annotation = ET.Element('Harmony')
+                ET.SubElement(annotation, 'root').text = str(root)
+                if suffix:
+                    ET.SubElement(annotation, 'name').text = suffix
+                if base is not None:
+                    ET.SubElement(annotation, 'base').text = str(base)
+                index = list(voice).index(chord) + label_index
+                voice.insert(index, annotation)
+                changes['chord_annotations'] += 1
+    if changes['chord_annotations']:
+        changes['repairs'].append(
+            f'Converted {changes["chord_annotations"]} CAP chord annotation(s) '
+            'to native MuseScore objects'
+        )
+
+
+def _hide_rest_only_staves(score, changes: dict) -> None:
+    for staff_index, staff in enumerate(score.findall('Staff'), 1):
+        if staff.find('.//Chord') is not None or staff.find('.//Note') is not None:
+            continue
+        if staff.find('.//Rest') is None:
+            continue
+        visible = staff.find('visible')
+        if visible is None:
+            visible = ET.SubElement(staff, 'visible')
+        if visible.text != '0':
+            visible.text = '0'
+            changes['hidden_staves'].append(staff_index)
+            changes['repairs'].append(
+                f'Hidden rest-only imported CAP staff {staff_index}'
+            )
+
+
+def _enable_native_text_autoplace(score, changes: dict) -> None:
+    count = 0
+    for item in score.iter():
+        if item.tag not in ('StaffText', 'SystemText'):
+            continue
+        if item.find('offset') is not None or item.find('pos') is not None:
+            continue
+        autoplace = item.find('autoplace')
+        if autoplace is None:
+            autoplace = ET.SubElement(item, 'autoplace')
+            count += 1
+        elif autoplace.text != '1':
+            autoplace.text = '1'
+            count += 1
+    if count:
+        changes['repairs'].append(f'Enabled autoplace for {count} CAP text object(s)')
+
+
+def prepare_print_ready(mscz_path: Path, metadata: dict | None = None,
+                        source_format: str | None = None) -> dict:
     """Update score-wide MuseScore styles, preserving every ZIP member."""
     mscz_path = Path(mscz_path)
+    changes = {'repairs': [], 'hidden_staves': [], 'chord_annotations': 0}
     temp = None
     try:
         with zipfile.ZipFile(mscz_path, 'r') as archive:
@@ -50,7 +247,9 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                 node = style.find(key)
                 if node is None:
                     node = ET.SubElement(style, key)
-                if key == 'hideEmptyStaves' and metadata:
+                if key == 'hideEmptyStaves' and source_format == 'cap':
+                    value = '1'
+                elif key == 'hideEmptyStaves' and metadata:
                     value = '1' if metadata.get('variable_staff_systems') else '0'
                 node.text = value
             # MuseScore's MusicXML importer can add subtitle and composer in
@@ -204,6 +403,18 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
                                 txt.text=label
                                 ET.SubElement(marker,'offset').set('x','0')
                                 marker.find('offset').set('y','8')
+            if source_format == 'cap':
+                frame = score.find('./Staff/VBox')
+                if frame is None:
+                    leading = score.find('Staff')
+                    if leading is not None:
+                        frame = ET.Element('VBox')
+                        leading.insert(0, frame)
+                if frame is not None:
+                    _normalize_cap_opening_text(score, frame, changes)
+                _normalize_cap_chord_annotations(score, changes)
+                _hide_rest_only_staves(score, changes)
+                _enable_native_text_autoplace(score, changes)
             # MusicXML imports a group of four independent parts as a single
             # barLineSpan=4 on the first staff. MuseScore 3 treats staff
             # spanning as a per-adjacent-staff flag, making bars appear joined
@@ -243,3 +454,4 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None) -> None:
     finally:
         if temp is not None:
             temp.unlink(missing_ok=True)
+    return changes

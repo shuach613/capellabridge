@@ -10,7 +10,9 @@ function link(label,url,other=false){const a=node('a','↓ '+label,'download'+(o
 function display(r){
   const card=node('article',undefined,'result-item');
   const heading=node('div',undefined,'result-title');
-  const status=r.verification==='manual-review'?'MuseScore ready · manual review':`${r.measures??'—'} measures · ${(r.parts||[]).length} parts`;
+  const status=r.verification==='manual-review'?'MuseScore ready · manual review':
+    r.verification==='native-valid'?'MuseScore ready · native checks only':
+    `${r.measures??'—'} measures · ${(r.parts||[]).length} parts`;
   heading.append(node('strong',r.source_filename),node('span',r.ok?status:'Needs attention'));
   card.append(heading);
   if(!r.ok){

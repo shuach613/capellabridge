@@ -114,10 +114,22 @@ def inspect_native_mscz(path: Path) -> dict:
     notes = [note for chord in chords for note in chord.iter()
              if _local_name(note) == "Note"]
     hidden_pitched = sum(1 for note in notes if _has_hidden_pitch(note))
+    measures_per_staff = [len(staff.findall("Measure")) for staff in staves]
+    rest_only_staves = [index for index, staff in enumerate(staves, 1)
+                        if staff.find('.//Chord') is None
+                        and staff.find('.//Note') is None
+                        and staff.find('.//Rest') is not None]
+    visible_staves = [index for index, staff in enumerate(staves, 1)
+                      if staff.findtext('visible') != '0']
 
     count_map = {
         "staves": len(staves),
         "measures": len(measures),
+        "measures_total": len(measures),
+        "measures_per_staff": measures_per_staff,
+        "timeline_measures": max(measures_per_staff, default=0),
+        "visible_staves": len(visible_staves),
+        "rest_only_staves": rest_only_staves,
         "voices": len(voices),
         "chords": len(chords),
         "notes": len(notes),
@@ -132,6 +144,8 @@ def inspect_native_mscz(path: Path) -> dict:
         "time_signatures": _count(root, ("TimeSig",)),
         "key_signatures": _count(root, ("KeySig",)),
         "repeats": _count(root, ("RepeatMeasure", "repeat")),
+        "start_repeats": _count(root, ("startRepeat",)),
+        "end_repeats": _count(root, ("endRepeat",)),
         "voltas": _count(root, ("Volta",)),
         "jumps": _count(root, ("Jump",)),
         "markers": _count(root, ("Marker",)),
@@ -140,6 +154,7 @@ def inspect_native_mscz(path: Path) -> dict:
             "Ornament", "Trill", "trill", "Symbol",
         )),
         "lyrics": _count(root, ("Lyrics", "Verse",)),
+        "harmonies": _count(root, ("Harmony",)),
         "text_objects": _count(root, (
             "StaffText", "SystemText", "Text", "Dynamic", "Tempo",
         )),
@@ -156,7 +171,23 @@ def inspect_native_mscz(path: Path) -> dict:
             f"Native score contains {hidden_pitched} hidden pitched event(s); "
             "verify playback and voice routing."
         )
-    return {"counts": count_map, "warnings": warnings, "score_member": score_name}
+    navigation = {
+        "start_repeats": count_map["start_repeats"],
+        "end_repeats": count_map["end_repeats"],
+        "voltas": count_map["voltas"],
+        "jumps": count_map["jumps"],
+        "markers": count_map["markers"],
+        "explicit_navigation_objects": sum(
+            count_map[key] for key in ("start_repeats", "end_repeats",
+                                       "voltas", "jumps", "markers")
+        ),
+    }
+    return {
+        "counts": count_map,
+        "navigation": navigation,
+        "warnings": warnings,
+        "score_member": score_name,
+    }
 
 
 def is_valid_mscz(path: Path) -> bool:

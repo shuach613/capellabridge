@@ -68,13 +68,15 @@ This recreates the container with the latest image while retaining the named vol
 3. Convert, preview the results, and download MuseScore, MusicXML, PDF or the full batch ZIP.
 
 Every score for which MuseScore creates a genuine native archive receives an
-MSCZ. CapellaBridge separately certifies the result by comparing pitches,
-durations, voices, tuplets, ties, slurs, articulations, dynamics, hairpins,
-tempo, breath marks, repeats, endings, key and time signatures, navigation and
-transposition. A score that passes is labelled **verified**. If a structural or
-musical check cannot certify it, the MSCZ is retained and labelled **manual
-review**, with the full diagnostics in its JSON report. A failure to render a
-PDF or preview likewise does not remove an already-created editable score.
+MSCZ. CAPX scores can be source-audited against their generated MusicXML and
+are labelled **verified** when that audit and the native checks pass. Legacy
+CAP scores are imported directly to native MSCZ and are labelled
+**native-valid** when the archive and native timing/structure pass; the report
+explicitly keeps source equivalence unverified because the binary importer has
+no lossless source event ledger. Ambiguous tuplets or other unresolved
+structural issues are labelled **manual review**, while the editable MSCZ is
+still retained. A failure to render a PDF or preview likewise does not remove
+an already-created editable score.
 
 After a batch finishes, use **Start over** to clear the queue and results
 before selecting another batch.

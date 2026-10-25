@@ -119,7 +119,9 @@ def test_cap_processes_native_first_and_exports_secondarily(monkeypatch, tmp_pat
     assert result["import_strategy"] == "native-cap-to-mscz"
     assert result["cap_source"]["signature"] == "cap3-v:a"
     assert result["certification"] == "native-valid"
-    assert result["verification"] == "verified"
+    assert result["verification"] == "native-valid"
+    assert result["verification_scope"] == "native-structural-only"
+    assert result["source_audit"]["status"] == "unverified"
     assert result["files"]["mscz"].endswith(".mscz")
     assert result["files"]["musicxml"].endswith(".musicxml")
     assert result["files"]["pdf"].endswith(".pdf")

@@ -45,22 +45,27 @@ references, but they do not contain a reliable machine-readable note ledger.
 
 ## Audit of the current CAP path
 
-The current application accepts `.cap`, but its path is still a best-effort
-delegation chain:
+The legacy path now keeps MuseScore's native CAP import as the authoritative
+editable score:
 
-1. MuseScore imports CAP and exports MusicXML.
-2. CapellaBridge imports that MusicXML back into MuseScore to create MSCZ.
-3. The MSCZ is structurally checked and round-tripped again.
+1. CapellaBridge validates the `cap3-v:a` signature and records the source
+   size and SHA-256 hash.
+2. MuseScore imports CAP directly to MSCZ.
+3. A CAP-specific normalizer preserves shared irregular bar boundaries,
+   repairs isolated silent gaps, removes only provably orphaned tuplet closes,
+   and leaves ambiguous tuplet scopes untouched for manual review.
+4. Native CAP title/credit text is moved into a title frame, chord labels are
+   converted from importer Lyrics into native Harmony objects, rest-only
+   staves are hidden without deleting their events, and text autoplace is
+   restored.
+5. The same final MSCZ is structurally audited and exported to MusicXML and
+   PDF.
 
-The semantic audit therefore validates the MusicXML-to-MSCZ round trip, not the
-original CAP-to-MusicXML conversion. A CAP can consequently receive a
-successful native round-trip result even when the first legacy import already
-lost a tie, articulation, voice, navigation object or text element. The CAP
-report also currently has no source event counts, no CAP-specific provenance,
-and no source-to-output certification state.
-
-This is the central reliability gap. The existing CAPX path has a structured
-CapXML source audit; the CAP path does not.
+The CAP report now separates `native-valid` from `verified`: native-valid
+means that the MSCZ is readable and its native timing/structure passed. CAP is
+still marked source-unverified because the binary importer has no lossless
+source event ledger. Unclosed or otherwise structurally ambiguous tuplets
+remain manual-review, but the editable MSCZ is retained.
 
 ## Recommended implementation
 
@@ -82,19 +87,15 @@ to MSCZ. Export MusicXML from the final native score only as a secondary
 deliverable. This removes one lossy conversion boundary and keeps the
 MuseScore legacy importer as the source decoder.
 
-### 2. Add a CAP-specific pipeline and report
+### 2. CAP-specific pipeline and report
 
-Add a `legacy_cap` adapter that:
-
-- verifies the `cap3-v:a` signature and rejects unsupported legacy signatures
-  with a precise manual-review message;
-- imports directly to MSCZ;
-- runs the native ZIP, measure-duration, voice and tuplet audits;
-- exports MusicXML and PDF from the same final MSCZ;
-- records importer version, source hash, output hash, page count, staff count,
-  measure count, warnings and every structural diagnostic;
-- always retains a valid MSCZ even when certification fails;
-- labels a result `manual-review` unless CAP-specific checks pass.
+The implementation records importer provenance, source and native inventories,
+timeline and total measure counts, navigation object counts, safe native
+repairs, the verification scope, and every unresolved structural diagnostic.
+It always retains a genuine MSCZ after a late export or audit failure. The
+browser distinguishes `native-valid` from `manual-review` so a readable CAP
+score is never presented as source-equivalent merely because MuseScore opened
+it.
 
 The existing CAPX converter and its source audit remain unchanged. CAP and CAPX
 should share only the native-score validation and output packaging layers.
@@ -131,8 +132,8 @@ with the private corpus audit run locally or in a protected workflow.
 
 For CAP, distinguish these states:
 
-- `native-valid`: MuseScore created a readable MSCZ and all structural checks
-  pass;
+- `native-valid`: MuseScore created a readable MSCZ and all native structural
+  checks pass; source equivalence remains unverified;
 - `reference-reviewed`: the paired PDF review and corpus checks pass;
 - `manual-review`: the MSCZ exists but a source comparison, importer warning or
   structural check is unresolved.

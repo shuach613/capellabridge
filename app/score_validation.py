@@ -65,18 +65,32 @@ def _duration(obj, meter, tuplet_scale):
     return dotted * tuplet_scale
 
 
-def _measure_duration(voice, meter):
+def _tuplet_ratio(item):
+    """Return the duration multiplier represented by a native tuplet marker."""
+    try:
+        return Fraction(int(item.findtext("normalNotes", "2")),
+                        int(item.findtext("actualNotes", "3")))
+    except (ValueError, ZeroDivisionError) as exc:
+        raise ScoreIntegrityError("Invalid native tuplet ratio") from exc
+
+
+def _measure_duration(voice, meter, tuplet_stack=None):
+    """Measure one voice while optionally carrying tuplets across barlines.
+
+    MuseScore stores tuplets as a time-ordered ``Tuplet`` marker followed by
+    notes and an ``endTuplet`` marker.  The markers are allowed to straddle a
+    measure boundary.  A fresh stack for every measure therefore creates
+    false "unclosed" errors and, worse, can make a valid score look unsafe.
+    Callers that inspect a complete staff pass a mutable stack per voice and
+    check it only after the last measure.  The default remains strict for the
+    small public helper and existing tests.
+    """
     total = Fraction(0)
-    ratio_stack = []
+    ratio_stack = tuplet_stack if tuplet_stack is not None else []
     timed = []
     for item in voice:
         if item.tag == "Tuplet":
-            try:
-                ratio = Fraction(int(item.findtext("normalNotes", "2")),
-                                 int(item.findtext("actualNotes", "3")))
-            except (ValueError, ZeroDivisionError) as exc:
-                raise ScoreIntegrityError("Invalid native tuplet ratio") from exc
-            ratio_stack.append(ratio)
+            ratio_stack.append(_tuplet_ratio(item))
         elif item.tag == "endTuplet":
             if not ratio_stack:
                 raise ScoreIntegrityError("Unexpected tuplet closing marker")
@@ -88,7 +102,7 @@ def _measure_duration(voice, meter):
             duration = _duration(item, meter, scale)
             total += duration
             timed.append((item, duration))
-    if ratio_stack:
+    if tuplet_stack is None and ratio_stack:
         raise ScoreIntegrityError("Unclosed native tuplet")
     return total, timed
 
@@ -121,6 +135,7 @@ def audit_mscz(path: Path, repair: bool = False,
             discrepancies = []
             for staff_index, staff in enumerate(score.findall("Staff"), 1):
                 meter = Fraction(4, 4)
+                tuplet_stacks = {}
                 for measure_index, measure in enumerate(staff.findall("Measure"), 1):
                     for signature in measure.findall("./voice/TimeSig"):
                         num = int(signature.findtext("sigN", "4"))
@@ -130,7 +145,8 @@ def audit_mscz(path: Path, repair: bool = False,
                         meter = Fraction(num, den)
                     intended = Fraction(measure.get("len")) if measure.get("len") else meter
                     for voice_index, voice in enumerate(measure.findall("voice"), 1):
-                        actual, timed = _measure_duration(voice, intended)
+                        stack = tuplet_stacks.setdefault(voice_index, [])
+                        actual, timed = _measure_duration(voice, intended, stack)
                         if not timed or actual == intended:
                             continue
                         gap = intended - actual
@@ -156,6 +172,11 @@ def audit_mscz(path: Path, repair: bool = False,
                         discrepancies.append(
                             f"{location} is {direction}: {actual} of {intended} "
                             f"whole notes (difference {gap})")
+                for voice_index, stack in tuplet_stacks.items():
+                    if stack:
+                        raise ScoreIntegrityError(
+                            f"Unclosed native tuplet in staff {staff_index}, "
+                            f"voice {voice_index}")
             if discrepancies:
                 detail = "; ".join(discrepancies[:12])
                 if len(discrepancies) > 12:
