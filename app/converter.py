@@ -9,6 +9,7 @@ import io
 import re
 import zipfile
 import collections
+from copy import deepcopy
 from bisect import bisect_right
 from math import lcm
 from dataclasses import dataclass, field
@@ -881,6 +882,52 @@ def note_type_for_duration(duration):
             if written == duration:
                 return name, dots
     return None
+
+
+def rest_duration_parts(duration):
+    """Split a duration into two representable rests when possible."""
+    # Prefer simple undotted values. This keeps a 2/4 rest as quarter +
+    # quarter instead of manufacturing an awkward 31/64 + 1/64 split.
+    for first in sorted(DURATION_TYPES, reverse=True):
+        if first >= duration:
+            continue
+        second = duration - first
+        if note_type_for_duration(second):
+            return [first, second]
+    return [duration]
+
+
+def split_multimeasure_rest(measure, duration, divisions):
+    """Prevent MuseScore from coalescing a source multi-measure rest."""
+    parts = rest_duration_parts(duration)
+    if len(parts) == 1:
+        return 0
+    note = measure[-1]
+    if note.tag != 'note' or note.find('rest') is None:
+        return 0
+    index = len(measure) - 1
+    replacements = []
+    for part in parts:
+        replacement = deepcopy(note)
+        rest = replacement.find('rest')
+        rest.attrib.pop('measure', None)
+        replacement.find('duration').text = str(to_div(part, divisions))
+        for dot in replacement.findall('dot'):
+            replacement.remove(dot)
+        type_node = replacement.find('type')
+        if type_node is None:
+            type_node = ET.Element('type')
+            voice = replacement.find('voice')
+            replacement.insert(list(replacement).index(voice) + 1, type_node)
+        note_name, dot_count = note_type_for_duration(part)
+        type_node.text = note_name
+        for _ in range(dot_count):
+            replacement.append(ET.Element('dot'))
+        replacements.append(replacement)
+    measure.remove(note)
+    for offset, replacement in enumerate(replacements):
+        measure.insert(index + offset, replacement)
+    return len(replacements) - 1
 
 
 # Single characters from capella3 are music glyph IDs, not literal text.
@@ -2012,6 +2059,9 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                                           split_before=e.time<start and not is_multi_rest,
                                           split_after=e.time+e.dur>stop and not is_multi_rest,
                                           link_event=e)
+                        if is_multi_rest:
+                            nnotes += split_multimeasure_rest(
+                                measure, event_for_note.dur, active_divisions)
                         cursor=event_for_note.time+event_for_note.dur
                 if cursor<stop:
                     sub(sub(measure,'forward'),'duration',to_div(stop-cursor,active_divisions))
