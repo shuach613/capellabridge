@@ -111,7 +111,9 @@ def test_web_upload_without_login(monkeypatch,tmp_path):
     assert 'start-over' in homepage.text
     assert 'allow-review' in homepage.text
     assert client.get('/api/info').status_code==200
-    assert client.get('/static/app.js').status_code==200
+    app_js=client.get('/static/app.js')
+    assert app_js.status_code==200
+    assert 'background=1' in app_js.text
     with client:
         response=client.post('/api/convert?layout=balanced',files=[('files',('Tiny.capx',capx(MINIMAL),'application/octet-stream'))])
     assert response.status_code==200,response.text
@@ -122,6 +124,50 @@ def test_web_upload_without_login(monkeypatch,tmp_path):
     assert client.get(payload['batch_url']).status_code==200
     assert client.get(files['mscz']).status_code==200
     assert client.post('/api/account/password',json={'current_password':'x','new_password':'abcdefghijkl'}).status_code==404
+
+
+def test_background_batch_accepts_seven_files(monkeypatch,tmp_path):
+    from app import main
+    monkeypatch.setattr(main,'JOBS',tmp_path/'jobs')
+
+    def fake_process(name,ext,raw,work,layout,allow_unverified=False):
+        stem=Path(name).stem
+        mscz=work/f'{stem}.mscz'
+        musicxml=work/f'{stem}.musicxml'
+        pdf=work/f'{stem}.pdf'
+        preview=work/f'{stem}.png'
+        report=work/f'{stem}-report.json'
+        with zipfile.ZipFile(mscz,'w') as archive:
+            archive.writestr('score.mscx','<museScore version="3.02"><Score><Staff/></Score></museScore>')
+        musicxml.write_text('<score-partwise/>')
+        pdf.write_bytes(b'%PDF-1.4\n%test')
+        preview.write_bytes(b'PNG')
+        report.write_text('{}')
+        return {'source_filename':name,'layout':layout,'warnings':[],
+                'files':{'mscz':mscz.name,'musicxml':musicxml.name,
+                         'pdf':pdf.name,'preview':preview.name,
+                         'report':report.name},'parts':[],'measures':1}
+
+    monkeypatch.setattr(main,'process_score',fake_process)
+    data=capx(MINIMAL)
+    files=[('files',(f'Score {index}.capx',data,'application/octet-stream'))
+           for index in range(7)]
+    with TestClient(main.app) as client:
+        response=client.post('/api/convert?layout=balanced&background=1',files=files)
+        assert response.status_code==202,response.text
+        payload=response.json()
+        assert payload['total']==7
+        status=None
+        for _ in range(50):
+            status=client.get(payload['status_url'])
+            assert status.status_code==200,status.text
+            if status.json()['state'] in ('completed','failed'):break
+        result=status.json()
+        assert result['state']=='completed',result
+        assert result['completed']==7
+        assert len(result['results'])==7
+        assert all(item['ok'] for item in result['results'])
+        assert client.get(result['batch_url']).status_code==200
 
 
 def test_only_top_staff_has_ending_brackets_and_measure_numbers():

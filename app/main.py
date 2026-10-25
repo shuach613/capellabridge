@@ -2,7 +2,6 @@
 from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
-import io
 import json
 import os
 import re
@@ -15,7 +14,7 @@ from pathlib import Path
 from urllib.parse import quote
 from typing import Annotated
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from .converter import CapellaError, serialize_musicxml
 from .musescore import ConversionFailure, convert, create_preview, musescore_path
@@ -49,6 +48,31 @@ async def lifespan(app):
 
 app=FastAPI(title='CapellaBridge',version=VERSION,docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
 semaphore=asyncio.Semaphore(1)
+background_tasks=set()
+
+
+def valid_job_id(job_id):
+    return bool(re.fullmatch(r'[0-9a-f]{32}', job_id))
+
+
+def write_job_status(folder, status):
+    """Persist status so polling remains reliable across request boundaries."""
+    target=folder/'status.json'
+    temporary=folder/'status.json.tmp'
+    temporary.write_text(json.dumps(status, ensure_ascii=False), encoding='utf-8')
+    os.replace(temporary, target)
+
+
+def read_job_status(job_id):
+    if not valid_job_id(job_id):
+        raise HTTPException(404, 'Job not found')
+    status=JOBS/job_id/'status.json'
+    if not status.is_file():
+        raise HTTPException(404, 'Job not found or expired')
+    try:
+        return json.loads(status.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(503, 'Job status is temporarily unavailable') from exc
 
 def cleanup():
     JOBS.mkdir(parents=True,exist_ok=True)
@@ -86,23 +110,25 @@ def safe_filename(filename):
     return (stem[:95] or 'score')
 
 
-async def receive(upload:UploadFile):
+async def receive_to_path(upload:UploadFile, destination: Path):
     name=safe_filename(upload.filename or 'score.capx')
     ext=Path(name).suffix.lower()
     if ext not in ('.cap','.capx'):
         raise HTTPException(415,f'Unsupported file type: {ext or "none"}; upload .cap or .capx')
-    buffer=io.BytesIO()
-    while True:
-        block=await upload.read(1024*1024)
-        if not block: break
-        if buffer.tell()+len(block)>MAX_FILE:
-            raise HTTPException(413,f'{name} exceeds {MAX_FILE//(1024*1024)} MB upload limit')
-        buffer.write(block)
-    raw=buffer.getvalue()
-    if not raw:raise HTTPException(400,f'{name} is empty')
-    if ext=='.capx' and not zipfile.is_zipfile(io.BytesIO(raw)):
+    size=0
+    with destination.open('wb') as output:
+        while True:
+            block=await upload.read(1024*1024)
+            if not block: break
+            size+=len(block)
+            if size>MAX_FILE:
+                raise HTTPException(413,f'{name} exceeds {MAX_FILE//(1024*1024)} MB upload limit')
+            output.write(block)
+    if not size:
+        raise HTTPException(400,f'{name} is empty')
+    if ext=='.capx' and not zipfile.is_zipfile(destination):
         raise HTTPException(422,f'{name} is not a valid ZIP-based CAPX document')
-    return name,ext,raw
+    return name,ext
 
 
 def pdf_page_count(path: Path) -> int | None:
@@ -239,49 +265,134 @@ def process_score(name,ext,raw,work,layout,allow_unverified=False):
     return info
 
 
+async def run_batch(job_id, incoming, layout, review):
+    """Convert a batch outside the browser's long-running upload request."""
+    folder=JOBS/job_id
+    total=len(incoming)
+    results=[]
+    write_job_status(folder, {
+        'job_id':job_id, 'state':'running', 'total':total,
+        'completed':0, 'results':[], 'batch_url':None,
+    })
+    try:
+        async with semaphore:
+            for index,(name,ext,input_path) in enumerate(incoming):
+                out=folder/f'{index+1:02d}'
+                out.mkdir()
+                try:
+                    result=await asyncio.to_thread(
+                        process_score, name, ext, input_path.read_bytes(),
+                        out, layout, review
+                    )
+                    result['downloads']={
+                        k:f'/api/files/{job_id}/{index+1:02d}/{quote(v)}'
+                        for k,v in result['files'].items()
+                    }
+                    results.append({'ok':True,**result})
+                except (CapellaError,ConversionFailure,ScoreIntegrityError,
+                        ValueError,zipfile.BadZipFile) as exc:
+                    shutil.rmtree(out,ignore_errors=True)
+                    results.append({'ok':False,'source_filename':name,
+                                    'error':str(exc)[:500]})
+                except Exception:
+                    shutil.rmtree(out,ignore_errors=True)
+                    results.append({'ok':False,'source_filename':name,
+                                    'error':'Internal conversion error. Check server logs.'})
+                finally:
+                    input_path.unlink(missing_ok=True)
+                write_job_status(folder, {
+                    'job_id':job_id, 'state':'running', 'total':total,
+                    'completed':index+1, 'results':results, 'batch_url':None,
+                })
+            shutil.rmtree(folder/'input',ignore_errors=True)
+            if any(result['ok'] for result in results):
+                batch=folder/'CapellaBridge-batch.zip'
+                with zipfile.ZipFile(batch,'w',compression=zipfile.ZIP_DEFLATED,
+                                     compresslevel=5) as archive:
+                    for index,result in enumerate(results):
+                        if not result['ok']:
+                            continue
+                        out=folder/f'{index+1:02d}'
+                        for file in out.iterdir():
+                            archive.write(
+                                file,
+                                arcname=(
+                                    f'{index+1:02d}_'
+                                    f'{safe_filename(Path(result["source_filename"]).stem)}/'
+                                    f'{file.name}'
+                                ),
+                            )
+                batch_url=f'/api/files/{job_id}/CapellaBridge-batch.zip'
+            else:
+                batch_url=None
+            write_job_status(folder, {
+                'job_id':job_id, 'state':'completed', 'total':total,
+                'completed':total, 'results':results, 'batch_url':batch_url,
+            })
+    except Exception as exc:
+        for _,_,input_path in incoming:
+            input_path.unlink(missing_ok=True)
+        shutil.rmtree(folder/'input',ignore_errors=True)
+        write_job_status(folder, {
+            'job_id':job_id, 'state':'failed', 'total':total,
+            'completed':len(results), 'results':results, 'batch_url':None,
+            'error':f'Batch conversion failed: {str(exc)[:400]}',
+        })
+
+
+def retain_background_task(task):
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+
+
 @app.post('/api/convert')
 async def upload(files: Annotated[list[UploadFile],File(...)],layout: str='balanced',
-                 review: bool = False):
+                 review: bool = False, background: bool = False):
     if layout not in ('balanced','compact','original'):
         raise HTTPException(400,'Unknown layout setting')
     if not 1<=len(files)<=MAX_BATCH:
         raise HTTPException(400,f'Upload 1-{MAX_BATCH} files at once')
-    incoming=[]
-    for f in files:
-        incoming.append(await receive(f))
-        await f.close()
-    async with semaphore:
-        cleanup()
-        job_id=uuid.uuid4().hex
-        folder=JOBS/job_id
-        folder.mkdir(parents=True,exist_ok=False)
-        results=[]
-        for index,(name,ext,raw) in enumerate(incoming):
-            out=folder/f'{index+1:02d}'
-            out.mkdir()
-            try:
-                result=await asyncio.to_thread(
-                    process_score, name, ext, raw, out, layout, review
-                )
-                result['downloads']={k:f'/api/files/{job_id}/{index+1:02d}/{quote(v)}' for k,v in result['files'].items()}
-                results.append({'ok':True,**result})
-            except (CapellaError,ConversionFailure,ScoreIntegrityError,ValueError,zipfile.BadZipFile) as exc:
-                shutil.rmtree(out,ignore_errors=True)
-                results.append({'ok':False,'source_filename':name,'error':str(exc)[:500]})
-            except Exception:
-                shutil.rmtree(out,ignore_errors=True)
-                results.append({'ok':False,'source_filename':name,'error':'Internal conversion error. Check server logs.'})
-        if not any(r['ok'] for r in results):
-            shutil.rmtree(folder,ignore_errors=True)
-            return {'job_id':None,'results':results,'batch_url':None}
-        batch=folder/'CapellaBridge-batch.zip'
-        with zipfile.ZipFile(batch,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=5) as z:
-            for index,rs in enumerate(results):
-                if rs['ok']:
-                    out=folder/f'{index+1:02d}'
-                    for file in out.iterdir():
-                        z.write(file,arcname=f'{index+1:02d}_{safe_filename(Path(rs["source_filename"]).stem)}/{file.name}')
-        return {'job_id':job_id,'results':results,'batch_url':f'/api/files/{job_id}/CapellaBridge-batch.zip'}
+    cleanup()
+    job_id=uuid.uuid4().hex
+    folder=JOBS/job_id
+    folder.mkdir(parents=True,exist_ok=False)
+    input_entries=[]
+    try:
+        for index,f in enumerate(files):
+            input_folder=folder/'input'/f'{index+1:02d}'
+            input_folder.mkdir(parents=True)
+            input_path=input_folder/'source'
+            name,ext=await receive_to_path(f,input_path)
+            input_entries.append((name,ext,input_path))
+            await f.close()
+    except Exception:
+        for f in files:
+            await f.close()
+        shutil.rmtree(folder,ignore_errors=True)
+        raise
+    write_job_status(folder, {
+        'job_id':job_id, 'state':'queued', 'total':len(input_entries),
+        'completed':0, 'results':[], 'batch_url':None,
+    })
+    if background:
+        task=asyncio.create_task(run_batch(job_id,input_entries,layout,review))
+        retain_background_task(task)
+        return JSONResponse(status_code=202,content={
+            'job_id':job_id, 'state':'queued', 'total':len(input_entries),
+            'completed':0, 'results':[], 'batch_url':None,
+            'status_url':f'/api/jobs/{job_id}',
+        })
+    await run_batch(job_id,input_entries,layout,review)
+    status=read_job_status(job_id)
+    if not any(result['ok'] for result in status['results']):
+        shutil.rmtree(folder,ignore_errors=True)
+        return {'job_id':None,'results':status['results'],'batch_url':None}
+    return {k:status[k] for k in ('job_id','results','batch_url')}
+
+
+@app.get('/api/jobs/{job_id}')
+def job_status(job_id: str):
+    return read_job_status(job_id)
 
 
 @app.get('/api/files/{job_id}/{filename}')

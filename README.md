@@ -159,6 +159,8 @@ docker-compose.yml
 | `/api/info` | Upload limits and renderer details |
 | `POST /api/convert?layout=balanced` | Multipart request with one or more `files` fields |
 | `POST /api/convert?layout=balanced&review=1` | Explicit manual-review export for structurally valid but semantically uncertified scores |
+| `POST /api/convert?layout=balanced&background=1` | Start a background batch job and return a `status_url` without holding the upload request open |
+| `GET /api/jobs/{job_id}` | Poll a background job until its per-file results and optional `batch_url` are ready |
 | `/api/files/…` | Time-limited download of generated artifacts |
 
 ---

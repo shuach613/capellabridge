@@ -54,6 +54,20 @@ function resetWorkspace(){
   progressDetail.textContent='Processing your files locally.';progressFill.style.width='0';
   button.querySelector('span').textContent='Convert to MuseScore';
 }
+async function pollJob(url,total){
+  for(;;){
+    const response=await fetch(url,{cache:'no-store'});
+    let json;
+    try{json=await response.json()}catch{throw Error('Server returned HTTP '+response.status+'.');}
+    if(!response.ok)throw Error(typeof json.detail==='string'?json.detail:'Conversion request failed');
+    if(json.state==='failed')throw Error(json.error||'Batch conversion failed.');
+    const completed=Number(json.completed)||0;
+    if(json.state==='completed')return json;
+    progress('converting',null,'MuseScore is processing '+completed+' of '+total+' scores. This can take longer for large batches.');
+    resultsList.replaceChildren(node('p','Creating MuseScore files and PDF previews… '+completed+'/'+total));
+    await new Promise(resolve=>setTimeout(resolve,1200));
+  }
+}
 startOver.addEventListener('click',resetWorkspace);
 document.getElementById('form').addEventListener('submit',async ev=>{
   ev.preventDefault();if(!files.length)return;
@@ -68,7 +82,7 @@ document.getElementById('form').addEventListener('submit',async ev=>{
   try{
     const response=await new Promise((resolve,reject)=>{
       const xhr=new XMLHttpRequest();
-      xhr.open('POST','/api/convert?layout='+encodeURIComponent(layout)+review);
+      xhr.open('POST','/api/convert?layout='+encodeURIComponent(layout)+review+'&background=1');
       xhr.timeout=600000;
       xhr.upload.onprogress=event=>{
         if(event.lengthComputable)progress('upload',Math.min(100,Math.round(event.loaded/event.total*100)),'Uploading '+files.length+' score'+(files.length===1?'':'s')+'…');
@@ -83,8 +97,9 @@ document.getElementById('form').addEventListener('submit',async ev=>{
       xhr.send(data);
     });
     let json;
-    try{json=JSON.parse(response.responseText)}catch{throw Error('Server returned an unexpected response');}
+    try{json=JSON.parse(response.responseText)}catch{throw Error('Server returned HTTP '+response.status+'.');}
     if(response.status<200||response.status>=300)throw Error(typeof json.detail==='string'?json.detail:'Conversion request failed');
+    if(json.status_url)json=await pollJob(json.status_url,files.length);
     resultsList.replaceChildren();
     for(const r of json.results)resultsList.append(display(r));
     if(json.batch_url){batch.href=json.batch_url;batch.hidden=false;batch.download='CapellaBridge-batch.zip';}
