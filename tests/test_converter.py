@@ -133,7 +133,7 @@ def test_web_upload_without_login(monkeypatch,tmp_path):
     homepage=client.get('/')
     assert homepage.status_code==200
     assert homepage.headers['cache-control']=='no-store'
-    assert 'v1.7.8' in homepage.text
+    assert 'v1.7.9-dev' in homepage.text
     assert 'start-over' in homepage.text
     assert 'Every score produces an editable result' in homepage.text
     assert client.get('/api/info').status_code==200

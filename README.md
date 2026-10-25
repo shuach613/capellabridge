@@ -89,7 +89,7 @@ Results are temporary and normally expire after 24 hours. Uploaded originals are
 
 ## Supported notation and fidelity
 
-CAPX files are interpreted from **CapXML 1.0, 2.0, 3.0 and 4.0** into **MusicXML**, then converted by the installed MuseScore engine to native `.mscz`, PDF, and preview images. Supported features include notes and rests, chords, multiple voices, grace notes, ties, slurs, tuplets, written time signatures and changes, key changes, clefs, accidentals, staccato and accents, repeat signs, first/second endings, variation headings and first-page credits. Known Capella3-font symbols are translated into **editable dynamics** (p, pp, f, ff, mf, mp and related markings), **trills and fermatas**, plus D.C., D.S., Segno and Coda navigation where semantically identified in the source. Textual directions and credits are preserved from page objects or note-attached graphics when recognized; compact rich-text (RTF) navigation objects are decoded conservatively, with recognized Capella3 glyphs translated to readable navigation instructions.
+CAPX files are interpreted from **CapXML 1.0, 2.0, 3.0 and 4.0** into **MusicXML**, then converted by the installed MuseScore engine to native `.mscz`, PDF, and preview images. Legacy binary `.cap` files are imported directly into native `.mscz`; MusicXML and PDF are exported from that same native score, so MusicXML is no longer a lossy intermediate step. Supported features include notes and rests, chords, multiple voices, grace notes, ties, slurs, tuplets, written time signatures and changes, key changes, clefs, accidentals, staccato and accents, repeat signs, first/second endings, variation headings and first-page credits. Known Capella3-font symbols are translated into **editable dynamics** (p, pp, f, ff, mf, mp and related markings), **trills and fermatas**, plus D.C., D.S., Segno and Coda navigation where semantically identified in the source. Textual directions and credits are preserved from page objects or note-attached graphics when recognized; compact rich-text (RTF) navigation objects are decoded conservatively, with recognized Capella3 glyphs translated to readable navigation instructions.
 
 The converter validates native MuseScore score structure and rhythmic measure lengths, then runs a **MuseScore Studio 4** cross-version reopen/export test during CI.
 
@@ -107,15 +107,15 @@ The following independently provided Capella scores were used to identify genera
 | **z'Basel am mym Rhy** | 3 | Fourth-part credit, a fourth piccolo entering in later systems, staccato, ties, alternative endings, triplets, and last-page editorial attribution |
 | **Ai du scheene – 5 Variationen** | 6 | CapXML 3.0, four piccolos, changing time signatures, trills, fermatas, source-labeled glissando and thematic headings |
 | **Alte Kameraden 94** | 5 | CapXML 3.0, dynamically marked four-part score with p/f/mf glyphs, solo entries, ties and repeat endings |
-| **Alte Kameraden Tutti (Bajass)** | 5 | Older binary .cap file; parsed by MuseScore's legacy import engine, so results require comparison with the original PDF |
+| **Alte Kameraden Tutti (Bajass)** | 5 | Older binary .cap file; imported directly into a native MuseScore score, with native inventory and manual-review diagnostics |
 | **Uncle Sam** | 4 | Parenthesized arranger credit, medley tune labels and performance words, RTF D.S. al Segno / Coda navigation |
 | **Waggis** | 3 | Copyright, variable active staff count, nine numbered sections, tuplets, slurs and first/second endings |
 | **Sperber** | 3 | Four-part score and dated dedication, composer metadata separate from full printed author line |
-| **Ryslaifer / Saggodo / Retraite** | 4 / 4 / 1 | Older binary .cap scores; requires the legacy MuseScore importer and individual visual checking |
+| **Ryslaifer / Saggodo / Retraite** | 4 / 4 / 1 | Older binary .cap scores; direct native import with individual visual and playback checking |
 
 The converter preserves part identities when staves appear, disappear, or are replaced; reads page-level titles and composers; maintains written meter notation (for example **2/4**, not **1/2**); and expands multimeasure rests across their actual spans. It also interprets common Capella graphical crescendo and diminuendo hairpins and keeps named variation headings above the relevant measures. Where a Capella title exists only as an embedded WMF graphic, it uses the uploaded filename as editable score text and retains readable composer/byline information.
 
-**Important:** A correctly generated MSCZ and valid MusicXML are not a guarantee of a facsimile engraving. Dynamic playback markings, complex D.C./D.S. navigation, source-specific fonts, codas and editorial markings should be verified manually in MuseScore, especially in binary .cap files. Exact page counts, custom music fonts, beams, complex graphical objects and advanced ornaments may differ from the original PDF. Always compare the exported PDF and playback with the source before professional publication. Supported legacy `.cap` import uses MuseScore’s own older importer and is inherently best effort.
+**Important:** A correctly generated MSCZ and valid MusicXML are not a guarantee of a facsimile engraving. Dynamic playback markings, complex D.C./D.S. navigation, source-specific fonts, codas and editorial markings should be verified manually in MuseScore, especially in binary `.cap` files. Exact page counts, custom music fonts, beams, complex graphical objects and advanced ornaments may differ from the original PDF. Always compare the exported PDF and playback with the source before professional publication. Legacy CAP results include native-score inventory and manual-review diagnostics when hidden pitched events or structural uncertainty remain.
 
 ## Development and verification
 
@@ -130,6 +130,24 @@ The CI pipeline runs a growing synthetic notation regression suite, builds the L
 
 The browser UI lives in `app/static/`. Screenshots are captured from the **real responsive interface** using `scripts/capture_ui.py` (Playwright), rather than generated marketing mockups.
 
+### Private legacy CAP corpus audit
+
+The 140 paired legacy CAP/PDF files remain outside the repository. With those
+folders available locally, run the native CAP importer against the complete
+manifest with:
+
+```bash
+python scripts/audit_legacy_cap_corpus.py \
+  --cap-root "/Users/joshua/Downloads/Cap" \
+  --pdf-root "/Users/joshua/Downloads/Pdf" \
+  --output /tmp/capellabridge-legacy-audit
+```
+
+The command creates one result directory per source, keeps every generated
+MSCZ/PDF/MusicXML/report, and writes `results.json` plus `summary.json`. A
+failed source is recorded individually so it cannot cancel the rest of the
+corpus.
+
 ### Repository map
 
 ```text
@@ -138,7 +156,8 @@ app/
   engraving.py          MuseScore printing and layout adjustments
   score_validation.py   Native-score integrity checks
   semantic_audit.py     Playback-level MusicXML ↔ MSCX equivalence checks
-  musescore.py          MuseScore CLI and PDF rendering
+  legacy_cap.py         Legacy CAP provenance and native-score inventory
+  musescore.py          MuseScore CLI, CAP import, exports and PDF rendering
   main.py               FastAPI routes, upload handling and downloads
   static/               Desktop/mobile web interface
 tests/                  Notation and compatibility regressions

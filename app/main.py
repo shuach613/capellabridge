@@ -16,13 +16,22 @@ from typing import Annotated
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from .converter import CapellaError, serialize_musicxml
-from .musescore import ConversionFailure, convert, create_preview, musescore_path
+from .musescore import (
+    ConversionFailure,
+    convert,
+    create_preview,
+    export_musicxml,
+    export_pdf,
+    import_cap,
+    musescore_path,
+)
 from .engraving import prepare_print_ready
+from .legacy_cap import LegacyCapError, inspect_cap, inspect_native_mscz
 from .score_validation import audit_mscz, ScoreIntegrityError
 from .semantic_audit import audit_musicxml_against_mscz, SemanticIntegrityError
 from .source_audit import audit_capx_against_musicxml
 
-VERSION='1.7.8'
+VERSION='1.7.9-dev'
 BASE=Path(os.environ.get('CAPELLABRIDGE_DATA','/data')).resolve()
 JOBS=BASE/'jobs'
 STATIC=Path(__file__).parent/'static'
@@ -104,7 +113,8 @@ def static(filename:str):
 @app.get('/api/info')
 def info():
     return {'version':VERSION,'max_upload_mb':MAX_FILE//1024//1024,'max_batch':MAX_BATCH,
-            'supported':{'capx':'Native CapXML 2.0 engine','cap':'Legacy MuseScore importer (best effort)'},
+            'supported':{'capx':'Native CapXML 1.0–4.0 engine',
+                         'cap':'Direct native MuseScore legacy importer'},
             'output':['mscz','musicxml','pdf','preview.png'],'retention_hours':TTL//3600,'engine_available':bool(shutil.which(os.environ.get('MUSESCORE_BIN','musescore3')))}
 
 
@@ -226,7 +236,53 @@ def save_validated_mscz(source_xml: Path, final_mscz: Path,
     return verification
 
 
+def validate_imported_cap(mscz: Path, report: dict, warnings: list[str]) -> str:
+    """Validate a native MSCZ produced directly by the legacy CAP importer.
+
+    CAP has no source MusicXML boundary to audit.  The native archive is the
+    primary artifact, so we validate it in place and record an explicit native
+    certification state instead of running a lossy MSCZ -> MSCZ canonical
+    round-trip.
+    """
+    errors=[]
+    try:
+        prepare_print_ready(mscz, report)
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        errors.append('Native print preparation: ' + str(exc))
+    try:
+        warnings.extend(audit_mscz(mscz, repair=True, allow_repairs=False))
+    except ScoreIntegrityError as exc:
+        errors.append('Structural audit: ' + str(exc))
+    try:
+        native=inspect_native_mscz(mscz)
+        report['native_audit']=native
+        counts=native.get('counts',{})
+        report['measures']=counts.get('measures')
+        report['notes']=counts.get('notes',0)
+        report['parts']=[f'Staff {index}' for index in range(
+            1, int(counts.get('staves',0))+1
+        )]
+        warnings.extend(
+            'Manual-review export: ' + message
+            for message in native.get('warnings', [])
+        )
+    except LegacyCapError as exc:
+        errors.append('Native CAP audit: ' + str(exc))
+    report['verification_diagnostics']=errors
+    if errors or report.get('native_audit', {}).get('warnings'):
+        report['certification']='manual-review'
+        report['verification']='manual-review'
+        warnings.extend('Manual-review export: ' + error for error in errors)
+    else:
+        report['certification']='native-valid'
+        report['verification']='verified'
+    return report['verification']
+
+
 def process_score(name,ext,raw,work,layout):
+    work=Path(work)
+    work.mkdir(parents=True,exist_ok=True)
+    name=safe_filename(name)
     stem=Path(name).stem
     prefix=safe_filename(stem)
     inp=work/name
@@ -245,19 +301,41 @@ def process_score(name,ext,raw,work,layout):
                 'Manual-review export: CAPX-to-MusicXML audit could not certify '
                 f'this score: {str(exc)[:400]}'
             )
+        mscz=work/(prefix+'.mscz')
+        verification=save_validated_mscz(xml_path, mscz, report, warnings)
     else:
-        # Legacy binary CAP handled by the installed MuseScore engine.
+        # Legacy CAP is imported directly into the native MuseScore archive.
+        # MusicXML is a secondary export from that archive, never the source
+        # used to create it.
+        source=inspect_cap(inp)
+        report={
+            'title':stem,
+            'source_format':'cap',
+            'parts':[],
+            'measures':None,
+            'warnings':[],
+            'layout':'musescore-import',
+            'import_strategy':'native-cap-to-mscz',
+            'cap_source':source,
+            'musescore_binary':musescore_path(),
+        }
+        mscz=work/(prefix+'.mscz')
+        import_cap(inp,mscz)
+        verification=validate_imported_cap(mscz,report,warnings)
         xml_path=work/(prefix+'.musicxml')
-        convert(inp,xml_path)
-        report={'title':stem,'source_format':'cap','parts':[],'measures':None,'warnings':[],'layout':'musescore-import'}
-        warnings.append('Legacy .cap uses MuseScore’s import engine, not the CAPX native parser. Review layout and voices.')
-    mscz=work/(prefix+'.mscz')
-    verification=save_validated_mscz(
-        xml_path, mscz, report if ext=='.capx' else None,
-        warnings)
+        try:
+            export_musicxml(mscz,xml_path)
+        except ConversionFailure as exc:
+            xml_path.unlink(missing_ok=True)
+            warnings.append(
+                f'MusicXML export failed, but the native MuseScore file was retained: {exc}'
+            )
     pdf=work/(prefix+'.pdf')
     try:
-        convert(mscz,pdf)
+        if ext=='.cap':
+            export_pdf(mscz,pdf)
+        else:
+            convert(mscz,pdf)
     except ConversionFailure as exc:
         warnings.append(f'PDF export failed, but the MuseScore file was retained: {exc}')
     # Restore a readable layout if an exact Capella system arrangement
@@ -300,7 +378,9 @@ def process_score(name,ext,raw,work,layout):
     with zipfile.ZipFile(mscz) as archive:
         if not any(x.endswith('.mscx') for x in archive.namelist()):
             raise ConversionFailure('MuseScore produced an invalid MSCZ file')
-    files={'mscz':mscz.name,'musicxml':xml_path.name}
+    files={'mscz':mscz.name}
+    if xml_path.is_file():
+        files['musicxml']=xml_path.name
     if pdf.is_file():files['pdf']=pdf.name
     if png.is_file():files['preview']=png.name
     report['verification']=verification
@@ -375,7 +455,7 @@ async def run_batch(job_id, incoming, layout):
                         for k,v in result['files'].items()
                     }
                     results.append({'ok':True,**result})
-                except (CapellaError,ConversionFailure,ScoreIntegrityError,
+                except (CapellaError,LegacyCapError,ConversionFailure,ScoreIntegrityError,
                         ValueError,zipfile.BadZipFile) as exc:
                     partial=retain_partial_mscz(out,name,exc)
                     if partial:
