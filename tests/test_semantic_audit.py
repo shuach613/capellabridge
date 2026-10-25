@@ -79,3 +79,36 @@ def test_semantic_audit_rejects_unmatched_source_rest(tmp_path):
     # remain strict rather than treating arbitrary silence as harmless.
     with pytest.raises(SemanticIntegrityError):
         audit_musicxml_against_mscz(source, output)
+
+
+def test_fermata_is_a_playback_relevant_native_mark(tmp_path):
+    source = tmp_path / "source.musicxml"
+    source.write_text(SOURCE.replace(
+        '<articulations><accent/></articulations>',
+        '<fermata type="upright"/>',
+    ), encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    native_xml = native().replace(
+        '<subtype>articAccentAbove</subtype>',
+        '<subtype>articFermataAbove</subtype>',
+    )
+    native_zip(output, native_xml)
+    result = audit_musicxml_against_mscz(source, output)
+    assert result["source_events"] == result["native_events"] == 2
+
+
+def test_volta_starts_are_checked_as_semantic_boundaries(tmp_path):
+    source = tmp_path / "source.musicxml"
+    source.write_text(SOURCE.replace(
+        '<barline location="right"><repeat direction="backward"/></barline>',
+        '<barline location="left"><ending number="1" type="start">1.</ending></barline>'
+        '<barline location="right"><ending number="1" type="stop"/><repeat direction="backward"/></barline>',
+    ), encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    native_xml = native().replace(
+        '</voice><endRepeat/>',
+        '<Spanner type="Volta"><Volta><endings>1</endings></Volta></Spanner></voice><endRepeat/>',
+    )
+    native_zip(output, native_xml)
+    result = audit_musicxml_against_mscz(source, output)
+    assert result["source_volta_starts"] == result["native_volta_starts"] == 1

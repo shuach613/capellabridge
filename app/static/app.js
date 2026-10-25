@@ -13,7 +13,11 @@ function display(r){
   const heading=node('div',undefined,'result-title');
   heading.append(node('strong',r.source_filename),node('span',r.ok?`${r.measures??'—'} measures · ${(r.parts||[]).length} parts`:'Needs attention'));
   card.append(heading);
-  if(!r.ok){card.append(node('p',r.error,'error'));return card;}
+  if(!r.ok){
+    card.append(node('p',r.error,'error'));
+    if(r.detail)card.append(node('p','Diagnostic: '+r.detail,'diagnostic'));
+    return card;
+  }
   const body=node('div',undefined,'result-body');
   const img=node('img');img.className='thumbnail';img.loading='lazy';img.src=r.downloads.preview;img.alt='First page score preview';
   body.append(img);
@@ -60,7 +64,13 @@ async function pollJob(url,total){
     let json;
     try{json=await response.json()}catch{throw Error('Server returned HTTP '+response.status+'.');}
     if(!response.ok)throw Error(typeof json.detail==='string'?json.detail:'Conversion request failed');
-    if(json.state==='failed')throw Error(json.error||'Batch conversion failed.');
+    if(json.state==='failed'){
+      // A worker-level failure may happen after earlier files completed. Keep
+      // those per-file results visible instead of replacing them with one
+      // opaque error string.
+      if(Array.isArray(json.results)&&json.results.length)return json;
+      throw Error(json.error||'Batch conversion failed.');
+    }
     const completed=Number(json.completed)||0;
     if(json.state==='completed')return json;
     progress('converting',null,'MuseScore is processing '+completed+' of '+total+' scores. This can take longer for large batches.');
@@ -100,11 +110,16 @@ document.getElementById('form').addEventListener('submit',async ev=>{
     try{json=JSON.parse(response.responseText)}catch{throw Error('Server returned HTTP '+response.status+'.');}
     if(response.status<200||response.status>=300)throw Error(typeof json.detail==='string'?json.detail:'Conversion request failed');
     if(json.status_url)json=await pollJob(json.status_url,files.length);
+    const batchFailure=json.state==='failed';
     resultsList.replaceChildren();
     for(const r of json.results)resultsList.append(display(r));
     if(json.batch_url){batch.href=json.batch_url;batch.hidden=false;batch.download='CapellaBridge-batch.zip';}
     startOver.hidden=false;
-    progress('done',100,'Your converted files are ready below.');
+    if(batchFailure){
+      progress('error',null,(json.error||'The batch worker stopped after reporting the per-file results.')+' Review the individual files below.');
+    }else{
+      progress('done',100,'Your converted files are ready below.');
+    }
     results.scrollIntoView({behavior:'smooth',block:'start'});
   }catch(error){
     progress('error',null,String(error.message));

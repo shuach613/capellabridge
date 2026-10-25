@@ -54,12 +54,17 @@ class SemanticSnapshot:
     breaths: set[tuple[int, int, int, Fraction]]
     repeats: set[tuple[int, str]]
     ignored_grace_rests: int = 0
+    volta_starts: set[tuple[int, str]] = field(default_factory=set)
+    hairpins: set[tuple[int, int, str]] = field(default_factory=set)
+    tuplets: set[tuple[int, int, str]] = field(default_factory=set)
+    tempos: set[tuple[int, str]] = field(default_factory=set)
 
 
 SOURCE_MARKS = {
     "accent": "accent",
     "strong-accent": "strong-accent",
     "staccato": "staccato",
+    "staccatissimo": "staccatissimo",
     "tenuto": "tenuto",
     "detached-legato": "detached-legato",
     "fermata": "fermata",
@@ -77,15 +82,22 @@ NATIVE_MARKS = {
     "articMarcatoBelow": "strong-accent",
     "articStaccatoAbove": "staccato",
     "articStaccatoBelow": "staccato",
+    "articStaccatissimoAbove": "staccatissimo",
+    "articStaccatissimoBelow": "staccatissimo",
     "articTenutoAbove": "tenuto",
     "articTenutoBelow": "tenuto",
     "articTenutoStaccatoAbove": "detached-legato",
     "articTenutoStaccatoBelow": "detached-legato",
+    "articFermataAbove": "fermata",
+    "articFermataBelow": "fermata",
+    "fermataAbove": "fermata",
+    "fermataBelow": "fermata",
+    "fermata": "fermata",
     "ornamentTrill": "trill",
     "ornamentTurn": "turn",
     "ornamentTurnInverted": "inverted-turn",
     "ornamentMordent": "mordent",
-    "ornamentMordentInverted": "mordent",
+    "ornamentMordentInverted": "inverted-mordent",
     "ornamentShortMordent": "mordent",
     "ornamentPrall": "inverted-mordent",
 }
@@ -151,6 +163,10 @@ def _source_snapshot(root) -> SemanticSnapshot:
     events: dict[tuple[int, int, int, Fraction], SemanticEvent] = {}
     breaths: set[tuple[int, int, int, Fraction]] = set()
     repeats: set[tuple[int, str]] = set()
+    volta_starts: set[tuple[int, str]] = set()
+    hairpins: set[tuple[int, int, str]] = set()
+    tuplets: set[tuple[int, int, str]] = set()
+    tempos: set[tuple[int, str]] = set()
     ignored_grace_rests = 0
     for part_index, part in enumerate(root.findall("part"), 1):
         divisions = 1
@@ -179,6 +195,22 @@ def _source_snapshot(root) -> SemanticSnapshot:
                         direction = repeat.get("direction")
                         if direction:
                             repeats.add((measure_index, direction))
+                    for ending in item.findall("ending"):
+                        if ending.get("type") == "start":
+                            volta_starts.add((measure_index, ending.get("number", "")))
+                    continue
+                if name == "direction":
+                    voice = int(item.findtext("voice", "1"))
+                    for sound in item.findall("sound"):
+                        if sound.get("tempo"):
+                            tempos.add((measure_index, sound.get("tempo")))
+                    for wedge in item.findall("direction-type/wedge"):
+                        # Native MuseScore stores one HairPin spanner per
+                        # wedge, with the endpoint represented by next/prev;
+                        # count only the MusicXML start marker here.
+                        if wedge.get("type") != "stop":
+                            hairpins.add((measure_index, voice,
+                                          wedge.get("type", "")))
                     continue
                 if name != "note":
                     continue
@@ -225,6 +257,8 @@ def _source_snapshot(root) -> SemanticSnapshot:
                 event.marks.update(marks)
                 event.ties.update(ties)
                 event.slurs.update(slurs)
+                for tuplet in item.findall("notations/tuplet"):
+                    tuplets.add((measure_index, voice, tuplet.get("type", "")))
                 if has_breath:
                     breaths.add((part_index, measure_index, voice,
                                  onset + duration))
@@ -233,7 +267,8 @@ def _source_snapshot(root) -> SemanticSnapshot:
                     cursor += duration
     return SemanticSnapshot(
         sorted(events.values(), key=lambda e: (e.part, e.measure, e.voice, e.onset)),
-        breaths, repeats, ignored_grace_rests,
+        breaths, repeats, ignored_grace_rests, volta_starts, hairpins,
+        tuplets, tempos,
     )
 
 
@@ -284,6 +319,10 @@ def _native_snapshot(root) -> SemanticSnapshot:
     events: list[SemanticEvent] = []
     breaths: set[tuple[int, int, int, Fraction]] = set()
     repeats: set[tuple[int, str]] = set()
+    volta_starts: set[tuple[int, str]] = set()
+    hairpins: set[tuple[int, int, str]] = set()
+    tuplets: set[tuple[int, int, str]] = set()
+    tempos: set[tuple[int, str]] = set()
     for part_index, staff in enumerate(score.findall("Staff"), 1):
         staff_id = staff.get("id", str(part_index))
         transposition = transpose.get(staff_id, 0)
@@ -313,10 +352,25 @@ def _native_snapshot(root) -> SemanticSnapshot:
             if measure.find("endRepeat") is not None:
                 repeats.add((measure_index, "backward"))
             for voice_index, voice in enumerate(measure.findall("voice"), 1):
+                for spanner in voice.findall('Spanner[@type="Volta"]'):
+                    volta = spanner.find("Volta")
+                    if volta is not None and volta.findtext("endings"):
+                        volta_starts.add((measure_index,
+                                          volta.findtext("endings", "")))
+                for spanner in voice.findall('Spanner[@type="HairPin"]'):
+                    hairpin = spanner.find("HairPin")
+                    if hairpin is not None:
+                        subtype = hairpin.findtext("subtype", "")
+                        hairpins.add((measure_index, voice_index, subtype))
+                for tempo in voice.findall("Tempo"):
+                    value = tempo.findtext("tempo") or tempo.get("tempo")
+                    if value:
+                        tempos.add((measure_index, value))
                 cursor = Fraction(0)
                 tuplet_stack: list[Fraction] = []
                 for item in voice:
                     if item.tag == "Tuplet":
+                        tuplets.add((measure_index, voice_index, "start"))
                         try:
                             tuplet_stack.append(Fraction(
                                 int(item.findtext("normalNotes", "2")),
@@ -325,6 +379,7 @@ def _native_snapshot(root) -> SemanticSnapshot:
                             raise SemanticIntegrityError("Invalid native tuplet") from exc
                         continue
                     if item.tag == "endTuplet":
+                        tuplets.add((measure_index, voice_index, "stop"))
                         if not tuplet_stack:
                             raise SemanticIntegrityError("Unexpected native endTuplet")
                         tuplet_stack.pop()
@@ -380,7 +435,7 @@ def _native_snapshot(root) -> SemanticSnapshot:
                     cursor += duration
     return SemanticSnapshot(
         sorted(events, key=lambda e: (e.part, e.measure, e.voice, e.onset)),
-        breaths, repeats,
+        breaths, repeats, 0, volta_starts, hairpins, tuplets, tempos,
     )
 
 
@@ -508,6 +563,18 @@ def audit_musicxml_against_mscz(source_xml: Path, mscz: Path) -> dict:
         raise SemanticIntegrityError(
             f"Breath-mark count changed: source {len(source.breaths)}, "
             f"native {len(native.breaths)}")
+    if source.volta_starts != native.volta_starts:
+        raise SemanticIntegrityError(
+            f"Volta starts changed: source={sorted(source.volta_starts)} "
+            f"native={sorted(native.volta_starts)}")
+    if source.hairpins and len(source.hairpins) != len(native.hairpins):
+        raise SemanticIntegrityError(
+            f"Hairpin count changed: source {len(source.hairpins)}, "
+            f"native {len(native.hairpins)}")
+    # MuseScore is allowed to coalesce adjacent tuplets into one native
+    # container. Event durations and the source MusicXML tuplet markers still
+    # protect playback; boundary counts are reported for review but are not a
+    # rejection criterion by themselves.
     return {
         "source_events": len(_filtered_events(source, source)),
         "native_events": len(_filtered_events(native, source)),
@@ -515,6 +582,14 @@ def audit_musicxml_against_mscz(source_xml: Path, mscz: Path) -> dict:
         "native_breaths": len(native.breaths),
         "source_repeats": len(source.repeats),
         "native_repeats": len(native.repeats),
+        "source_volta_starts": len(source.volta_starts),
+        "native_volta_starts": len(native.volta_starts),
+        "source_hairpins": len(source.hairpins),
+        "native_hairpins": len(native.hairpins),
+        "source_tuplet_boundaries": len(source.tuplets),
+        "native_tuplet_boundaries": len(native.tuplets),
+        "source_tempos": len(source.tempos),
+        "native_tempos": len(native.tempos),
         "ignored_grace_rests": source.ignored_grace_rests,
         "source_tail_padding": str(tail_padding),
     }
