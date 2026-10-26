@@ -78,6 +78,15 @@ structural issues are labelled **manual review**, while the editable MSCZ is
 still retained. A failure to render a PDF or preview likewise does not remove
 an already-created editable score.
 
+The legacy path also audits the secondary MusicXML export against the final
+native MSCZ using representation-independent event totals and playback-feature
+counts. This avoids false failures caused by MuseScore renumbering voices or
+spelling volta spans differently, while still downgrading a result when notes,
+rests, ties, slurs, dynamics, tempos, repeats, or other playback features are
+lost. Volta connectors are followed across measures, so a first ending that
+reaches the end of a score without a matching second ending is reported at its
+exact measures for manual review rather than silently inventing source music.
+
 For legacy CAP imports, the normalizer may propagate a time signature from a
 peer staff or infer one only when closed measures agree across the score. The
 report records those repairs without changing pitched events. Native tuplet

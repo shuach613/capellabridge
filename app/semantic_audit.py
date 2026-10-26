@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from fractions import Fraction
+from collections import Counter
 import zipfile
 from pathlib import Path
 
@@ -63,6 +64,7 @@ class SemanticSnapshot:
     key_signatures: set[tuple[int, int, int]] = field(default_factory=set)
     navigation: set[tuple[int, int, int, Fraction, str, str]] = field(default_factory=set)
     volta_spans: set[tuple[int, int, str]] = field(default_factory=set)
+    open_tuplets: set[tuple[int, int, int]] = field(default_factory=set)
 
 
 SOURCE_MARKS = {
@@ -360,6 +362,55 @@ def _native_marks(chord) -> set[str]:
     return marks
 
 
+def _native_volta_spans(staff):
+    """Read complete native volta lines, including connector measures."""
+    measures = staff.findall("Measure")
+    spans = set()
+    for start_measure, measure in enumerate(measures, 1):
+        for voice in measure.findall("voice"):
+            for spanner in voice.findall('Spanner[@type="Volta"]'):
+                volta = spanner.find("Volta")
+                if volta is None or not volta.findtext("endings"):
+                    continue
+                try:
+                    step = int(spanner.findtext(
+                        "next/location/measures", "1"))
+                except ValueError as exc:
+                    raise SemanticIntegrityError(
+                        "Invalid native volta span") from exc
+                end_measure = start_measure + max(1, step) - 1
+                if end_measure > len(measures):
+                    # Keep the impossible span in the semantic set so the
+                    # caller receives the same precise "Volta spans changed"
+                    # diagnostic as any other navigation mismatch. Native
+                    # structural validation reports the out-of-range path.
+                    spans.add((start_measure, end_measure,
+                               volta.findtext("endings", "")))
+                    continue
+                while end_measure < len(measures):
+                    # A connector and the next numbered ending can share a
+                    # measure boundary. The new Volta object starts a new
+                    # span; do not include that measure in the prior span.
+                    connector = any(
+                        candidate.find("Volta") is None
+                        and candidate.find("prev") is not None
+                        for next_voice in measures[end_measure].findall("voice")
+                        for candidate in next_voice.findall(
+                            'Spanner[@type="Volta"]')
+                    ) and not any(
+                        candidate.find("Volta") is not None
+                        for next_voice in measures[end_measure].findall("voice")
+                        for candidate in next_voice.findall(
+                            'Spanner[@type="Volta"]')
+                    )
+                    if not connector:
+                        break
+                    end_measure += 1
+                spans.add((start_measure, end_measure,
+                           volta.findtext("endings", "")))
+    return spans
+
+
 def _native_snapshot(root) -> SemanticSnapshot:
     score = root.find("Score")
     if score is None:
@@ -387,10 +438,12 @@ def _native_snapshot(root) -> SemanticSnapshot:
     key_signatures: set[tuple[int, int, int]] = set()
     navigation: set[tuple[int, int, int, Fraction, str, str]] = set()
     volta_spans: set[tuple[int, int, str]] = set()
+    open_tuplets: set[tuple[int, int, int]] = set()
     for part_index, staff in enumerate(score.findall("Staff"), 1):
         staff_id = staff.get("id", str(part_index))
         transposition = transpose.get(staff_id, 0)
         meter = Fraction(4, 4)
+        tuplet_stacks: dict[int, list[Fraction]] = {}
         for measure_index, measure in enumerate(staff.findall("Measure"), 1):
             # A TimeSig belongs to the current measure. Read it before
             # calculating measure rests, then carry it forward.
@@ -444,17 +497,12 @@ def _native_snapshot(root) -> SemanticSnapshot:
                     if volta is not None and volta.findtext("endings"):
                         number = volta.findtext("endings", "")
                         volta_starts.add((measure_index, number))
-                        try:
-                            span = int(spanner.findtext(
-                                "next/location/measures", "1"))
-                        except ValueError as exc:
-                            raise SemanticIntegrityError(
-                                "Invalid native volta span") from exc
-                        volta_spans.add((measure_index,
-                                         measure_index + max(1, span) - 1,
-                                         number))
                 cursor = Fraction(0)
-                tuplet_stack: list[Fraction] = []
+                # Native MuseScore permits a tuplet to cross a barline. Keep
+                # the stack per voice for the complete staff instead of
+                # restarting it at every measure; otherwise the audit can
+                # assign the wrong durations or reject a valid closing marker.
+                tuplet_stack = tuplet_stacks.setdefault(voice_index, [])
                 pending_marks: set[str] = set()
                 for item in voice:
                     if item.tag == "Tuplet":
@@ -563,10 +611,15 @@ def _native_snapshot(root) -> SemanticSnapshot:
                         marks, ties, slurs,
                     ))
                     cursor += duration
+        volta_spans.update(_native_volta_spans(staff))
+        for voice_index, stack in tuplet_stacks.items():
+            if stack:
+                open_tuplets.add((part_index, voice_index, len(stack)))
     return SemanticSnapshot(
         sorted(events, key=lambda e: (e.part, e.measure, e.voice, e.onset)),
         breaths, repeats, 0, volta_starts, hairpins, tuplets, tempos,
         dynamics, time_signatures, key_signatures, navigation, volta_spans,
+        open_tuplets,
     )
 
 
@@ -776,6 +829,105 @@ def audit_musicxml_against_mscz(source_xml: Path, mscz: Path) -> dict:
         "native_key_signatures": len(native.key_signatures),
         "source_navigation": len(source.navigation),
         "native_navigation": len(native.navigation),
+        "source_open_tuplets": len(source.open_tuplets),
+        "native_open_tuplets": len(native.open_tuplets),
         "ignored_grace_rests": source.ignored_grace_rests,
         "source_tail_padding": str(tail_padding),
     }
+
+
+def audit_cap_musicxml_export(source_xml: Path, mscz: Path) -> dict:
+    """Audit a CAP MusicXML export without assuming stable voice numbering.
+
+    MusicXML exported from a native CAP import can renumber voices, merge
+    rest-only staves, and encode a multi-measure volta with a different span
+    convention. Those are representation changes, not necessarily playback
+    changes. Compare the event totals and playback feature totals instead of
+    applying the strict CAPX source-ledger comparison to this secondary file.
+    """
+    try:
+        source_root = ET.parse(str(source_xml)).getroot()
+    except (OSError, ET.XMLSyntaxError) as exc:
+        raise SemanticIntegrityError(
+            "Could not read exported CAP MusicXML for semantic audit") from exc
+    source = _source_snapshot(source_root)
+    native = _native_snapshot(_load_native(Path(mscz)))
+    source_events = _filtered_events(source, source)
+    native_events = _filtered_events(native, source)
+
+    source_counts = Counter(event.kind for event in source_events)
+    native_counts = Counter(event.kind for event in native_events)
+    if source_counts != native_counts:
+        raise SemanticIntegrityError(
+            "CAP MusicXML event totals changed: "
+            f"source={dict(sorted(source_counts.items()))} "
+            f"native={dict(sorted(native_counts.items()))}")
+
+    # These features affect playback or the audible/printed interpretation.
+    # A native import may contain an additional copy on a hidden rest-only
+    # staff, so only a loss is rejected here; exact identity is already used
+    # by the strict CAPX audit where a source ledger exists.
+    feature_counts = (
+        ("breaths", len(source.breaths), len(native.breaths)),
+        ("repeats", len(source.repeats), len(native.repeats)),
+        ("volta_starts", len(source.volta_starts), len(native.volta_starts)),
+        ("hairpins", len(source.hairpins), len(native.hairpins)),
+        ("tempos", len(source.tempos), len(native.tempos)),
+        ("dynamics", len(source.dynamics), len(native.dynamics)),
+    )
+    for label, source_count, native_count in feature_counts:
+        if native_count < source_count:
+            raise SemanticIntegrityError(
+                f"CAP MusicXML export lost {label}: "
+                f"source={source_count} native={native_count}")
+
+    source_marks = Counter(mark for event in source_events for mark in event.marks)
+    native_marks = Counter(mark for event in native_events for mark in event.marks)
+    lost_marks = {
+        mark: count - native_marks.get(mark, 0)
+        for mark, count in source_marks.items()
+        if count > native_marks.get(mark, 0)
+    }
+    if lost_marks:
+        raise SemanticIntegrityError(
+            f"CAP MusicXML export lost musical marks: {dict(sorted(lost_marks.items()))}")
+
+    # Exported MusicXML may use a different transposition spelling, so tie
+    # endpoints must be compared by start/stop role rather than raw pitch.
+    source_ties = Counter(endpoint for event in source_events
+                          for _pitch, endpoint in event.ties)
+    native_ties = Counter(endpoint for event in native_events
+                          for _pitch, endpoint in event.ties)
+    if any(native_ties[endpoint] < count
+           for endpoint, count in source_ties.items()):
+        raise SemanticIntegrityError(
+            f"CAP MusicXML export lost tie endpoints: source={dict(source_ties)} "
+            f"native={dict(native_ties)}")
+    source_slurs = Counter(mark for event in source_events for mark in event.slurs)
+    native_slurs = Counter(mark for event in native_events for mark in event.slurs)
+    if any(native_slurs[mark] < count for mark, count in source_slurs.items()):
+        raise SemanticIntegrityError(
+            f"CAP MusicXML export lost slur endpoints: source={dict(source_slurs)} "
+            f"native={dict(native_slurs)}")
+
+    result = {
+        "source_events": len(source_events),
+        "native_events": len(native_events),
+        "source_chords": source_counts["chord"],
+        "native_chords": native_counts["chord"],
+        "source_rests": source_counts["rest"],
+        "native_rests": native_counts["rest"],
+        "source_repeats": len(source.repeats),
+        "native_repeats": len(native.repeats),
+        "source_volta_starts": len(source.volta_starts),
+        "native_volta_starts": len(native.volta_starts),
+        "source_hairpins": len(source.hairpins),
+        "native_hairpins": len(native.hairpins),
+        "source_tempos": len(source.tempos),
+        "native_tempos": len(native.tempos),
+        "source_dynamics": len(source.dynamics),
+        "native_dynamics": len(native.dynamics),
+        "source_open_tuplets": len(source.open_tuplets),
+        "native_open_tuplets": len(native.open_tuplets),
+    }
+    return result

@@ -105,6 +105,28 @@ def test_tuplet_scope_can_cross_a_measure_without_false_unclosed_error(tmp_path)
     assert audit_mscz(path, repair=False) == []
 
 
+def test_gap_padding_is_never_added_inside_a_carried_tuplet(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    full = ET.SubElement(score, 'Staff', id='1')
+    full_measure = ET.SubElement(full, 'Measure')
+    full_measure.append(_voice(_event('Rest', 'half')))
+    open_staff = ET.SubElement(score, 'Staff', id='2')
+    open_measure = ET.SubElement(open_staff, 'Measure')
+    tuplet = ET.Element('Tuplet')
+    ET.SubElement(tuplet, 'normalNotes').text = '2'
+    ET.SubElement(tuplet, 'actualNotes').text = '3'
+    open_measure.append(_voice(tuplet, _event('Chord', 'quarter'),
+                               _event('Rest', 'quarter')))
+    path = tmp_path / 'open-tuplet-gap.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert not any('silent gap' in item for item in result['repairs'])
+
+
 def test_infers_missing_shared_two_four_meter_without_changing_events(tmp_path):
     root = ET.Element('museScore')
     score = ET.SubElement(root, 'Score')

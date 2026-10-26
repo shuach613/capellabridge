@@ -6,6 +6,7 @@ import pytest
 
 from app.semantic_audit import (
     SemanticIntegrityError,
+    audit_cap_musicxml_export,
     audit_musicxml_against_mscz,
 )
 
@@ -216,3 +217,81 @@ def test_measure_level_native_navigation_is_audited(tmp_path):
     native_zip(output,native_xml)
     result=audit_musicxml_against_mscz(source,output)
     assert result["source_navigation"]==result["native_navigation"]==1
+
+
+def test_semantic_audit_carries_tuplets_across_native_barlines(tmp_path):
+    source = tmp_path / "source.musicxml"
+    source.write_text("""<?xml version="1.0"?>
+    <score-partwise version="4.0">
+      <part-list><score-part id="P1"><part-name>Piccolo</part-name></score-part></part-list>
+      <part id="P1">
+        <measure number="1">
+          <attributes><divisions>6</divisions><time><beats>1</beats><beat-type>6</beat-type></time></attributes>
+          <note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice>
+            <notations><tuplet type="start" number="1"/></notations>
+          </note>
+          <note><rest/><duration>2</duration><voice>1</voice></note>
+        </measure>
+        <measure number="2">
+          <note><pitch><step>D</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice>
+            <notations><tuplet type="stop" number="1"/></notations>
+          </note>
+          <note><rest/><duration>2</duration><voice>1</voice></note>
+        </measure>
+      </part>
+    </score-partwise>""", encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    native_zip(output, """<museScore version="3.02"><Score>
+      <Staff id="1">
+        <Measure len="1/6"><voice><TimeSig><sigN>1</sigN><sigD>6</sigD></TimeSig>
+          <Tuplet><normalNotes>2</normalNotes><actualNotes>3</actualNotes></Tuplet>
+          <Chord><duration>1/8</duration><durationType>eighth</durationType><Note><pitch>60</pitch></Note></Chord>
+          <Rest><duration>1/8</duration><durationType>eighth</durationType></Rest>
+        </voice></Measure>
+        <Measure len="1/6"><voice>
+          <Chord><duration>1/8</duration><durationType>eighth</durationType><Note><pitch>62</pitch></Note></Chord>
+          <endTuplet/>
+          <Rest><duration>1/12</duration><durationType>eighth</durationType></Rest>
+        </voice></Measure>
+      </Staff>
+    </Score></museScore>"""
+    )
+
+    result = audit_musicxml_against_mscz(source, output)
+
+    assert result["source_events"] == result["native_events"] == 4
+    assert result["native_open_tuplets"] == 0
+
+
+def test_cap_export_audit_ignores_voice_renumbering_but_rejects_lost_events(tmp_path):
+    source = tmp_path / "export.musicxml"
+    source.write_text("""<?xml version="1.0"?>
+    <score-partwise version="4.0">
+      <part-list><score-part id="P1"><part-name>Piccolo</part-name></score-part></part-list>
+      <part id="P1"><measure number="1">
+        <attributes><divisions>1</divisions><time><beats>2</beats><beat-type>4</beat-type></time></attributes>
+        <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration><voice>5</voice></note>
+        <note><rest/><duration>1</duration><voice>5</voice></note>
+      </measure></part>
+    </score-partwise>""", encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    native_zip(output, """<museScore version="3.02"><Score>
+      <Staff id="1"><Measure len="1/2"><voice>
+        <TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>
+        <Chord><durationType>quarter</durationType><Note><pitch>60</pitch></Note></Chord>
+        <Rest><durationType>quarter</durationType></Rest>
+      </voice></Measure></Staff>
+    </Score></museScore>""")
+
+    result = audit_cap_musicxml_export(source, output)
+
+    assert result["source_events"] == result["native_events"] == 2
+
+    native_zip(output, """<museScore version="3.02"><Score>
+      <Staff id="1"><Measure len="1/2"><voice>
+        <TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>
+        <Chord><durationType>quarter</durationType><Note><pitch>60</pitch></Note></Chord>
+      </voice></Measure></Staff>
+    </Score></museScore>""")
+    with pytest.raises(SemanticIntegrityError, match="event totals changed"):
+        audit_cap_musicxml_export(source, output)

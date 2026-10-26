@@ -152,7 +152,8 @@ def audit_mscz(path: Path, repair: bool = False,
                         gap = intended - actual
                         location = (f"staff {staff_index}, measure {measure_index}, "
                                     f"voice {voice_index}")
-                        if (repair and allow_repairs and 0 < gap <= Fraction(1, 64)
+                        if (repair and allow_repairs and not stack
+                                and 0 < gap <= Fraction(1, 64)
                                 and timed[-1][0].tag == "Rest"
                                 and timed[-1][0].findtext("visible") == "0"):
                             rest, old_duration = timed[-1]

@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 import hashlib
 import zipfile
+from collections import Counter
 from pathlib import Path
 
 from lxml import etree as ET
@@ -70,6 +71,31 @@ def _count(root, names: tuple[str, ...]) -> int:
     return sum(1 for element in root.iter() if _local_name(element) in wanted)
 
 
+def _native_symbol_inventory(root) -> dict:
+    """Return typed native symbol counts without treating every Symbol as an ornament."""
+    articulation_subtypes = Counter(
+        element.findtext("subtype", "")
+        for element in root.iter()
+        if _local_name(element) == "Articulation"
+        and element.findtext("subtype")
+    )
+    ornament_subtypes = Counter(
+        subtype for subtype in articulation_subtypes
+        if subtype.startswith("ornament")
+    )
+    tempo_values = [
+        value for element in root.iter()
+        if _local_name(element) == "Tempo"
+        for value in [element.findtext("tempo") or element.get("tempo")]
+        if value
+    ]
+    return {
+        "articulation_subtypes": dict(sorted(articulation_subtypes.items())),
+        "ornament_subtypes": dict(sorted(ornament_subtypes.items())),
+        "tempo_values": tempo_values,
+    }
+
+
 def _has_hidden_pitch(note) -> bool:
     if note.find("pitch") is None:
         return False
@@ -102,49 +128,109 @@ def _navigation_diagnostics(score) -> tuple[list[str], list[str]]:
 
     issues = []
     review_flags = []
-    ending_numbers = set()
-    for measure_index, measure in enumerate(measures, 1):
-        for voice in measure.findall("voice"):
-            for spanner in voice.findall('Spanner[@type="Volta"]'):
-                volta = spanner.find("Volta")
-                if volta is None:
-                    # A connector carrying only <prev> is the normal closing
-                    # half of a volta spanner, not a malformed object.
-                    if spanner.find("prev") is None:
-                        issues.append(
-                            f"Volta at measure {measure_index} has no native Volta object"
-                        )
-                    continue
-                endings = (volta.findtext("endings") or "").strip()
-                if not endings:
-                    issues.append(f"Volta at measure {measure_index} has no ending number")
-                ending_numbers.update(
-                    part.strip() for part in endings.split(",") if part.strip()
+    ending_spans = _ending_spans(measures, issues)
+    ending_numbers = {
+        number
+        for _start, _end, numbers in ending_spans
+        for number in numbers
+    }
+    for start_measure, end_measure, endings in ending_spans:
+        if ("1" in endings
+                and not any(position >= end_measure
+                            for position in backward_repeats)):
+            review_flags.append(
+                f"Volta at measure {start_measure} has no backward repeat "
+                f"at or after its end (measure {end_measure})"
+            )
+
+        # A first ending at the end of the score is not a complete playback
+        # path: on the repeated pass MuseScore has nowhere to continue. Do
+        # not invent a second ending, because the binary CAP source is not
+        # losslessly available here; report the exact local defect instead.
+        if "1" in endings and end_measure == len(measures):
+            matching_second = any(
+                second_start > end_measure and "2" in second_numbers
+                for second_start, _second_end, second_numbers in ending_spans
+            )
+            if not matching_second:
+                review_flags.append(
+                    f"First ending at measures {start_measure}-{end_measure} "
+                    "has no matching second ending before the score ends; "
+                    "playback may skip the final continuation on repeat"
                 )
-                try:
-                    span = int(spanner.findtext("next/location/measures", "1"))
-                except ValueError:
-                    issues.append(
-                        f"Volta at measure {measure_index} has an invalid span"
-                    )
-                    continue
-                end_measure = measure_index + max(1, span) - 1
-                if end_measure > len(measures):
-                    issues.append(
-                        f"Volta at measure {measure_index} extends beyond the score"
-                    )
-                    continue
-                if ("1" in {part.strip() for part in endings.split(",")}
-                        and not any(position >= end_measure
-                                    for position in backward_repeats)):
-                    review_flags.append(
-                        f"Volta at measure {measure_index} has no backward repeat "
-                        f"at or after its end (measure {end_measure})"
-                    )
 
     if "1" in ending_numbers and "2" not in ending_numbers:
         review_flags.append("A first ending exists without a second ending")
     return issues, review_flags
+
+
+def _volta_spanners(measure):
+    for voice in measure.findall("voice"):
+        yield from voice.findall('Spanner[@type="Volta"]')
+
+
+def _has_volta_connector(measure) -> bool:
+    """Return whether a measure contains a continuation of a volta line."""
+    # A second ending may share the boundary measure with the closing
+    # connector for the first ending. In that case the new Volta object starts
+    # a new span; it must not be swallowed into the preceding one.
+    if any(spanner.find("Volta") is not None
+           for spanner in _volta_spanners(measure)):
+        return False
+    for spanner in _volta_spanners(measure):
+        if spanner.find("Volta") is None and spanner.find("prev") is not None:
+            return True
+    return False
+
+
+def _ending_spans(measures, issues: list[str] | None = None):
+    """Return ``(start, end, numbers)`` for each native volta line.
+
+    MuseScore represents a multi-measure ending as a start object followed by
+    one or more connector objects. The old audit only used the start object's
+    ``next`` value, which made a final first ending look like a one-measure
+    object and missed the fact that its connector reached the end of the
+    score. This parser follows those native connectors without changing the
+    score.
+    """
+    issues = issues if issues is not None else []
+    spans = []
+    for start_measure, measure in enumerate(measures, 1):
+        for spanner in _volta_spanners(measure):
+            volta = spanner.find("Volta")
+            if volta is None:
+                if spanner.find("prev") is None:
+                    issues.append(
+                        f"Volta at measure {start_measure} has no native Volta object"
+                    )
+                continue
+            raw_numbers = (volta.findtext("endings") or "").strip()
+            numbers = tuple(
+                part.strip() for part in raw_numbers.split(",") if part.strip()
+            )
+            if not numbers:
+                issues.append(f"Volta at measure {start_measure} has no ending number")
+            try:
+                step = int(spanner.findtext("next/location/measures", "1"))
+            except ValueError:
+                issues.append(f"Volta at measure {start_measure} has an invalid span")
+                continue
+            end_measure = start_measure + max(1, step) - 1
+            if end_measure > len(measures):
+                issues.append(
+                    f"Volta at measure {start_measure} extends beyond the score"
+                )
+                continue
+            # The first connector is often the measure immediately after the
+            # start object. Continue while a native <prev> connector exists.
+            while end_measure < len(measures) and _has_volta_connector(
+                    measures[end_measure]
+            ):
+                end_measure += 1
+            candidate = (start_measure, end_measure, numbers)
+            if candidate not in spans:
+                spans.append(candidate)
+    return spans
 
 
 def _tuplet_scope_inventory(score) -> dict:
@@ -273,6 +359,14 @@ def inspect_native_mscz(path: Path) -> dict:
             "StaffText", "SystemText", "Text", "Dynamic", "Tempo",
         )),
     }
+    symbols = _native_symbol_inventory(root)
+    count_map.update({
+        "typed_ornaments": sum(symbols["ornament_subtypes"].values()),
+        "music_symbols": _count(root, ("Symbol",)),
+        "articulation_subtypes": symbols["articulation_subtypes"],
+        "ornament_subtypes": symbols["ornament_subtypes"],
+        "tempo_values": symbols["tempo_values"],
+    })
     warnings = []
     if not staves:
         warnings.append("Native score contains no staves")
@@ -284,6 +378,16 @@ def inspect_native_mscz(path: Path) -> dict:
         warnings.append(
             f"Native score contains {hidden_pitched} hidden pitched event(s); "
             "verify playback and voice routing."
+        )
+    if tuplet_scopes["open_scopes"]:
+        warnings.append(
+            f"Native score contains {len(tuplet_scopes['open_scopes'])} "
+            "unclosed tuplet scope(s); playback duration needs manual review."
+        )
+    if tuplet_scopes["orphan_closes"]:
+        warnings.append(
+            f"Native score contains {len(tuplet_scopes['orphan_closes'])} "
+            "orphan tuplet closing marker(s)."
         )
     navigation = {
         "start_repeats": count_map["start_repeats"],
@@ -297,9 +401,31 @@ def inspect_native_mscz(path: Path) -> dict:
         ),
     }
     navigation_issues, navigation_review = _navigation_diagnostics(score)
+    primary_staff = score.find("Staff")
+    ending_spans = _ending_spans(
+        primary_staff.findall("Measure") if primary_staff is not None else []
+    )
+    navigation["ending_spans"] = [
+        {"start_measure": start, "end_measure": end,
+         "endings": list(numbers)}
+        for start, end, numbers in ending_spans
+    ]
+    navigation["unpaired_first_endings"] = [
+        {"start_measure": start, "end_measure": end}
+        for start, end, numbers in ending_spans
+        if "1" in numbers and end == len(primary_staff.findall("Measure"))
+        and not any(
+            second_start > end and "2" in second_numbers
+            for second_start, _second_end, second_numbers in ending_spans
+        )
+    ] if primary_staff is not None else []
     if navigation_issues:
         warnings.extend(
             f"Playback navigation review: {issue}" for issue in navigation_issues
+        )
+    if navigation_review:
+        warnings.extend(
+            f"Playback navigation review: {review}" for review in navigation_review
         )
     navigation["issues"] = navigation_issues
     navigation["review_flags"] = navigation_review

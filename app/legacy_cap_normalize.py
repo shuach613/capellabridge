@@ -134,6 +134,7 @@ def _measure_ledger(score):
             intended = Fraction(measure.get("len")) if measure.get("len") else meter
             for voice_index, voice in enumerate(measure.findall("voice"), 1):
                 stack = stacks.setdefault(voice_index, [])
+                tuplet_depth_before = len(stack)
                 actual, timed = _measure_duration(voice, intended, stack)
                 ledger[(staff_index, measure_index, voice_index)] = {
                     "actual": actual,
@@ -143,6 +144,10 @@ def _measure_ledger(score):
                     "voice": voice,
                     "explicit_len": measure.get("len") is not None,
                     "time_signature": _has_time_signature(measure),
+                    "tuplet_depth_before": tuplet_depth_before,
+                    "tuplet_depth_after": len(stack),
+                    # Keep the old key for callers that only need the final
+                    # depth, while making cross-barline decisions explicit.
                     "tuplet_depth": len(stack),
                 }
     return ledger
@@ -293,6 +298,12 @@ def _normalize_consensus_lengths(score, ledger, repairs: list[str]) -> bool:
                 following = ledger.get((staff_index, measure_index + 1, voice_index))
                 if not current or not following:
                     continue
+                # A measure boundary inside an open tuplet is importer timing
+                # data, not an ordinary bar-length discrepancy. Changing its
+                # len can retime every following event in the scope.
+                if any(current[key] or following[key]
+                       for key in ("tuplet_depth_before", "tuplet_depth_after")):
+                    continue
                 if (current["explicit_len"] or current["time_signature"] or
                         following["explicit_len"] or following["time_signature"]):
                     continue
@@ -323,6 +334,10 @@ def _normalize_consensus_lengths(score, ledger, repairs: list[str]) -> bool:
                 continue
             actual = next(iter(actuals))
             if actual <= 0:
+                continue
+            if any(entry[key]
+                   for entry in entries
+                   for key in ("tuplet_depth_before", "tuplet_depth_after")):
                 continue
             # An explicit source length or time signature is a deliberate
             # boundary and must never be overwritten by this heuristic.
@@ -379,13 +394,7 @@ def _append_safe_silent_gaps(score, ledger, repairs: list[str]) -> bool:
         if not entry["timed"] or entry["timed"][-1][0].tag == "Chord":
             continue
         # A carried tuplet cannot be safely closed by adding a rest here.
-        depth = 0
-        for item in entry["voice"]:
-            if item.tag == "Tuplet":
-                depth += 1
-            elif item.tag == "endTuplet":
-                depth = max(0, depth - 1)
-        if depth:
+        if (entry["tuplet_depth_before"] or entry["tuplet_depth_after"]):
             continue
         peer_entries = [ledger.get((other_index, measure_index, voice_index))
                         for other_index in range(1, len(staves) + 1)

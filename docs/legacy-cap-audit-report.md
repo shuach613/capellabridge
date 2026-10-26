@@ -75,6 +75,18 @@ is repaired, the report records the exact staff and measure where the shared
 or inferred time signature was inserted. This changes the measure boundary
 only; it does not add, remove or retime a pitched event.
 
+The final CAP path also exports MusicXML only as a secondary artifact and
+checks that export against the native MSCZ. The check compares event totals and
+playback-feature totals without assuming that MuseScore will preserve internal
+voice numbers, staff numbering, or the exact volta-span spelling. A loss of
+chords, rests, ties, slurs, dynamics, tempos, repeats, or other audible
+features downgrades the result to manual review while retaining the MSCZ.
+Volta diagnostics follow native connector objects across measures and report a
+first ending that reaches the score end without a matching second ending at
+the exact local measure range. Cross-barline tuplets are carried through the
+normalizer and semantic audit; silent-gap and measure-length heuristics are
+disabled while a tuplet scope is open.
+
 ## Recommended implementation
 
 This should be a deterministic regression and normalization pipeline, not a

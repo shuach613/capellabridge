@@ -29,7 +29,11 @@ from .engraving import prepare_print_ready
 from .legacy_cap import LegacyCapError, inspect_cap, inspect_native_mscz
 from .legacy_cap_normalize import normalize_legacy_cap_mscz
 from .score_validation import audit_mscz, ScoreIntegrityError
-from .semantic_audit import audit_musicxml_against_mscz, SemanticIntegrityError
+from .semantic_audit import (
+    audit_cap_musicxml_export,
+    audit_musicxml_against_mscz,
+    SemanticIntegrityError,
+)
 from .source_audit import audit_capx_against_musicxml
 
 VERSION='1.7.9-dev'
@@ -301,6 +305,39 @@ def validate_imported_cap(mscz: Path, report: dict, warnings: list[str]) -> str:
     return report['verification']
 
 
+def audit_exported_cap_musicxml(xml_path: Path, mscz: Path,
+                                report: dict, warnings: list[str]) -> bool:
+    """Compare a CAP MusicXML export with the final native MSCZ.
+
+    CAP has no lossless source ledger, so this is not a CAP-source proof. It
+    is a second, independent safety boundary: if MuseScore's secondary
+    MusicXML export drops a note, rest, ornament, tempo, or navigation object
+    from the native score, the editable MSCZ is retained but the result is
+    explicitly manual-review instead of being called native-valid.
+    """
+    try:
+        audit = audit_cap_musicxml_export(xml_path, mscz)
+    except SemanticIntegrityError as exc:
+        message = str(exc)[:500]
+        report['native_export_audit'] = {
+            'status': 'unverified',
+            'error': message,
+            'scope': 'final native MSCZ versus secondary MusicXML export',
+        }
+        report.setdefault('verification_diagnostics', []).append(
+            'Native MusicXML export audit: ' + message
+        )
+        warnings.append(
+            'Manual-review export: CAP MusicXML export differs from the final '
+            f'native MSCZ: {message}'
+        )
+        return False
+    audit['status'] = 'matched'
+    audit['scope'] = 'final native MSCZ versus secondary MusicXML export'
+    report['native_export_audit'] = audit
+    return True
+
+
 def process_score(name,ext,raw,work,layout):
     work=Path(work)
     work.mkdir(parents=True,exist_ok=True)
@@ -352,6 +389,11 @@ def process_score(name,ext,raw,work,layout):
             warnings.append(
                 f'MusicXML export failed, but the native MuseScore file was retained: {exc}'
             )
+        else:
+            if not audit_exported_cap_musicxml(xml_path, mscz, report, warnings):
+                verification = 'manual-review'
+                report['verification'] = verification
+                report['certification'] = verification
     pdf=work/(prefix+'.pdf')
     try:
         if ext=='.cap':

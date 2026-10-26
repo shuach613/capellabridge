@@ -117,6 +117,49 @@ def test_navigation_inventory_accepts_normal_volta_connector_pairs(tmp_path):
     assert result["navigation"]["review_flags"] == []
 
 
+def test_navigation_inventory_flags_a_final_first_ending_without_local_second(tmp_path):
+    score = tmp_path / "missing-final-ending.mscz"
+    write_native_score(
+        score,
+        """
+        <Staff id="1">
+          <Measure len="1/1"><voice><Rest><durationType>whole</durationType></Rest></voice></Measure>
+          <Measure len="1/1">
+            <endRepeat>2</endRepeat>
+            <voice>
+              <Spanner type="Volta">
+                <Volta><endings>1</endings></Volta>
+                <next><location><measures>1</measures></location></next>
+              </Spanner>
+              <Rest><durationType>whole</durationType></Rest>
+            </voice>
+          </Measure>
+          <Measure len="1/1">
+            <voice>
+              <Spanner type="Volta"><prev>
+                <location><measures>-1</measures></location>
+              </prev></Spanner>
+              <Rest><durationType>whole</durationType></Rest>
+            </voice>
+          </Measure>
+        </Staff>
+        """,
+    )
+
+    result = inspect_native_mscz(score)
+
+    assert result["navigation"]["ending_spans"] == [
+        {"start_measure": 2, "end_measure": 3, "endings": ["1"]}
+    ]
+    assert result["navigation"]["unpaired_first_endings"] == [
+        {"start_measure": 2, "end_measure": 3}
+    ]
+    assert any("no matching second ending" in flag
+               for flag in result["navigation"]["review_flags"])
+    assert any("no matching second ending" in warning
+               for warning in result["warnings"])
+
+
 def test_cap_processes_native_first_and_exports_secondarily(monkeypatch, tmp_path):
     from app import main
 
@@ -148,6 +191,7 @@ def test_cap_processes_native_first_and_exports_secondarily(monkeypatch, tmp_pat
     monkeypatch.setattr(main, "export_pdf", fake_pdf)
     monkeypatch.setattr(main, "create_preview", fake_preview)
     monkeypatch.setattr(main, "musescore_path", lambda: "/usr/bin/musescore3")
+    monkeypatch.setattr(main, "audit_exported_cap_musicxml", lambda *args: True)
 
     result = main.process_score(
         "Legacy score.cap", ".cap", source, tmp_path / "work", "balanced"
