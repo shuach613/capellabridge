@@ -1,0 +1,8 @@
+#!/bin/sh
+# MuseScore 2.3.2's AppImage only ships Qt's xcb platform plugin. Keep its
+# virtual display isolated here so MuseScore 3 and every CAPX conversion stay
+# on the normal offscreen path.
+export QT_QPA_PLATFORM=xcb
+unset MU_QT_QPA_PLATFORM
+exec xvfb-run -a -s "-screen 0 1024x768x24 -nolisten tcp" \
+    /opt/musescore2/AppRun "$@"

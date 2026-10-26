@@ -5,12 +5,12 @@ FROM python:3.12-slim-bookworm
 ARG MUSESCORE2_URL=https://ftp.osuosl.org/pub/musescore/releases/MuseScore-2.3.2/MuseScore-2.3.2-x86_64.AppImage
 ARG MUSESCORE2_SHA256=e50e133bc7b3d32363f5b39bd4ec4542cc93590993d981d28f3b282f00e083b5
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MUSESCORE_BIN=/usr/bin/musescore3 \
-    MUSESCORE_LEGACY_CAP_BIN=/opt/musescore2/AppRun CAPELLABRIDGE_DATA=/data \
+    MUSESCORE_LEGACY_CAP_BIN=/usr/local/bin/musescore2-cap CAPELLABRIDGE_DATA=/data \
     QT_QPA_PLATFORM=offscreen MU_QT_QPA_PLATFORM=offscreen
 RUN apt-get update && apt-get install -y --no-install-recommends \
     musescore3 poppler-utils fonts-dejavu-core fonts-liberation ca-certificates \
     curl libarchive-tools libxcomposite1 libxcursor1 libxdamage1 libxi6 \
-    libxrandr2 libxtst6 libcap2 liborc-0.4-0 libxslt1.1 \
+    libxrandr2 libxtst6 libcap2 liborc-0.4-0 libxslt1.1 xvfb xauth \
     && rm -rf /var/lib/apt/lists/*
 RUN curl --fail --location --retry 3 --silent --show-error \
       "$MUSESCORE2_URL" --output /tmp/musescore2.AppImage \
@@ -18,8 +18,10 @@ RUN curl --fail --location --retry 3 --silent --show-error \
  && mkdir -p /opt/musescore2 \
  && bsdtar --no-same-owner -xf /tmp/musescore2.AppImage -C /opt/musescore2 \
  && rm /tmp/musescore2.AppImage \
- && test -x /opt/musescore2/AppRun \
- && QT_QPA_PLATFORM=offscreen /opt/musescore2/AppRun --version >/dev/null
+ && test -x /opt/musescore2/AppRun
+COPY scripts/musescore2-cap /usr/local/bin/musescore2-cap
+RUN chmod 0755 /usr/local/bin/musescore2-cap \
+ && /usr/local/bin/musescore2-cap --version >/dev/null
 WORKDIR /opt/capellabridge
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
