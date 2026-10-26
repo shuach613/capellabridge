@@ -54,13 +54,23 @@ editable score:
 3. A CAP-specific normalizer preserves shared irregular bar boundaries,
    repairs isolated silent gaps, propagates a meter already present on a peer
    staff, and infers a missing meter only when closed measures agree across
-   the score. It removes only provably orphaned tuplet closes and leaves
-   ambiguous tuplet scopes untouched for manual review.
+   the score. Active staves are used for shared-boundary consensus, so a
+   silent whole-measure staff cannot suppress a real source-shaped bar. A
+   repeated run of identical partial bars on one active staff is also
+   preserved; an isolated partial bar is left for manual review. It removes
+   only provably orphaned tuplet closes and leaves ambiguous tuplet scopes
+   untouched.
 4. Native CAP title/credit text is moved into a title frame, chord labels are
    converted from importer Lyrics into native Harmony objects, rest-only
    staves are hidden without deleting their events, and text autoplace is
    restored.
-5. The same final MSCZ is structurally audited and exported to MusicXML and
+5. Unambiguous textual navigation such as "D.S. al Fine", "D.C. al Fine",
+   "alla Coda", "Fine", "Coda" and "Segno" is promoted to native MuseScore
+   Marker/Jump objects. Numeric tempo text is promoted only when a BPM is
+   explicit. Directions such as "rit." or "a tempo" remain visible and are
+   reported for manual review because assigning a guessed BPM would change
+   playback.
+6. The same final MSCZ is structurally audited and exported to MusicXML and
    PDF. Native tuplet starts, stops, open scopes and orphan closes are recorded
    explicitly, while repeat/ending connectors are checked on the primary staff
    and unusual playback paths are reported as review flags rather than being
@@ -76,11 +86,13 @@ or inferred time signature was inserted. This changes the measure boundary
 only; it does not add, remove or retime a pitched event.
 
 The final CAP path also exports MusicXML only as a secondary artifact and
-checks that export against the native MSCZ. The check compares event totals and
-playback-feature totals without assuming that MuseScore will preserve internal
-voice numbers, staff numbering, or the exact volta-span spelling. A loss of
-chords, rests, ties, slurs, dynamics, tempos, repeats, or other audible
-features downgrades the result to manual review while retaining the MSCZ.
+checks that export against the native MSCZ. The check compares the sounding
+chord/pitch ledger and playback-feature totals without assuming that MuseScore
+will preserve internal voice numbers, staff numbering, cursor quantization,
+or the exact volta-span spelling. Rest segmentation differences are recorded
+as `rest_representation_normalized` rather than treated as lost music; a lost
+chord, changed pitch, tie, slur, dynamic, tempo, repeat or other playback
+feature still downgrades the result to manual review while retaining the MSCZ.
 Volta diagnostics follow native connector objects across measures and report a
 first ending that reaches the score end without a matching second ending at
 the exact local measure range. Cross-barline tuplets are carried through the

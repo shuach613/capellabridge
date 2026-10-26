@@ -175,3 +175,84 @@ def test_propagates_a_known_meter_to_a_staff_missing_its_signature(tmp_path):
         native = ET.fromstring(archive.read('score.mscx'))
     assert native.findtext('./Score/Staff[2]/Measure[1]/voice/TimeSig/sigN') == '2'
     assert audit_mscz(path, repair=False) == []
+
+
+def test_shared_irregular_active_bar_ignores_rest_only_staff(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    for staff_id in ('1', '2', '3', '4'):
+        staff = ET.SubElement(score, 'Staff', id=staff_id)
+        opening = ET.SubElement(staff, 'Measure')
+        opening.append(_voice(
+            ET.fromstring('<TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>'),
+            _event('Rest', 'half'),
+        ))
+        irregular = ET.SubElement(staff, 'Measure')
+        irregular.append(_voice(
+            _event('Chord', 'quarter'), _event('Chord', 'eighth'),
+            _event('Chord', 'eighth'), _event('Chord', '16th'),
+        ))
+        full = ET.SubElement(staff, 'Measure')
+        full.append(_voice(_event('Rest', 'half')))
+
+    silent = ET.SubElement(score, 'Staff', id='5')
+    opening = ET.SubElement(silent, 'Measure')
+    opening.append(_voice(
+        ET.fromstring('<TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>'),
+        _event('Rest', 'half'),
+    ))
+    irregular = ET.SubElement(silent, 'Measure')
+    irregular.append(_voice(_event('Rest', 'half')))
+    full = ET.SubElement(silent, 'Measure')
+    full.append(_voice(_event('Rest', 'half')))
+
+    path = tmp_path / 'active-irregular.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert result['changed']
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert native.find('./Score/Staff[1]/Measure[2]').get('len') == '9/16'
+    assert native.find('./Score/Staff[4]/Measure[2]').get('len') == '9/16'
+    assert native.find('./Score/Staff[5]/Measure[2]').get('len') is None
+    assert audit_mscz(path, repair=False) == []
+
+
+def test_textual_navigation_is_promoted_but_unquantified_tempo_is_reported(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    primary = ET.SubElement(score, 'Staff', id='1')
+    first = ET.SubElement(primary, 'Measure')
+    first.append(_voice(_event('Rest', 'whole')))
+    fine = ET.SubElement(first, 'StaffText')
+    ET.SubElement(fine, 'text').text = 'Fine'
+    second = ET.SubElement(primary, 'Measure')
+    second.append(_voice(_event('Rest', 'whole')))
+    other = ET.SubElement(score, 'Staff', id='2')
+    first_other = ET.SubElement(other, 'Measure')
+    first_other.append(_voice(_event('Rest', 'whole')))
+    second_other = ET.SubElement(other, 'Measure')
+    second_other.append(_voice(_event('Rest', 'whole')))
+    direction = ET.SubElement(second_other, 'StaffText')
+    ET.SubElement(direction, 'text').text = 'D.S. al Fine'
+    tempo = ET.SubElement(first_other, 'StaffText')
+    ET.SubElement(tempo, 'text').text = 'rit.'
+
+    path = tmp_path / 'directions.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('playback marker "fine"' in item for item in result['repairs'])
+    assert any('playback jump "segno|fine"' in item for item in result['repairs'])
+    assert any('rit.' in item and 'no numeric tempo map' in item
+               for item in result['diagnostics'])
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert native.find('./Score/Staff[1]/Measure[1]/Marker/label').text == 'fine'
+    assert native.find('./Score/Staff[1]/Measure[2]/Jump/jumpTo').text == 'segno'
+    assert native.find('./Score/Staff[1]/Measure[2]/Jump/playUntil').text == 'fine'

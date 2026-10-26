@@ -290,8 +290,35 @@ def test_cap_export_audit_ignores_voice_renumbering_but_rejects_lost_events(tmp_
     native_zip(output, """<museScore version="3.02"><Score>
       <Staff id="1"><Measure len="1/2"><voice>
         <TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>
-        <Chord><durationType>quarter</durationType><Note><pitch>60</pitch></Note></Chord>
       </voice></Measure></Staff>
     </Score></museScore>""")
-    with pytest.raises(SemanticIntegrityError, match="event totals changed"):
+    with pytest.raises(SemanticIntegrityError, match="sounding events changed"):
         audit_cap_musicxml_export(source, output)
+
+
+def test_cap_export_audit_allows_coalesced_silent_rests(tmp_path):
+    source = tmp_path / "export.musicxml"
+    source.write_text("""<?xml version="1.0"?>
+    <score-partwise version="4.0">
+      <part-list><score-part id="P1"><part-name>Piccolo</part-name></score-part></part-list>
+      <part id="P1"><measure number="1">
+        <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>
+        <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice></note>
+        <note><rest/><duration>4</duration><voice>1</voice></note>
+        <note><rest/><duration>8</duration><voice>1</voice></note>
+      </measure></part>
+    </score-partwise>""", encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    native_zip(output, """<museScore version="3.02"><Score>
+      <Staff id="1"><Measure len="1/1"><voice>
+        <Chord><duration>1/4</duration><durationType>quarter</durationType><Note><pitch>60</pitch></Note></Chord>
+        <Rest><duration>3/4</duration><durationType>half</durationType></Rest>
+      </voice></Measure></Staff>
+    </Score></museScore>""")
+
+    result = audit_cap_musicxml_export(source, output)
+
+    assert result["source_chords"] == result["native_chords"] == 1
+    assert result["source_rests"] == 2
+    assert result["native_rests"] == 1
+    assert result["rest_representation_normalized"] is True

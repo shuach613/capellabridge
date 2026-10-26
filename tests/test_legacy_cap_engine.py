@@ -73,7 +73,8 @@ def test_native_inventory_records_music_and_review_risks(tmp_path):
     assert counts["jumps"] == 1
     assert counts["markers"] == 1
     assert counts["articulations"] == 1
-    assert counts["ornaments"] == 1
+    assert counts["ornaments"] == 0
+    assert counts["music_symbols"] == 1
     assert counts["lyrics"] == 1
     assert result["warnings"]
     assert "hidden pitched" in result["warnings"][0]
@@ -158,6 +159,51 @@ def test_navigation_inventory_flags_a_final_first_ending_without_local_second(tm
                for flag in result["navigation"]["review_flags"])
     assert any("no matching second ending" in warning
                for warning in result["warnings"])
+
+
+def test_navigation_inventory_keeps_adjacent_volta_spans_separate(tmp_path):
+    score = tmp_path / "adjacent-endings.mscz"
+    write_native_score(
+        score,
+        """
+        <Staff id="1">
+          <Measure len="1/1"><voice><Rest><durationType>whole</durationType></Rest></voice></Measure>
+          <Measure len="1/1">
+            <voice>
+              <Spanner type="Volta">
+                <Volta><endings>1</endings></Volta>
+                <next><location><measures>3</measures></location></next>
+              </Spanner>
+              <Rest><durationType>whole</durationType></Rest>
+            </voice>
+          </Measure>
+          <Measure len="1/1"><endRepeat>2</endRepeat><voice><Rest><durationType>whole</durationType></Rest></voice></Measure>
+          <Measure len="1/1">
+            <voice>
+              <Spanner type="Volta">
+                <Volta><endings>2</endings></Volta>
+                <next><location><measures>2</measures></location></next>
+              </Spanner>
+              <Rest><durationType>whole</durationType></Rest>
+            </voice>
+          </Measure>
+          <Measure len="1/1">
+            <voice>
+              <Spanner type="Volta"><prev><location><measures>-2</measures></location></prev></Spanner>
+              <Rest><durationType>whole</durationType></Rest>
+            </voice>
+          </Measure>
+        </Staff>
+        """,
+    )
+
+    result = inspect_native_mscz(score)
+
+    assert result["navigation"]["ending_spans"] == [
+        {"start_measure": 2, "end_measure": 4, "endings": ["1"]},
+        {"start_measure": 4, "end_measure": 5, "endings": ["2"]},
+    ]
+    assert result["navigation"]["review_flags"] == []
 
 
 def test_cap_processes_native_first_and_exports_secondarily(monkeypatch, tmp_path):

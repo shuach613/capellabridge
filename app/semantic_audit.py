@@ -391,9 +391,15 @@ def _native_volta_spans(staff):
                     # A connector and the next numbered ending can share a
                     # measure boundary. The new Volta object starts a new
                     # span; do not include that measure in the prior span.
+                    # The prev offset is authoritative: a connector belongs
+                    # only to the start object it points back to. Looking only
+                    # for any prev connector incorrectly joined adjacent first
+                    # and second endings in imported CAP scores.
+                    connector_measure = end_measure + 1
                     connector = any(
                         candidate.find("Volta") is None
-                        and candidate.find("prev") is not None
+                        and _volta_connector_targets(
+                            candidate, connector_measure, start_measure)
                         for next_voice in measures[end_measure].findall("voice")
                         for candidate in next_voice.findall(
                             'Spanner[@type="Volta"]')
@@ -409,6 +415,18 @@ def _native_volta_spans(staff):
                 spans.add((start_measure, end_measure,
                            volta.findtext("endings", "")))
     return spans
+
+
+def _volta_connector_targets(spanner, connector_measure: int,
+                             start_measure: int) -> bool:
+    """Return whether a native volta connector points to ``start_measure``."""
+    raw = spanner.findtext("prev/location/measures")
+    if raw is None:
+        return False
+    try:
+        return connector_measure + int(raw) == start_measure
+    except ValueError:
+        return False
 
 
 def _native_snapshot(root) -> SemanticSnapshot:
@@ -840,10 +858,11 @@ def audit_cap_musicxml_export(source_xml: Path, mscz: Path) -> dict:
     """Audit a CAP MusicXML export without assuming stable voice numbering.
 
     MusicXML exported from a native CAP import can renumber voices, merge
-    rest-only staves, and encode a multi-measure volta with a different span
-    convention. Those are representation changes, not necessarily playback
-    changes. Compare the event totals and playback feature totals instead of
-    applying the strict CAPX source-ledger comparison to this secondary file.
+    rest-only staves, quantize cursor positions, and encode a multi-measure
+    volta with a different span convention. Those are representation changes,
+    not necessarily playback changes. Compare the sounding chord/pitch ledger
+    and playback feature totals instead of applying the strict CAPX source-ledger
+    comparison to this secondary file.
     """
     try:
         source_root = ET.parse(str(source_xml)).getroot()
@@ -857,11 +876,35 @@ def audit_cap_musicxml_export(source_xml: Path, mscz: Path) -> dict:
 
     source_counts = Counter(event.kind for event in source_events)
     native_counts = Counter(event.kind for event in native_events)
-    if source_counts != native_counts:
+
+    # The legacy CAP importer and MuseScore's MusicXML exporter use different
+    # silent-rest representations. Several adjacent rests can become one
+    # whole-measure rest, or an implicit rest can disappear from the exported
+    # event list, while the sounding events and total silence stay unchanged.
+    # Compare the sounding pitch ledger by part and measure. MuseScore's
+    # secondary MusicXML export can quantize a duration or place a chord at a
+    # different cursor position when it normalizes a rest-only voice. The
+    # strict CAPX audit remains responsible for exact event timing; this CAP
+    # boundary must still reject a lost chord or changed pitch.
+    def chord_fingerprint(event):
+        return (event.part, event.measure, event.pitches,
+                event.hidden, event.grace)
+
+    source_chords = Counter(
+        chord_fingerprint(event) for event in source_events
+        if event.kind == "chord"
+    )
+    native_chords = Counter(
+        chord_fingerprint(event) for event in native_events
+        if event.kind == "chord"
+    )
+    if source_chords != native_chords:
         raise SemanticIntegrityError(
-            "CAP MusicXML event totals changed: "
-            f"source={dict(sorted(source_counts.items()))} "
-            f"native={dict(sorted(native_counts.items()))}")
+            "CAP MusicXML sounding events changed: "
+            f"source_chords={len(source_chords)} "
+            f"native_chords={len(native_chords)}")
+
+    rest_representation_normalized = source_counts["rest"] != native_counts["rest"]
 
     # These features affect playback or the audible/printed interpretation.
     # A native import may contain an additional copy on a hidden rest-only
@@ -917,6 +960,7 @@ def audit_cap_musicxml_export(source_xml: Path, mscz: Path) -> dict:
         "native_chords": native_counts["chord"],
         "source_rests": source_counts["rest"],
         "native_rests": native_counts["rest"],
+        "rest_representation_normalized": rest_representation_normalized,
         "source_repeats": len(source.repeats),
         "native_repeats": len(native.repeats),
         "source_volta_starts": len(source.volta_starts),

@@ -136,7 +136,7 @@ def _navigation_diagnostics(score) -> tuple[list[str], list[str]]:
     }
     for start_measure, end_measure, endings in ending_spans:
         if ("1" in endings
-                and not any(position >= end_measure
+                and not any(start_measure <= position <= end_measure
                             for position in backward_repeats)):
             review_flags.append(
                 f"Volta at measure {start_measure} has no backward repeat "
@@ -169,7 +169,20 @@ def _volta_spanners(measure):
         yield from voice.findall('Spanner[@type="Volta"]')
 
 
-def _has_volta_connector(measure) -> bool:
+def _volta_connector_targets(spanner, connector_measure: int,
+                             start_measure: int) -> bool:
+    """Return whether a native volta connector points to ``start_measure``."""
+    raw = spanner.findtext("prev/location/measures")
+    if raw is None:
+        return False
+    try:
+        return connector_measure + int(raw) == start_measure
+    except ValueError:
+        return False
+
+
+def _has_volta_connector(measure, connector_measure: int,
+                         start_measure: int) -> bool:
     """Return whether a measure contains a continuation of a volta line."""
     # A second ending may share the boundary measure with the closing
     # connector for the first ending. In that case the new Volta object starts
@@ -178,7 +191,9 @@ def _has_volta_connector(measure) -> bool:
            for spanner in _volta_spanners(measure)):
         return False
     for spanner in _volta_spanners(measure):
-        if spanner.find("Volta") is None and spanner.find("prev") is not None:
+        if (spanner.find("Volta") is None
+                and _volta_connector_targets(
+                    spanner, connector_measure, start_measure)):
             return True
     return False
 
@@ -224,7 +239,7 @@ def _ending_spans(measures, issues: list[str] | None = None):
             # The first connector is often the measure immediately after the
             # start object. Continue while a native <prev> connector exists.
             while end_measure < len(measures) and _has_volta_connector(
-                    measures[end_measure]
+                    measures[end_measure], end_measure + 1, start_measure
             ):
                 end_measure += 1
             candidate = (start_measure, end_measure, numbers)
@@ -350,9 +365,11 @@ def inspect_native_mscz(path: Path) -> dict:
         "jumps": _count(root, ("Jump",)),
         "markers": _count(root, ("Marker",)),
         "articulations": _count(root, ("Articulation",)),
-        "ornaments": _count(root, (
-            "Ornament", "Trill", "trill", "Symbol",
-        )),
+        # Generic Symbol nodes are visual glyphs, not proof of an ornament.
+        # Typed ornament/articulation objects are counted separately so a CAP
+        # import with a decorative symbol is not falsely certified as having
+        # an ornament that may affect playback.
+        "ornaments": _count(root, ("Ornament", "Trill", "trill")),
         "lyrics": _count(root, ("Lyrics", "Verse",)),
         "harmonies": _count(root, ("Harmony",)),
         "text_objects": _count(root, (

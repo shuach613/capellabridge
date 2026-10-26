@@ -251,6 +251,7 @@ def validate_imported_cap(mscz: Path, report: dict, warnings: list[str]) -> str:
     """
     errors=[]
     native_repairs=[]
+    native_diagnostics=[]
     report['source_audit']={
         'status':'unverified',
         'scope':'native CAP importer output; no lossless CAP semantic ledger exists',
@@ -258,6 +259,7 @@ def validate_imported_cap(mscz: Path, report: dict, warnings: list[str]) -> str:
     try:
         normalized=normalize_legacy_cap_mscz(mscz)
         native_repairs.extend(normalized.get('repairs', []))
+        native_diagnostics.extend(normalized.get('diagnostics', []))
     except (OSError, ValueError, zipfile.BadZipFile) as exc:
         errors.append('Native CAP normalization: ' + str(exc))
     try:
@@ -287,11 +289,19 @@ def validate_imported_cap(mscz: Path, report: dict, warnings: list[str]) -> str:
     except LegacyCapError as exc:
         errors.append('Native CAP audit: ' + str(exc))
     report['native_repairs']=native_repairs
+    report['native_diagnostics']=native_diagnostics
     if native_repairs:
         report.setdefault('diagnostics', []).extend(native_repairs)
+    if native_diagnostics:
+        report.setdefault('diagnostics', []).extend(native_diagnostics)
+        warnings.extend(
+            'Manual-review export: ' + message
+            for message in native_diagnostics
+        )
     report['verification_scope']='native-structural-only'
     report['verification_diagnostics']=errors
-    if errors or report.get('native_audit', {}).get('warnings'):
+    if (errors or native_diagnostics
+            or report.get('native_audit', {}).get('warnings')):
         report['certification']='manual-review'
         report['verification']='manual-review'
         warnings.extend('Manual-review export: ' + error for error in errors)
@@ -311,9 +321,11 @@ def audit_exported_cap_musicxml(xml_path: Path, mscz: Path,
 
     CAP has no lossless source ledger, so this is not a CAP-source proof. It
     is a second, independent safety boundary: if MuseScore's secondary
-    MusicXML export drops a note, rest, ornament, tempo, or navigation object
-    from the native score, the editable MSCZ is retained but the result is
-    explicitly manual-review instead of being called native-valid.
+    MusicXML export drops a sounding chord, changes a pitch, tie, slur,
+    ornament, tempo, or navigation object from the native score, the editable
+    MSCZ is retained but the result is explicitly manual-review instead of
+    being called native-valid. Rest segmentation differences are recorded as
+    representation normalization.
     """
     try:
         audit = audit_cap_musicxml_export(xml_path, mscz)

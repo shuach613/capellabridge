@@ -10,6 +10,7 @@ rewriting a sounding event.
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import zipfile
 from collections import Counter
@@ -119,6 +120,175 @@ def _normalize_tuplet_markers(score, repairs: list[str]) -> bool:
         # guessed close changes playback; retaining the native events and
         # reporting the unresolved scope is safer than silently changing the
         # rhythm. The structural audit will mark such an output manual-review.
+    return changed
+
+
+_TEXTUAL_TEMPO_RE = re.compile(
+    r"\b(?:allegro|andante|adagio|largo|presto|lento|moderato|vivace|"
+    r"maestoso|rit(?:ardando)?\.?|a\s+tempo|tempo\s+primo|tempo)\b",
+    re.IGNORECASE,
+)
+_NUMERIC_TEMPO_RE = re.compile(
+    r"(?:[♩♪]|quarter(?:\s+note)?|bpm)\s*(?:=|:)\s*(\d{2,3})"
+    r"|=\s*(\d{2,3})",
+    re.IGNORECASE,
+)
+
+
+def _staff_text_value(element) -> str:
+    text = element.findtext("text", "")
+    return " ".join(text.split())
+
+
+def _native_navigation(score):
+    markers = set()
+    jumps = set()
+    for staff in score.findall("Staff"):
+        for measure_index, measure in enumerate(staff.findall("Measure"), 1):
+            for marker in measure.iter("Marker"):
+                label = (marker.findtext("label") or "").strip().lower()
+                if label:
+                    markers.add((measure_index, label))
+            for jump in measure.iter("Jump"):
+                jumps.add((
+                    measure_index,
+                    jump.findtext("jumpTo", ""),
+                    jump.findtext("playUntil", ""),
+                    jump.findtext("continueAt", ""),
+                ))
+    return markers, jumps
+
+
+def _append_marker(measure, label: str, symbol: str) -> None:
+    marker = ET.Element("Marker")
+    ET.SubElement(marker, "text").text = f"<sym>{symbol}</sym>"
+    ET.SubElement(marker, "label").text = label
+    measure.append(marker)
+
+
+def _append_jump(measure, jump_to: str = "", play_until: str = "",
+                 continue_at: str = "") -> None:
+    jump = ET.Element("Jump")
+    if jump_to:
+        ET.SubElement(jump, "jumpTo").text = jump_to
+    if play_until:
+        ET.SubElement(jump, "playUntil").text = play_until
+    if continue_at:
+        ET.SubElement(jump, "continueAt").text = continue_at
+    measure.append(jump)
+
+
+def _append_numeric_tempo(voice, bpm: int) -> None:
+    tempo = ET.Element("Tempo")
+    ET.SubElement(tempo, "tempo").text = str(Fraction(bpm, 60))
+    voice.insert(0, tempo)
+
+
+def _normalize_playback_directions(score, repairs: list[str],
+                                   diagnostics: list[str]) -> bool:
+    """Turn unambiguous CAP text navigation into native playback objects.
+
+    Text such as "D.S. al Fine" has a precise MuseScore representation and is
+    safe to promote. Words such as "rit." do not contain a tempo map, so they
+    remain visible as text and are reported instead of being assigned a made-
+    up BPM.
+    """
+    staves = score.findall("Staff")
+    primary_staff = next((staff for staff in staves
+                          if staff.findall("Measure")), None)
+    if primary_staff is None:
+        return False
+    markers, jumps = _native_navigation(score)
+    changed = False
+    navigation_requests = []
+    tempo_requests = []
+    for staff_index, staff in enumerate(staves, 1):
+        measures = staff.findall("Measure")
+        for measure_index, measure in enumerate(measures, 1):
+            for text_element in measure.iter("StaffText"):
+                text = _staff_text_value(text_element)
+                if not text:
+                    continue
+                normalized = re.sub(r"\s+\d+$", "", text.lower()).strip()
+                compact = " ".join(normalized.replace(".", ". ").split())
+                compact = compact.replace("d. s.", "d.s.").replace("d. c.", "d.c.")
+                if compact in {"fine", "coda", "segno"}:
+                    navigation_requests.append((
+                        measure_index, "marker", compact, "", "", "",
+                    ))
+                elif "d.s." in compact or "d.c." in compact:
+                    jump_to = "segno" if "d.s." in compact else "start"
+                    if "coda" in compact:
+                        navigation_requests.append((
+                            measure_index, "jump", "", jump_to, "", "coda",
+                        ))
+                    else:
+                        navigation_requests.append((
+                            measure_index, "jump", "", jump_to, "fine", "",
+                        ))
+                elif "alla coda" in compact:
+                    navigation_requests.append((
+                        measure_index, "jump", "", "", "", "coda",
+                    ))
+
+                tempo_match = _NUMERIC_TEMPO_RE.search(text)
+                tempo_word = _TEXTUAL_TEMPO_RE.search(text)
+                if tempo_match and (tempo_word or "bpm" in text.lower()):
+                    raw_bpm = tempo_match.group(1) or tempo_match.group(2)
+                    bpm = int(raw_bpm)
+                    if 20 <= bpm <= 400:
+                        tempo_requests.append((measure_index, bpm, text))
+                elif tempo_word:
+                    diagnostics.append(
+                        f"Textual tempo direction at staff {staff_index}, "
+                        f"measure {measure_index} (\"{text}\") has no numeric "
+                        "tempo map; playback needs manual review."
+                    )
+
+    for measure_index, kind, label, jump_to, play_until, continue_at in navigation_requests:
+        if measure_index > len(primary_staff.findall("Measure")):
+            diagnostics.append(
+                f"Playback direction at measure {measure_index} could not be "
+                "attached to the primary staff."
+            )
+            continue
+        measure = primary_staff.findall("Measure")[measure_index - 1]
+        if kind == "marker":
+            if (measure_index, label) in markers:
+                continue
+            _append_marker(measure, label, label)
+            markers.add((measure_index, label))
+            changed = True
+            repairs.append(
+                f"Added native playback marker \"{label}\" at measure "
+                f"{measure_index}"
+            )
+        else:
+            key = (measure_index, jump_to, play_until, continue_at)
+            if key in jumps:
+                continue
+            _append_jump(measure, jump_to, play_until, continue_at)
+            jumps.add(key)
+            changed = True
+            description = "|".join(value for value in key[1:] if value) or "jump"
+            repairs.append(
+                f"Added native playback jump \"{description}\" at measure "
+                f"{measure_index}"
+            )
+
+    for measure_index, bpm, text in tempo_requests:
+        if measure_index > len(primary_staff.findall("Measure")):
+            continue
+        measure = primary_staff.findall("Measure")[measure_index - 1]
+        voice = measure.find("voice")
+        if voice is None or measure.find(".//Tempo") is not None:
+            continue
+        _append_numeric_tempo(voice, bpm)
+        changed = True
+        repairs.append(
+            f"Added native numeric tempo {bpm} BPM at measure {measure_index} "
+            f"from \"{text}\""
+        )
     return changed
 
 
@@ -271,20 +441,68 @@ def _normalize_shared_meters(score, ledger, repairs: list[str]) -> bool:
     return changed
 
 
-def _normalize_consensus_lengths(score, ledger, repairs: list[str]) -> bool:
-    """Preserve importer timing for shared irregular bars.
+def _entry_has_chord(entry) -> bool:
+    return any(item.tag == "Chord" for item, _duration in entry["timed"])
 
-    When every staff has the same non-meter duration, the common source bar
-    boundary is stronger evidence than the current inherited time signature.
-    Setting ``Measure len`` records that boundary. A following short bar is
-    changed only when it completes the exact amount of time displaced by the
-    preceding overfull bar.
+
+def _staff_measure_entries(ledger, staff_index: int, measure_index: int):
+    return [entry for (staff, measure, _voice), entry in ledger.items()
+            if staff == staff_index and measure == measure_index]
+
+
+def _length_safe_for_staff(entries, actual: Fraction) -> bool:
+    """Check every timed voice before changing a shared Measure length."""
+    for entry in entries:
+        if (entry["measure"].get("len") is not None
+                or entry["time_signature"]
+                or entry["tuplet_depth_before"]
+                or entry["tuplet_depth_after"]):
+            return False
+        if entry["timed"] and entry["actual"] != actual:
+            return False
+    return True
+
+
+def _irregular_run_length(ledger, staff_index: int, measure_index: int,
+                          voice_index: int, actual: Fraction,
+                          expected: Fraction,
+                          updated_measures: set[tuple[int, int]] | None = None) -> int:
+    """Count a contiguous source-shaped run of the same irregular bar."""
+    length = 1
+    for direction in (-1, 1):
+        current = measure_index + direction
+        while current > 0:
+            entry = ledger.get((staff_index, current, voice_index))
+            if (entry is None or not _entry_has_chord(entry)
+                    or entry["actual"] != actual
+                    or entry["intended"] != expected
+                    or (entry["measure"].get("len") is not None
+                        and (updated_measures is None
+                             or (staff_index, current) not in updated_measures))
+                    or entry["time_signature"]
+                    or entry["tuplet_depth_before"]
+                    or entry["tuplet_depth_after"]):
+                break
+            length += 1
+            current += direction
+    return length
+
+
+def _normalize_consensus_lengths(score, ledger, repairs: list[str]) -> bool:
+    """Preserve importer timing for safe source-shaped irregular bars.
+
+    A shared active-staff boundary is strong evidence even when another staff
+    contains only whole-measure rests. A single active staff is repaired only
+    for a repeated run of at least two identical irregular measures; isolated
+    partial measures remain manual-review cases because padding them could
+    change playback.
     """
     changed = False
     staves = score.findall("Staff")
     if not staves:
         return False
-    max_measures = max((len(staff.findall("Measure")) for staff in staves), default=0)
+    max_measures = max((len(staff.findall("Measure")) for staff in staves),
+                       default=0)
 
     # First repair a displaced boundary independently within one staff. CAP
     # can split the same source bar at different positions in different
@@ -298,9 +516,6 @@ def _normalize_consensus_lengths(score, ledger, repairs: list[str]) -> bool:
                 following = ledger.get((staff_index, measure_index + 1, voice_index))
                 if not current or not following:
                     continue
-                # A measure boundary inside an open tuplet is importer timing
-                # data, not an ordinary bar-length discrepancy. Changing its
-                # len can retime every following event in the scope.
                 if any(current[key] or following[key]
                        for key in ("tuplet_depth_before", "tuplet_depth_after")):
                     continue
@@ -323,59 +538,73 @@ def _normalize_consensus_lengths(score, ledger, repairs: list[str]) -> bool:
                     f"{following['actual']})"
                 )
 
+    updated_measures: set[tuple[int, int]] = set()
     for measure_index in range(1, max_measures + 1):
         for voice_index in range(1, 5):
-            entries = [ledger[key] for key in ledger
-                       if key[1] == measure_index and key[2] == voice_index]
-            if len(entries) != len(staves):
+            active = [
+                (key[0], entry) for key, entry in ledger.items()
+                if key[1] == measure_index and key[2] == voice_index
+                and _entry_has_chord(entry)
+            ]
+            if not active:
                 continue
-            actuals = {entry["actual"] for entry in entries}
-            if len(actuals) != 1:
-                continue
-            actual = next(iter(actuals))
-            if actual <= 0:
-                continue
-            if any(entry[key]
-                   for entry in entries
-                   for key in ("tuplet_depth_before", "tuplet_depth_after")):
-                continue
-            # An explicit source length or time signature is a deliberate
-            # boundary and must never be overwritten by this heuristic.
-            if any(entry["measure"].get("len") is not None or entry["time_signature"]
-                   for entry in entries):
-                continue
-            intended = {entry["intended"] for entry in entries}
-            if len(intended) != 1:
-                continue
-            expected = next(iter(intended))
-            should_set = actual > expected
-            if actual < expected and measure_index > 1:
-                previous = [ledger[key] for key in ledger
-                            if key[1] == measure_index - 1
-                            and key[2] == voice_index]
-                if len(previous) == len(staves):
-                    prev_actuals = {entry["actual"] for entry in previous}
-                    prev_expected = {entry["intended"] for entry in previous}
-                    previous_safe = (
-                        len(prev_actuals) == 1 and len(prev_expected) == 1
-                        and next(iter(prev_actuals)) > next(iter(prev_expected))
-                        and not any(entry["explicit_len"] or entry["time_signature"]
-                                    for entry in previous)
+            groups = {}
+            for staff_index, entry in active:
+                groups.setdefault(
+                    (entry["actual"], entry["intended"]), []
+                ).append((staff_index, entry))
+            for (actual, expected), active_group in groups.items():
+                if actual <= 0 or actual == expected:
+                    continue
+
+                candidate_staffs = []
+                for staff_index, _active_entry in active_group:
+                    staff_entries = _staff_measure_entries(
+                        ledger, staff_index, measure_index)
+                    if _length_safe_for_staff(staff_entries, actual):
+                        candidate_staffs.append(staff_index)
+                if not candidate_staffs:
+                    continue
+
+                shared_active_boundary = len(candidate_staffs) >= 2
+                for staff_index in candidate_staffs:
+                    run_length = _irregular_run_length(
+                        ledger, staff_index, measure_index, voice_index,
+                        actual, expected, updated_measures)
+                    safe_displaced_short = False
+                    if actual < expected and measure_index > 1:
+                        previous = ledger.get((staff_index, measure_index - 1,
+                                               voice_index))
+                        safe_displaced_short = bool(
+                            previous
+                            and previous["actual"] > previous["intended"]
+                            and previous["actual"] + actual == (
+                                previous["intended"] + expected)
+                            and _length_safe_for_staff(
+                                _staff_measure_entries(
+                                    ledger, staff_index, measure_index - 1),
+                                previous["actual"])
+                        )
+                    should_set = (
+                        (actual > expected and (shared_active_boundary
+                                                or run_length >= 2))
+                        or (actual < expected and (run_length >= 2
+                                                   or safe_displaced_short))
                     )
-                    should_set = previous_safe and (
-                        next(iter(prev_actuals)) + actual ==
-                        next(iter(prev_expected)) + expected
+                    if (not should_set
+                            or (staff_index, measure_index) in updated_measures):
+                        continue
+                    ledger_measure = _staff_measure_entries(
+                        ledger, staff_index, measure_index)
+                    for entry in ledger_measure:
+                        entry["measure"].set("len", str(actual))
+                    updated_measures.add((staff_index, measure_index))
+                    changed = True
+                    repairs.append(
+                        f"Preserved source-shaped native CAP bar length {actual} "
+                        f"at staff {staff_index}, measure {measure_index}, "
+                        f"voice {voice_index}"
                     )
-            if not should_set:
-                continue
-            for entry in entries:
-                entry["measure"].set("len", str(actual))
-            changed = True
-            repairs.append(
-                f"Preserved shared irregular native CAP bar length {actual} "
-                f"at measure {measure_index}, voice {voice_index} "
-                f"across {len(staves)} staves"
-            )
     return changed
 
 
@@ -419,12 +648,16 @@ def normalize_legacy_cap_mscz(path: Path) -> dict:
     """Apply safe CAP-import repairs and return an auditable repair record."""
     path = Path(path)
     repairs: list[str] = []
+    diagnostics: list[str] = []
     archive, score_name, root = _native_root(path)
     try:
         score = root.find("Score")
         if score is None:
             raise ValueError("MSCX contains no Score element")
         changed = _normalize_tuplet_markers(score, repairs)
+        changed = _normalize_playback_directions(
+            score, repairs, diagnostics
+        ) or changed
         ledger = _measure_ledger(score)
         changed = _normalize_shared_meters(score, ledger, repairs) or changed
         if changed:
@@ -439,4 +672,8 @@ def normalize_legacy_cap_mscz(path: Path) -> dict:
             _write_native(path, archive, score_name, root)
     finally:
         archive.close()
-    return {"changed": bool(repairs), "repairs": repairs}
+    return {
+        "changed": bool(repairs),
+        "repairs": repairs,
+        "diagnostics": diagnostics,
+    }
