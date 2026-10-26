@@ -10,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MUSESCORE_BIN=/usr/bin/musescor
 RUN apt-get update && apt-get install -y --no-install-recommends \
     musescore3 poppler-utils fonts-dejavu-core fonts-liberation ca-certificates \
     curl libarchive-tools libxcomposite1 libxcursor1 libxdamage1 libxi6 \
-    libxrandr2 libxtst6 libcap2 liborc-0.4-0 \
+    libxrandr2 libxtst6 libcap2 liborc-0.4-0 libxslt1.1 \
     && rm -rf /var/lib/apt/lists/*
 RUN curl --fail --location --retry 3 --silent --show-error \
       "$MUSESCORE2_URL" --output /tmp/musescore2.AppImage \
