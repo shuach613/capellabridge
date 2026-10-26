@@ -161,6 +161,76 @@ def test_legacy_cap_text_chords_and_rest_only_staff_are_normalized(tmp_path):
     assert native.find('.//Lyrics/text').text=='Alle'
     assert native.find('./Score/Staff[1]/VBox/Text[style="Title"]/text').text=='S Äffli'
     assert native.find('./Score/Staff[1]/Measure/voice/StaffText[text="A"]/autoplace').text=='1'
-    assert native.find('./Score/Staff[2]/visible').text=='0'
+    assert changes['removed_staves']==[2]
+    assert len(native.findall('./Score/Staff'))==1
     assert native.findtext('./Score/showInvisible')=='0'
     assert native.findtext('./Score/showUnprintable')=='0'
+
+
+def test_legacy_cap_prunes_empty_part_and_preserves_its_structure(tmp_path):
+    path=tmp_path/'legacy-leading-rest.mscz'
+    root=ET.Element('museScore')
+    score=ET.SubElement(root,'Score')
+    empty_part=ET.SubElement(score,'Part')
+    empty_part_staff=ET.SubElement(empty_part,'Staff',id='1')
+    bracket=ET.SubElement(empty_part_staff,'bracket',type='1')
+    bracket.set('span','2')
+    ET.SubElement(empty_part_staff,'barLineSpan').text='2'
+    musical_part=ET.SubElement(score,'Part')
+    ET.SubElement(musical_part,'Staff',id='2')
+    empty=ET.SubElement(score,'Staff',id='1')
+    frame=ET.SubElement(empty,'VBox')
+    ET.SubElement(frame,'height').text='8'
+    title=ET.SubElement(frame,'Text')
+    ET.SubElement(title,'style').text='Title'
+    ET.SubElement(title,'text').text='Transferred title'
+    empty_measure=ET.SubElement(empty,'Measure')
+    ET.SubElement(empty_measure,'startRepeat')
+    empty_voice=ET.SubElement(empty_measure,'voice')
+    time=ET.SubElement(empty_voice,'TimeSig')
+    ET.SubElement(time,'sigN').text='2'
+    ET.SubElement(time,'sigD').text='4'
+    ET.SubElement(empty_voice,'Rest').append(ET.Element('durationType'))
+    empty_voice.find('./Rest/durationType').text='half'
+    musical=ET.SubElement(score,'Staff',id='2')
+    musical_measure=ET.SubElement(musical,'Measure')
+    musical_voice=ET.SubElement(musical_measure,'voice')
+    chord=ET.SubElement(musical_voice,'Chord')
+    ET.SubElement(chord,'durationType').text='half'
+    ET.SubElement(chord,'Note')
+    with zipfile.ZipFile(path,'w') as z:
+        z.writestr('score.mscx',ET.tostring(root))
+
+    changes=prepare_print_ready(path,source_format='cap')
+    native=reread(path)
+
+    assert changes['removed_staves']==[1]
+    assert [staff.get('id') for staff in native.findall('./Score/Staff')]==['1']
+    assert [staff.get('id') for staff in native.findall('./Score/Part/Staff')]==['1']
+    assert native.findtext('./Score/Staff/VBox/Text/text')=='Transferred title'
+    assert native.find('./Score/Staff/Measure/startRepeat') is not None
+    assert native.findtext('./Score/Staff/Measure/voice/TimeSig/sigN')=='2'
+
+
+def test_legacy_cap_keeps_rest_staff_with_textual_content(tmp_path):
+    path=tmp_path/'legacy-rest-text.mscz'
+    root=ET.Element('museScore')
+    score=ET.SubElement(root,'Score')
+    for staff_id in ('1','2'):
+        staff=ET.SubElement(score,'Staff',id=staff_id)
+        measure=ET.SubElement(staff,'Measure')
+        voice=ET.SubElement(measure,'voice')
+        rest=ET.SubElement(voice,'Rest')
+        ET.SubElement(rest,'durationType').text='whole'
+        if staff_id=='1':
+            text=ET.SubElement(voice,'StaffText')
+            ET.SubElement(text,'text').text='crescendo'
+
+    with zipfile.ZipFile(path,'w') as z:
+        z.writestr('score.mscx',ET.tostring(root))
+
+    changes=prepare_print_ready(path,source_format='cap')
+    native=reread(path)
+
+    assert changes['removed_staves']==[2]
+    assert native.find('.//StaffText[text="crescendo"]') is not None

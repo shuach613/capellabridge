@@ -11,6 +11,7 @@ import re
 import tempfile
 import textwrap
 import zipfile
+from copy import deepcopy
 from pathlib import Path
 from lxml import etree as ET
 
@@ -188,21 +189,198 @@ def _normalize_cap_chord_annotations(score, changes: dict) -> None:
         )
 
 
-def _hide_rest_only_staves(score, changes: dict) -> None:
-    for staff_index, staff in enumerate(score.findall('Staff'), 1):
-        if staff.find('.//Chord') is not None or staff.find('.//Note') is not None:
+_SAFE_EMPTY_STAFF_MEASURE_TAGS = {
+    'voice', 'LayoutBreak', 'startRepeat', 'endRepeat', 'repeatCount',
+}
+_SAFE_EMPTY_STAFF_VOICE_TAGS = {
+    'Rest', 'TimeSig', 'KeySig', 'Clef',
+}
+
+
+def _is_prunable_rest_only_staff(staff) -> bool:
+    """Return whether an imported staff has no musical or textual meaning.
+
+    Rest-only importer artefacts must be removed, not merely hidden: MuseScore
+    still lays out their bars and staff lines in PDFs. This deliberately
+    accepts only rests plus baseline clef/key/meter and system-break data. A
+    staff carrying any text, direction, spanner, repeat-ending, symbol, or
+    pitched event is retained untouched.
+    """
+    if staff.find('.//Chord') is not None or staff.find('.//Note') is not None:
+        return False
+    if staff.find('.//Rest') is None:
+        return False
+    if any(item.tag not in {'Measure', 'VBox', 'visible'} for item in staff):
+        return False
+    for measure in staff.findall('Measure'):
+        if any(item.tag not in _SAFE_EMPTY_STAFF_MEASURE_TAGS
+               for item in measure):
+            return False
+        for voice in measure.findall('voice'):
+            if any(item.tag not in _SAFE_EMPTY_STAFF_VOICE_TAGS
+                   for item in voice):
+                return False
+    return True
+
+
+def _copy_if_missing(parent, item) -> None:
+    """Copy a structural item only when the target does not already own it."""
+    fingerprint = (item.tag, ET.tostring(item, encoding='unicode'))
+    existing = {
+        (candidate.tag, ET.tostring(candidate, encoding='unicode'))
+        for candidate in parent
+    }
+    if fingerprint not in existing:
+        parent.append(deepcopy(item))
+
+
+def _transfer_empty_staff_structure(source, target) -> None:
+    """Preserve system and score-wide structure before pruning a staff."""
+    for frame in source.findall('VBox'):
+        # The first surviving staff owns the title frame after an initial
+        # importer artefact is removed. Insert it ahead of existing measures.
+        target.insert(0, deepcopy(frame))
+
+    source_measures = source.findall('Measure')
+    target_measures = target.findall('Measure')
+    for index, source_measure in enumerate(source_measures):
+        if index >= len(target_measures):
+            break
+        target_measure = target_measures[index]
+        for item in source_measure:
+            if item.tag in {'LayoutBreak', 'startRepeat', 'endRepeat',
+                            'repeatCount'}:
+                _copy_if_missing(target_measure, item)
+        source_voice = source_measure.find('voice')
+        target_voice = target_measure.find('voice')
+        if source_voice is None or target_voice is None:
             continue
-        if staff.find('.//Rest') is None:
+        for item in source_voice:
+            if item.tag not in {'TimeSig', 'KeySig', 'Clef'}:
+                continue
+            fingerprint = (item.tag, ET.tostring(item, encoding='unicode'))
+            existing = {
+                (candidate.tag, ET.tostring(candidate, encoding='unicode'))
+                for candidate in target_voice
+            }
+            if fingerprint not in existing:
+                target_voice.insert(0, deepcopy(item))
+
+
+def _rebuild_part_spans(score, old_part_staves, retained_ids) -> None:
+    """Rebase bracket and barline spans after removing CAP artefact staves."""
+    positions = {staff.get('id'): index
+                 for index, staff in enumerate(old_part_staves)}
+    descriptors = []
+    for staff in old_part_staves:
+        start = positions[staff.get('id')]
+        for bracket in staff.findall('bracket'):
+            try:
+                span = int(bracket.get('span', '1'))
+            except ValueError:
+                continue
+            descriptors.append(('bracket', staff.get('id'), span,
+                                deepcopy(bracket)))
+        bar = staff.find('barLineSpan')
+        if bar is not None:
+            try:
+                span = int(bar.text or '0')
+            except ValueError:
+                continue
+            descriptors.append(('barLineSpan', staff.get('id'), span,
+                                deepcopy(bar)))
+        for item in list(staff):
+            if item.tag in {'bracket', 'barLineSpan'}:
+                staff.remove(item)
+
+    retained = set(retained_ids)
+    current = {
+        staff.get('id'): staff
+        for part in score.findall('Part')
+        for staff in part.findall('Staff')
+    }
+    for kind, start_id, span, item in descriptors:
+        start = positions[start_id]
+        covered = [old_part_staves[position].get('id')
+                   for position in range(start, min(start + span,
+                                                     len(old_part_staves)))]
+        kept = [staff_id for staff_id in covered if staff_id in retained]
+        if not kept:
             continue
-        visible = staff.find('visible')
-        if visible is None:
-            visible = ET.SubElement(staff, 'visible')
-        if visible.text != '0':
-            visible.text = '0'
-            changes['hidden_staves'].append(staff_index)
-            changes['repairs'].append(
-                f'Hidden rest-only imported CAP staff {staff_index}'
-            )
+        target = current.get(kept[0])
+        if target is None:
+            continue
+        if kind == 'bracket':
+            if len(kept) < 2:
+                continue
+            item.set('span', str(len(kept)))
+        elif span > 1:
+            if len(kept) < 2:
+                continue
+            item.text = str(len(kept))
+        target.append(item)
+
+
+def _prune_rest_only_staves(score, changes: dict) -> None:
+    """Remove globally empty CAP-import artefact staves without losing data."""
+    # Track-addressed objects require a wider remapping than is safe in this
+    # targeted repair. Retain the staff in that rare form rather than risk
+    # moving a direction to another playback track.
+    if any(item.tag == 'track' or 'track' in item.attrib for item in score.iter()):
+        return
+
+    score_staves = score.findall('Staff')
+    prunable = [staff for staff in score_staves if _is_prunable_rest_only_staff(staff)]
+    if not prunable or len(prunable) == len(score_staves):
+        return
+
+    prunable_ids = {staff.get('id') for staff in prunable}
+    retained_score_staves = [staff for staff in score_staves
+                             if staff.get('id') not in prunable_ids]
+    for staff in prunable:
+        source_index = score_staves.index(staff)
+        target = next((candidate for candidate in score_staves[source_index + 1:]
+                       if candidate.get('id') not in prunable_ids), None)
+        if target is None:
+            target = next((candidate for candidate in reversed(score_staves[:source_index])
+                           if candidate.get('id') not in prunable_ids), None)
+        if target is None:
+            return
+        _transfer_empty_staff_structure(staff, target)
+
+    old_part_staves = [staff for part in score.findall('Part')
+                       for staff in part.findall('Staff')]
+    _rebuild_part_spans(score, old_part_staves,
+                        {staff.get('id') for staff in retained_score_staves})
+
+    for staff in prunable:
+        score.remove(staff)
+    for part in list(score.findall('Part')):
+        for staff in list(part.findall('Staff')):
+            if staff.get('id') in prunable_ids:
+                part.remove(staff)
+        if not part.findall('Staff'):
+            score.remove(part)
+
+    # MSCX staff IDs are expected to be contiguous. CAP imports in this
+    # branch contain no track references (guarded above), so the ID remap is
+    # safe after score/Part structures have been reduced together.
+    retained_ids = [staff.get('id') for staff in retained_score_staves]
+    ids = {old_id: str(index) for index, old_id in enumerate(retained_ids, 1)}
+    for staff in score.findall('Staff'):
+        staff.set('id', ids[staff.get('id')])
+    for part in score.findall('Part'):
+        for staff in part.findall('Staff'):
+            staff.set('id', ids[staff.get('id')])
+
+    changes['removed_staves'].extend(
+        int(staff_id) if (staff_id or '').isdigit() else staff_id
+        for staff_id in sorted(prunable_ids, key=lambda value: int(value or '0'))
+    )
+    changes['repairs'].append(
+        'Removed globally rest-only imported CAP staff/staves: ' +
+        ', '.join(map(str, changes['removed_staves']))
+    )
 
 
 def _hide_internal_view_flags(score, changes: dict) -> None:
@@ -254,6 +432,7 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None,
     changes = {
         'repairs': [],
         'hidden_staves': [],
+        'removed_staves': [],
         'chord_annotations': 0,
         'view_flags': [],
     }
@@ -442,7 +621,7 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None,
                 if frame is not None:
                     _normalize_cap_opening_text(score, frame, changes)
                 _normalize_cap_chord_annotations(score, changes)
-                _hide_rest_only_staves(score, changes)
+                _prune_rest_only_staves(score, changes)
                 _enable_native_text_autoplace(score, changes)
             _hide_internal_view_flags(score, changes)
             # MusicXML imports a group of four independent parts as a single
