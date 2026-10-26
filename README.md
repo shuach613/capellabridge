@@ -70,8 +70,9 @@ This recreates the container with the latest image while retaining the named vol
 Every score for which MuseScore creates a genuine native archive receives an
 MSCZ. CAPX scores can be source-audited against their generated MusicXML and
 are labelled **verified** when that audit and the native checks pass. Legacy
-CAP scores are imported directly to native MSCZ and are labelled
-**native-valid** when the archive and native timing/structure pass; the report
+CAP scores are decoded by a pinned MuseScore 2.3.2 importer, upgraded directly
+to native MuseScore 3 MSCZ, and labelled **source-unverified** when the archive
+and native timing/structure pass; the report
 explicitly keeps source equivalence unverified because the binary importer has
 no lossless source event ledger. Ambiguous tuplets or other unresolved
 structural issues are labelled **manual review**, while the editable MSCZ is
@@ -87,7 +88,9 @@ lost. Volta connectors are followed across measures, so a first ending that
 reaches the end of a score without a matching second ending is reported at its
 exact measures for manual review rather than silently inventing source music.
 
-For legacy CAP imports, the normalizer may propagate a time signature from a
+For legacy CAP imports, the normalizer accounts for native voice-location
+offsets and may make proven trailing silence explicit with an invisible rest
+when a complete sibling voice fixes the measure boundary. It may also propagate a time signature from a
 peer staff or infer one only when closed measures agree across the score. The
 report records those repairs without changing pitched events. Native tuplet
 scope counts and repeat/ending navigation review flags are also recorded; an
@@ -106,7 +109,7 @@ Results are temporary and normally expire after 24 hours. Uploaded originals are
 
 ## Supported notation and fidelity
 
-CAPX files are interpreted from **CapXML 1.0, 2.0, 3.0 and 4.0** into **MusicXML**, then converted by the installed MuseScore engine to native `.mscz`, PDF, and preview images. Legacy binary `.cap` files are imported directly into native `.mscz`; MusicXML and PDF are exported from that same native score, so MusicXML is no longer a lossy intermediate step. Supported features include notes and rests, chords, multiple voices, grace notes, ties, slurs, tuplets, written time signatures and changes, key changes, clefs, accidentals, staccato and accents, repeat signs, first/second endings, variation headings and first-page credits. Known Capella3-font symbols are translated into **editable dynamics** (p, pp, f, ff, mf, mp and related markings), **trills and fermatas**, plus D.C., D.S., Segno and Coda navigation where semantically identified in the source. Textual directions and credits are preserved from page objects or note-attached graphics when recognized; compact rich-text (RTF) navigation objects are decoded conservatively, with recognized Capella3 glyphs translated to readable navigation instructions.
+CAPX files are interpreted from **CapXML 1.0, 2.0, 3.0 and 4.0** into **MusicXML**, then converted by the installed MuseScore engine to native `.mscz`, PDF, and preview images. Legacy binary `.cap` files use a separate pinned MuseScore 2.3.2 decode boundary because MuseScore 3 reads CAP articulation values but compiles out their conversion. The decoded native score is upgraded by MuseScore 3 without a MusicXML round trip; MusicXML and PDF are exported from that final native score. This preserves legacy staccato, tenuto, portato, staccatissimo, sforzato and marcato objects while leaving the CAPX converter unchanged. Supported features include notes and rests, chords, multiple voices, grace notes, ties, slurs, tuplets, written time signatures and changes, key changes, clefs, accidentals, repeat signs, first/second endings, variation headings and first-page credits. Known Capella3-font symbols are translated into **editable dynamics** (p, pp, f, ff, mf, mp and related markings), **trills and fermatas**, plus D.C., D.S., Segno and Coda navigation where semantically identified in the source. Textual directions and credits are preserved from page objects or note-attached graphics when recognized; compact rich-text (RTF) navigation objects are decoded conservatively, with recognized Capella3 glyphs translated to readable navigation instructions.
 
 The converter validates native MuseScore score structure and rhythmic measure lengths, then runs a **MuseScore Studio 4** cross-version reopen/export test during CI.
 

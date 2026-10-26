@@ -223,13 +223,27 @@ def _is_prunable_rest_only_staff(staff) -> bool:
     return True
 
 
+def _structural_fingerprint(item):
+    """Return a whitespace-independent identity for native structure.
+
+    Pretty-print indentation is stored in ``tail`` text by XML parsers.  It is
+    not musical data, and comparing serialized XML allowed identical CAP
+    clefs, keys, and meters to be copied twice when an empty staff was pruned.
+    Preserve every real child and attribute while ignoring indentation.
+    """
+    text = (item.text or '').strip()
+    return (
+        item.tag,
+        tuple(sorted(item.attrib.items())),
+        text,
+        tuple(_structural_fingerprint(child) for child in item),
+    )
+
+
 def _copy_if_missing(parent, item) -> None:
     """Copy a structural item only when the target does not already own it."""
-    fingerprint = (item.tag, ET.tostring(item, encoding='unicode'))
-    existing = {
-        (candidate.tag, ET.tostring(candidate, encoding='unicode'))
-        for candidate in parent
-    }
+    fingerprint = _structural_fingerprint(item)
+    existing = {_structural_fingerprint(candidate) for candidate in parent}
     if fingerprint not in existing:
         parent.append(deepcopy(item))
 
@@ -258,13 +272,34 @@ def _transfer_empty_staff_structure(source, target) -> None:
         for item in source_voice:
             if item.tag not in {'TimeSig', 'KeySig', 'Clef'}:
                 continue
-            fingerprint = (item.tag, ET.tostring(item, encoding='unicode'))
+            fingerprint = _structural_fingerprint(item)
             existing = {
-                (candidate.tag, ET.tostring(candidate, encoding='unicode'))
+                _structural_fingerprint(candidate)
                 for candidate in target_voice
             }
             if fingerprint not in existing:
                 target_voice.insert(0, deepcopy(item))
+
+
+def _deduplicate_measure_structure(score, changes: dict) -> None:
+    """Remove only exact duplicate clef/key/meter objects in one voice."""
+    removed = 0
+    for voice in score.findall('.//voice'):
+        seen = set()
+        for item in list(voice):
+            if item.tag not in {'TimeSig', 'KeySig', 'Clef'}:
+                continue
+            fingerprint = _structural_fingerprint(item)
+            if fingerprint in seen:
+                voice.remove(item)
+                removed += 1
+            else:
+                seen.add(fingerprint)
+    if removed:
+        changes['deduplicated_structure'] += removed
+        changes['repairs'].append(
+            f'Removed {removed} duplicate CAP clef/key/meter object(s)'
+        )
 
 
 def _rebuild_part_spans(score, old_part_staves, retained_ids) -> None:
@@ -434,6 +469,7 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None,
         'hidden_staves': [],
         'removed_staves': [],
         'chord_annotations': 0,
+        'deduplicated_structure': 0,
         'view_flags': [],
     }
     temp = None
@@ -622,6 +658,7 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None,
                     _normalize_cap_opening_text(score, frame, changes)
                 _normalize_cap_chord_annotations(score, changes)
                 _prune_rest_only_staves(score, changes)
+                _deduplicate_measure_structure(score, changes)
                 _enable_native_text_autoplace(score, changes)
             _hide_internal_view_flags(score, changes)
             # MusicXML imports a group of four independent parts as a single

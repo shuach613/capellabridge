@@ -116,6 +116,36 @@ def test_secondary_voice_gap_is_completed_when_primary_voice_fixes_bar_length(tm
     assert rest.findtext('visible') == '0'
 
 
+def test_displaced_secondary_voice_large_tail_is_safely_completed(tmp_path):
+    """A complete primary voice proves even a large secondary tail is silent."""
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    staff = ET.SubElement(score, 'Staff', id='1')
+    measure = ET.SubElement(staff, 'Measure')
+    measure.append(_voice(*(_event('Chord', 'quarter') for _ in range(4))))
+    secondary = _voice(_event('Chord', 'eighth'))
+    location = ET.Element('location')
+    ET.SubElement(location, 'fractions').text = '1/8'
+    secondary.append(location)
+    secondary.append(_event('Chord', 'eighth'))
+    measure.append(secondary)
+    path = tmp_path / 'large-secondary-gap.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('silent gap 5/8 at staff 1, measure 1, voice 2' in item
+               for item in result['repairs'])
+    assert audit_mscz(path, repair=False) == []
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    rest = native.find('./Score/Staff/Measure/voice[2]/Rest')
+    assert rest is not None
+    assert rest.findtext('duration') == '5/8'
+    assert rest.findtext('visible') == '0'
+
+
 def test_unknown_named_xml_entities_remain_fail_closed(tmp_path):
     path = tmp_path / 'unknown-entity.mscz'
     _write(path, '<Staff id="1"><Measure><StaffText><text>&mystery;</text></StaffText>'
@@ -311,8 +341,33 @@ def test_textual_navigation_is_promoted_but_unquantified_tempo_is_reported(tmp_p
     with zipfile.ZipFile(path) as archive:
         native = ET.fromstring(archive.read('score.mscx'))
     assert native.find('./Score/Staff[1]/Measure[1]/Marker/label').text == 'fine'
+    marker = native.find('./Score/Staff[1]/Measure[1]/Marker')
+    assert marker.findtext('text') == 'Fine'
+    assert marker.findtext('visible') == '0'
+    assert '&lt;sym&gt;' not in ET.tostring(marker, encoding='unicode')
     assert native.find('./Score/Staff[1]/Measure[2]/Jump/jumpTo').text == 'segno'
     assert native.find('./Score/Staff[1]/Measure[2]/Jump/playUntil').text == 'fine'
+
+
+def test_escaped_marker_from_older_release_is_repaired_and_hidden(tmp_path):
+    path = tmp_path / 'escaped-marker.mscz'
+    _write(
+        path,
+        '<Staff id="1"><Measure><Marker>'
+        '<text>&lt;sym&gt;fine&lt;/sym&gt;</text><label>fine</label>'
+        '</Marker><voice><Rest><durationType>whole</durationType></Rest>'
+        '</voice></Measure></Staff>',
+    )
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('escaped playback marker "fine"' in item
+               for item in result['repairs'])
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    marker = native.find('./Score/Staff/Measure/Marker')
+    assert marker.findtext('text') == 'Fine'
+    assert marker.findtext('visible') == '0'
 
 
 def test_compound_numeric_tempo_becomes_one_native_tempo_event(tmp_path):

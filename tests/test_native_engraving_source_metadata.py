@@ -212,6 +212,66 @@ def test_legacy_cap_prunes_empty_part_and_preserves_its_structure(tmp_path):
     assert native.findtext('./Score/Staff/Measure/voice/TimeSig/sigN')=='2'
 
 
+def test_legacy_cap_pruning_deduplicates_equivalent_meter_whitespace(tmp_path):
+    """Pretty-print tails must not create a second visible time signature."""
+    path=tmp_path/'legacy-duplicate-meter.mscz'
+    root=ET.Element('museScore')
+    score=ET.SubElement(root,'Score')
+    empty=ET.SubElement(score,'Staff',id='1')
+    empty_measure=ET.SubElement(empty,'Measure')
+    empty_voice=ET.SubElement(empty_measure,'voice')
+    empty_time=ET.SubElement(empty_voice,'TimeSig')
+    ET.SubElement(empty_time,'sigN').text='2'
+    ET.SubElement(empty_time,'sigD').text='4'
+    rest=ET.SubElement(empty_voice,'Rest')
+    ET.SubElement(rest,'durationType').text='half'
+    musical=ET.SubElement(score,'Staff',id='2')
+    musical_measure=ET.SubElement(musical,'Measure')
+    musical_voice=ET.SubElement(musical_measure,'voice')
+    musical_time=ET.SubElement(musical_voice,'TimeSig')
+    ET.SubElement(musical_time,'sigN').text='2'
+    ET.SubElement(musical_time,'sigD').text='4'
+    chord=ET.SubElement(musical_voice,'Chord')
+    ET.SubElement(chord,'durationType').text='half'
+    ET.SubElement(chord,'Note')
+    # Reparse formatted XML so indentation lives in element tails, matching
+    # the real CAP importer output that exposed the regression.
+    payload=ET.tostring(root,pretty_print=True)
+    with zipfile.ZipFile(path,'w') as z:
+        z.writestr('score.mscx',payload)
+
+    changes=prepare_print_ready(path,source_format='cap')
+    native=reread(path)
+
+    assert changes['removed_staves']==[1]
+    assert changes['deduplicated_structure']==0
+    assert len(native.findall('./Score/Staff/Measure/voice/TimeSig'))==1
+
+
+def test_legacy_cap_removes_preexisting_exact_duplicate_meter(tmp_path):
+    path=tmp_path/'legacy-existing-duplicate-meter.mscz'
+    root=ET.Element('museScore')
+    score=ET.SubElement(root,'Score')
+    staff=ET.SubElement(score,'Staff',id='1')
+    measure=ET.SubElement(staff,'Measure')
+    voice=ET.SubElement(measure,'voice')
+    for _ in range(2):
+        time=ET.SubElement(voice,'TimeSig')
+        ET.SubElement(time,'sigN').text='2'
+        ET.SubElement(time,'sigD').text='4'
+    chord=ET.SubElement(voice,'Chord')
+    ET.SubElement(chord,'durationType').text='half'
+    ET.SubElement(chord,'Note')
+    with zipfile.ZipFile(path,'w') as z:
+        z.writestr('score.mscx',ET.tostring(root,pretty_print=True))
+
+    changes=prepare_print_ready(path,source_format='cap')
+    native=reread(path)
+
+    assert changes['deduplicated_structure']==1
+    assert len(native.findall('./Score/Staff/Measure/voice/TimeSig'))==1
+
+
 def test_legacy_cap_keeps_rest_staff_with_textual_content(tmp_path):
     path=tmp_path/'legacy-rest-text.mscz'
     root=ET.Element('museScore')

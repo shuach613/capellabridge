@@ -46,6 +46,24 @@ def musescore_path():
     raise ConversionFailure('MuseScore CLI executable not installed. Build with supplied Dockerfile.')
 
 
+def legacy_cap_musescore_path():
+    """Return the optional pinned importer used only for binary CAP files.
+
+    MuseScore 3 has a known regression where CAP chord articulation values are
+    parsed but their conversion cases are compiled out. MuseScore 2.3.2 keeps
+    those objects. CAPX never calls this function and remains on the native
+    CapellaBridge conversion path.
+    """
+    explicit=os.environ.get('MUSESCORE_LEGACY_CAP_BIN','')
+    if not explicit:
+        return None
+    if not Path(explicit).is_file():
+        raise ConversionFailure(
+            f'Configured legacy CAP importer does not exist: {explicit}'
+        )
+    return explicit
+
+
 def convert(source,target,timeout=150):
     """Convert one file with an isolated MuseScore runtime."""
     target_path=Path(target)
@@ -56,10 +74,31 @@ def convert(source,target,timeout=150):
 
 
 def import_cap(source, target):
-    """Import a legacy binary CAP directly into a native MSCZ archive."""
+    """Import binary CAP without exposing CAPX to the legacy engine.
+
+    When the pinned MuseScore 2.3.2 importer is installed, it first decodes
+    the CAP-specific articulations and draw objects into a native score. The
+    regular MuseScore 3 engine then upgrades that native score to the final
+    MSCZ consumed by all existing validation, engraving, and export steps.
+    """
     if Path(target).suffix.lower() != '.mscz':
         raise ConversionFailure('Legacy CAP imports must target an MSCZ file')
-    convert(source, target, timeout=300)
+    legacy=legacy_cap_musescore_path()
+    if legacy is None:
+        convert(source, target, timeout=300)
+        return
+    target_path=Path(target)
+    with tempfile.TemporaryDirectory(
+        prefix='.legacy-cap-import-', dir=target_path.parent
+    ) as root:
+        intermediate=Path(root)/(target_path.stem+'-ms2.mscz')
+        run(legacy,'-o',intermediate,source,
+            timeout=300,cwd=intermediate.parent)
+        if not intermediate.is_file() or intermediate.stat().st_size < 100:
+            raise ConversionFailure(
+                'Pinned legacy CAP importer did not create an MSCZ file'
+            )
+        convert(intermediate,target_path,timeout=300)
 
 
 def export_musicxml(source_mscz, target):

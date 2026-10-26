@@ -23,6 +23,7 @@ from .musescore import (
     export_musicxml,
     export_pdf,
     import_cap,
+    legacy_cap_musescore_path,
     musescore_path,
 )
 from .engraving import prepare_print_ready
@@ -98,7 +99,15 @@ def cleanup():
 
 @app.get('/health')
 def health():
-    return {'status':'ok','version':VERSION,'engine_available':bool(shutil.which(os.environ.get('MUSESCORE_BIN','musescore3')))}
+    legacy=os.environ.get('MUSESCORE_LEGACY_CAP_BIN','')
+    return {
+        'status':'ok',
+        'version':VERSION,
+        'engine_available':bool(shutil.which(
+            os.environ.get('MUSESCORE_BIN','musescore3'))),
+        'legacy_cap_engine_available':bool(
+            legacy and Path(legacy).is_file() and os.access(legacy,os.X_OK)),
+    }
 
 
 @app.get('/')
@@ -117,10 +126,17 @@ def static(filename:str):
 
 @app.get('/api/info')
 def info():
+    legacy=os.environ.get('MUSESCORE_LEGACY_CAP_BIN','')
     return {'version':VERSION,'max_upload_mb':MAX_FILE//1024//1024,'max_batch':MAX_BATCH,
             'supported':{'capx':'Native CapXML 1.0–4.0 engine',
-                         'cap':'Direct native MuseScore legacy importer'},
-            'output':['mscz','musicxml','pdf','preview.png'],'retention_hours':TTL//3600,'engine_available':bool(shutil.which(os.environ.get('MUSESCORE_BIN','musescore3')))}
+                         'cap':'Pinned MuseScore 2 legacy decoder with MuseScore 3 output'},
+            'output':['mscz','musicxml','pdf','preview.png'],
+            'retention_hours':TTL//3600,
+            'engine_available':bool(shutil.which(
+                os.environ.get('MUSESCORE_BIN','musescore3'))),
+            'legacy_cap_engine_available':bool(
+                legacy and Path(legacy).is_file()
+                and os.access(legacy,os.X_OK))}
 
 
 def safe_filename(filename):
@@ -385,6 +401,7 @@ def process_score(name,ext,raw,work,layout):
         # MusicXML is a secondary export from that archive, never the source
         # used to create it.
         source=inspect_cap(inp)
+        legacy_importer=legacy_cap_musescore_path()
         report={
             'title':stem,
             'source_format':'cap',
@@ -392,9 +409,13 @@ def process_score(name,ext,raw,work,layout):
             'measures':None,
             'warnings':[],
             'layout':'musescore-import',
-            'import_strategy':'native-cap-to-mscz',
+            'import_strategy':(
+                'musescore2-cap-to-musescore3-mscz'
+                if legacy_importer else 'native-cap-to-mscz'
+            ),
             'cap_source':source,
             'musescore_binary':musescore_path(),
+            'legacy_cap_binary':legacy_importer,
         }
         mscz=work/(prefix+'.mscz')
         import_cap(inp,mscz)

@@ -102,6 +102,23 @@ def _measure_duration(voice, meter, tuplet_stack=None):
             duration = _duration(item, meter, scale)
             total += duration
             timed.append((item, duration))
+        elif item.tag == "location":
+            # MuseScore uses a direct child <location> to advance or rewind
+            # the voice cursor without writing a rest. CAP imports use this
+            # for displaced secondary voices. Ignoring it made valid silent
+            # spans disappear from the timing ledger and caused false short-
+            # measure diagnostics or incorrectly sized padding.
+            try:
+                total += Fraction(item.findtext("measures", "0")) * meter
+                total += Fraction(item.findtext("fractions", "0"))
+            except (ZeroDivisionError, ValueError) as exc:
+                raise ScoreIntegrityError(
+                    "Invalid native voice location offset"
+                ) from exc
+            if total < 0:
+                raise ScoreIntegrityError(
+                    "Native voice location moved before the measure start"
+                )
     if tuplet_stack is None and ratio_stack:
         raise ScoreIntegrityError("Unclosed native tuplet")
     return total, timed

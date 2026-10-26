@@ -45,12 +45,16 @@ references, but they do not contain a reliable machine-readable note ledger.
 
 ## Audit of the current CAP path
 
-The legacy path now keeps MuseScore's native CAP import as the authoritative
-editable score:
+The legacy path now uses a pinned native CAP decode boundary and keeps the
+resulting native score as the authoritative editable score:
 
 1. CapellaBridge validates the `cap3-v:a` signature and records the source
    size and SHA-256 hash.
-2. MuseScore imports CAP directly to MSCZ.
+2. Pinned MuseScore 2.3.2 imports CAP directly to an intermediate native MSCZ.
+   This avoids the MuseScore 3 regression that parses CAP articulation bytes
+   but compiles out staccato, tenuto, portato, staccatissimo, sforzato and
+   marcato conversion. MuseScore 3 then upgrades that native score to the
+   final MSCZ without a MusicXML round trip. CAPX never uses this path.
 3. A CAP-specific normalizer preserves shared irregular bar boundaries,
    repairs isolated silent gaps, propagates a meter already present on a peer
    staff, and infers a missing meter only when closed measures agree across
@@ -61,13 +65,16 @@ editable score:
    only provably orphaned tuplet closes and leaves ambiguous tuplet scopes
    untouched.
 4. Native CAP title/credit text is moved into a title frame, chord labels are
-   converted from importer Lyrics into native Harmony objects, rest-only
-   staves are hidden without deleting their events, and text autoplace is
-   restored.
+   converted from importer Lyrics into native Harmony objects, globally
+   rest-only importer staves are physically removed after safe structure
+   transfer, and text autoplace is restored. Structural transfer compares
+   musical XML content without indentation and removes exact duplicate
+   clef/key/meter objects.
 5. Unambiguous textual navigation such as "D.S. al Fine", "D.C. al Fine",
    "alla Coda", "Fine", "Coda" and "Segno" is promoted to native MuseScore
    Marker/Jump objects. Numeric tempo text is promoted only when a BPM is
-   explicit. Directions such as "rit." or "a tempo" remain visible and are
+   explicit. Generated marker anchors are non-printing so source labels are
+   not duplicated or rendered as escaped XML. Directions such as "rit." or "a tempo" remain visible and are
    reported for manual review because assigning a guessed BPM would change
    playback.
 6. The same final MSCZ is structurally audited and exported to MusicXML and
@@ -105,13 +112,12 @@ This should be a deterministic regression and normalization pipeline, not a
 machine-learning model. The legacy binary format is proprietary and the
 reference PDFs are visual output, not training labels for note-level recovery.
 
-### 1. Use one pinned legacy importer
+### 1. Use a pinned legacy decoder and current native writer
 
-Use the MuseScore Capella importer already shipped in the container as the
-binary decoder rather than reverse-engineering a second CAP parser. The
-upstream importer has explicit models for notes, rests, clefs, keys, meters,
-barlines, voices and Capella draw objects including text, slurs, wedges,
-voltas, brackets and trills.
+Use the official MuseScore 2.3.2 AppImage, verified by SHA-256 during the image
+build, as the binary decoder. It retains legacy CAP chord articulations that
+MuseScore 3 currently drops. Use MuseScore 3 only to upgrade the decoded native
+score, validate it, and produce current MSCZ, MusicXML and PDF outputs.
 
 For CAP input, import directly to a native MSCZ first. Do not make the
 production score by importing CAP to MusicXML and then importing that XML back
