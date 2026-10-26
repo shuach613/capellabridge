@@ -322,3 +322,30 @@ def test_cap_export_audit_allows_coalesced_silent_rests(tmp_path):
     assert result["source_rests"] == 2
     assert result["native_rests"] == 1
     assert result["rest_representation_normalized"] is True
+
+
+def test_cap_export_audit_maps_multistaff_part_to_native_staffs(tmp_path):
+    """A CAP export may use one MusicXML part for a four-staff ensemble."""
+    source = tmp_path / "multistaff.musicxml"
+    source.write_text("""<?xml version="1.0"?>
+    <score-partwise version="4.0">
+      <part-list><score-part id="P1"><part-name>Ensemble</part-name></score-part></part-list>
+      <part id="P1"><measure number="1">
+        <attributes><divisions>1</divisions><staves>2</staves><transpose>
+          <chromatic>12</chromatic><octave-change>1</octave-change>
+        </transpose></attributes>
+        <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><staff>1</staff></note>
+        <backup><duration>1</duration></backup>
+        <note><pitch><step>E</step><octave>4</octave></pitch><duration>1</duration><voice>5</voice><staff>2</staff></note>
+      </measure></part>
+    </score-partwise>""", encoding="utf-8")
+    output = tmp_path / "multistaff.mscz"
+    native_zip(output, """<museScore version="3.02"><Score>
+      <Part><Staff id="1"/><Staff id="2"/><Instrument><transposeChromatic>12</transposeChromatic></Instrument></Part>
+      <Staff id="1"><Measure len="1/4"><voice><Chord><durationType>quarter</durationType><Note><pitch>72</pitch></Note></Chord></voice></Measure></Staff>
+      <Staff id="2"><Measure len="1/4"><voice><Chord><durationType>quarter</durationType><Note><pitch>76</pitch></Note></Chord></voice></Measure></Staff>
+    </Score></museScore>""")
+
+    result = audit_cap_musicxml_export(source, output)
+
+    assert result["source_chords"] == result["native_chords"] == 2

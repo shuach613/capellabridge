@@ -450,10 +450,13 @@ def process_score(name,ext,raw,work,layout):
             create_preview(pdf,png)
         except ConversionFailure as exc:
             warnings.append(f'Preview creation failed: {exc}')
-    # Verify the resulting MSCZ ZIP contains a genuine MuseScore score.
-    with zipfile.ZipFile(mscz) as archive:
-        if not any(x.endswith('.mscx') for x in archive.namelist()):
-            raise ConversionFailure('MuseScore produced an invalid MSCZ file')
+    # Do not hand out a ZIP that merely contains an .mscx filename. The score
+    # XML itself must parse after every late stage, otherwise a malformed
+    # metadata entity can leave users with an unreadable "MuseScore" file.
+    try:
+        inspect_native_mscz(mscz)
+    except LegacyCapError as exc:
+        raise ConversionFailure('MuseScore produced an invalid MSCZ file') from exc
     files={'mscz':mscz.name}
     if xml_path.is_file():
         files['musicxml']=xml_path.name
@@ -479,11 +482,8 @@ def retain_partial_mscz(work: Path, name: str, error: Exception) -> dict | None:
     if mscz is None:
         return None
     try:
-        with zipfile.ZipFile(mscz) as archive:
-            if archive.testzip() is not None or not any(
-                    member.endswith('.mscx') for member in archive.namelist()):
-                return None
-    except zipfile.BadZipFile:
+        inspect_native_mscz(mscz)
+    except (LegacyCapError, zipfile.BadZipFile):
         return None
     prefix=safe_filename(Path(name).stem)
     files={'mscz':mscz.name}

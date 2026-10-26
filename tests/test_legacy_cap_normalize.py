@@ -86,6 +86,63 @@ def test_isolated_silent_staff_gap_gets_an_invisible_rest(tmp_path):
     assert rest.findtext('visible') == '0'
 
 
+def test_secondary_voice_gap_is_completed_when_primary_voice_fixes_bar_length(tmp_path):
+    """An imported second voice may omit only its final silent beat."""
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    staff = ET.SubElement(score, 'Staff', id='1')
+    opening = ET.SubElement(staff, 'Measure')
+    opening_voice = _voice(_event('Rest', 'half'))
+    opening_voice.insert(0, ET.fromstring(
+        '<TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>'))
+    opening.append(opening_voice)
+    measure = ET.SubElement(staff, 'Measure')
+    primary = _voice(_event('Chord', 'quarter'), _event('Chord', 'quarter'))
+    measure.append(primary)
+    measure.append(_voice(_event('Chord', 'quarter')))
+    path = tmp_path / 'secondary-gap.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('silent gap 1/4 at staff 1, measure 2, voice 2' in item
+               for item in result['repairs'])
+    assert audit_mscz(path, repair=False) == []
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    rest = native.find('./Score/Staff/Measure[2]/voice[2]/Rest')
+    assert rest is not None
+    assert rest.findtext('visible') == '0'
+
+
+def test_unknown_named_xml_entities_remain_fail_closed(tmp_path):
+    path = tmp_path / 'unknown-entity.mscz'
+    _write(path, '<Staff id="1"><Measure><StaffText><text>&mystery;</text></StaffText>'
+           '<voice><Rest><durationType>whole</durationType></Rest></voice></Measure></Staff>')
+
+    try:
+        normalize_legacy_cap_mscz(path)
+    except ET.XMLSyntaxError:
+        pass
+    else:
+        raise AssertionError('unknown XML entity must not be guessed')
+
+
+def test_html_nonbreaking_space_in_metadata_is_normalized_to_valid_xml(tmp_path):
+    path = tmp_path / 'nbsp.mscz'
+    _write(path, '<Staff id="1"><Measure><StaffText><text>Title&nbsp;line</text></StaffText>'
+           '<voice><Rest><durationType>whole</durationType></Rest></voice></Measure></Staff>')
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('nbsp' in item for item in result['repairs'])
+    assert audit_mscz(path, repair=False) == []
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert native.findtext('./Score/Staff/Measure/StaffText/text') == 'Title line'
+
+
 def test_tuplet_scope_can_cross_a_measure_without_false_unclosed_error(tmp_path):
     root = ET.Element('museScore')
     score = ET.SubElement(root, 'Score')

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 import hashlib
+import re
 import zipfile
 from collections import Counter
 from pathlib import Path
@@ -17,6 +18,54 @@ from lxml import etree as ET
 
 
 CAP_SIGNATURE = b"cap3-v:a"
+
+_TEXT_ONLY_PERFORMANCE_MARKS = {
+    "staccato": ("articStaccato",),
+    "staccatissimo": ("articStaccatissimo",),
+    "tenuto": ("articTenuto",),
+    "accent": ("articAccent", "articMarcato"),
+    "marcato": ("articMarcato",),
+    "trill": ("ornamentTrill",),
+    "mordent": ("ornamentMordent", "ornamentShortMordent", "ornamentPrall"),
+    "fermata": ("fermata",),
+    "gliss": ("glissando",),
+}
+
+
+def _text_only_performance_warnings(root, counts: dict) -> list[str]:
+    """Report CAP directions that have no typed native playback equivalent.
+
+    A textual instruction can be visually correct while remaining inert during
+    MuseScore playback. We deliberately do not guess its scope or attach a
+    mark to nearby notes: a text-only instruction is evidence for review, not
+    authority to alter the music.
+    """
+    typed = tuple(counts.get("articulation_subtypes", {}).keys())
+    text_values = []
+    for element in root.iter():
+        if _local_name(element) not in ("StaffText", "SystemText", "Text"):
+            continue
+        value = " ".join((element.findtext("text", "") or "").split())
+        if value:
+            text_values.append(value)
+    warnings = []
+    for text in text_values:
+        normalized = text.lower()
+        for label, required_subtypes in _TEXT_ONLY_PERFORMANCE_MARKS.items():
+            if not re.search(rf"\b{re.escape(label)}", normalized):
+                continue
+            represented = (
+                counts.get("glissandi", 0) > 0 if label == "gliss"
+                else any(any(subtype.startswith(prefix)
+                             for prefix in required_subtypes)
+                         for subtype in typed)
+            )
+            if not represented:
+                warnings.append(
+                    f'Playback instruction "{text}" is text-only; no typed '
+                    f'native {label} object is available for playback.'
+                )
+    return sorted(set(warnings))
 
 
 class LegacyCapError(ValueError):
@@ -135,13 +184,25 @@ def _navigation_diagnostics(score) -> tuple[list[str], list[str]]:
         for number in numbers
     }
     for start_measure, end_measure, endings in ending_spans:
-        if ("1" in endings
-                and not any(start_measure <= position <= end_measure
-                            for position in backward_repeats)):
-            review_flags.append(
-                f"Volta at measure {start_measure} has no backward repeat "
-                f"at or after its end (measure {end_measure})"
-            )
+        if "1" in endings:
+            # An imported first ending may end with its connector in one
+            # measure and place the repeat barline in the next. The previous
+            # check looked only inside the volta span and therefore flagged
+            # normal 1./2. endings as broken. A valid backward repeat belongs
+            # after the first ending and before the next second ending.
+            second_starts = [second_start
+                             for second_start, _second_end, second_numbers
+                             in ending_spans
+                             if second_start > end_measure
+                             and "2" in second_numbers]
+            if second_starts:
+                next_second = min(second_starts)
+                if not any(end_measure <= position < next_second
+                           for position in backward_repeats):
+                    review_flags.append(
+                        f"Volta at measure {start_measure} has no backward "
+                        f"repeat before its second ending at measure {next_second}"
+                    )
 
         # A first ending at the end of the score is not a complete playback
         # path: on the repeated pass MuseScore has nowhere to continue. Do
@@ -370,6 +431,7 @@ def inspect_native_mscz(path: Path) -> dict:
         # import with a decorative symbol is not falsely certified as having
         # an ornament that may affect playback.
         "ornaments": _count(root, ("Ornament", "Trill", "trill")),
+        "glissandi": _count(root, ("Glissando",)),
         "lyrics": _count(root, ("Lyrics", "Verse",)),
         "harmonies": _count(root, ("Harmony",)),
         "text_objects": _count(root, (
@@ -406,6 +468,7 @@ def inspect_native_mscz(path: Path) -> dict:
             f"Native score contains {len(tuplet_scopes['orphan_closes'])} "
             "orphan tuplet closing marker(s)."
         )
+    warnings.extend(_text_only_performance_warnings(root, count_map))
     navigation = {
         "start_repeats": count_map["start_repeats"],
         "end_repeats": count_map["end_repeats"],

@@ -168,6 +168,22 @@ def _source_marks(note) -> tuple[set[str], set[tuple[int, str]], set[str], bool]
     return marks, ties, slurs, breath
 
 
+def _musicxml_staff_count(part) -> int:
+    """Return the number of physical staves represented by a MusicXML part."""
+    count = 1
+    for staves in part.findall(".//attributes/staves"):
+        try:
+            count = max(count, int(staves.text or "1"))
+        except ValueError as exc:
+            raise SemanticIntegrityError("Invalid MusicXML staves count") from exc
+    for staff in part.findall(".//note/staff"):
+        try:
+            count = max(count, int(staff.text or "1"))
+        except ValueError as exc:
+            raise SemanticIntegrityError("Invalid MusicXML staff number") from exc
+    return count
+
+
 def _source_snapshot(root) -> SemanticSnapshot:
     events: dict[tuple[int, int, int, Fraction], SemanticEvent] = {}
     breaths: set[tuple[int, int, int, Fraction]] = set()
@@ -182,7 +198,15 @@ def _source_snapshot(root) -> SemanticSnapshot:
     navigation: set[tuple[int, int, int, Fraction, str, str]] = set()
     volta_spans: set[tuple[int, int, str]] = set()
     ignored_grace_rests = 0
-    for part_index, part in enumerate(root.findall("part"), 1):
+    staff_offset = 0
+    for source_part_index, part in enumerate(root.findall("part"), 1):
+        # MusicXML can represent a four-staff ensemble either as four parts
+        # or as one part with four <staff> lanes. MuseScore's native score
+        # always uses physical Staff objects. Use the same physical-staff
+        # indexing in both snapshots so CAP exports such as Pizzicato Polka
+        # are compared as music rather than as a serialization accident.
+        staff_count = _musicxml_staff_count(part)
+        default_part_index = staff_offset + 1
         divisions = 1
         active_endings: dict[str, int] = {}
         for measure_index, measure in enumerate(part.findall("measure"), 1):
@@ -197,13 +221,13 @@ def _source_snapshot(root) -> SemanticSnapshot:
                         divisions = int(value)
                     key = item.findtext("key/fifths")
                     if key is not None:
-                        key_signatures[(part_index, measure_index)] = (
-                            part_index, measure_index, int(key))
+                        key_signatures[(default_part_index, measure_index)] = (
+                            default_part_index, measure_index, int(key))
                     beats = item.findtext("time/beats")
                     beat_type = item.findtext("time/beat-type")
                     if beats and beat_type:
-                        time_signatures[(part_index, measure_index)] = (
-                            part_index, measure_index,
+                        time_signatures[(default_part_index, measure_index)] = (
+                            default_part_index, measure_index,
                             int(beats), int(beat_type))
                     continue
                 if name in ("backup", "forward"):
@@ -239,17 +263,17 @@ def _source_snapshot(root) -> SemanticSnapshot:
                     direction_onset = cursor + offset
                     for sound in item.findall("sound"):
                         if sound.get("tempo"):
-                            tempos.add((part_index, measure_index, voice,
+                            tempos.add((default_part_index, measure_index, voice,
                                         direction_onset,
                                         _fraction(sound.get("tempo"), "tempo")))
                         for attribute in ("dacapo", "dalsegno", "tocoda",
                                           "coda", "segno", "fine"):
                             if sound.get(attribute):
-                                navigation.add((part_index, measure_index, voice,
+                                navigation.add((default_part_index, measure_index, voice,
                                                 direction_onset, attribute,
                                                 sound.get(attribute)))
                     for dynamic in item.findall("direction-type/dynamics/*"):
-                        dynamics.add((part_index, measure_index, voice,
+                        dynamics.add((default_part_index, measure_index, voice,
                                       direction_onset,
                                       ET.QName(dynamic).localname))
                     for wedge in item.findall("direction-type/wedge"):
@@ -257,24 +281,34 @@ def _source_snapshot(root) -> SemanticSnapshot:
                         # wedge, with the endpoint represented by next/prev;
                         # count only the MusicXML start marker here.
                         if wedge.get("type") != "stop":
-                            hairpins.add((part_index, measure_index, voice,
+                            hairpins.add((default_part_index, measure_index, voice,
                                           direction_onset,
                                           wedge.get("type", "")))
                     continue
                 if name == "sound":
                     if item.get("tempo"):
-                        tempos.add((part_index, measure_index, 1, cursor,
+                        tempos.add((default_part_index, measure_index, 1, cursor,
                                     _fraction(item.get("tempo"), "tempo")))
                     for attribute in ("dacapo", "dalsegno", "tocoda",
                                       "coda", "segno", "fine"):
                         if item.get(attribute):
-                            navigation.add((part_index, measure_index, 1,
+                            navigation.add((default_part_index, measure_index, 1,
                                             cursor, attribute,
                                             item.get(attribute)))
                     continue
                 if name != "note":
                     continue
                 voice = int(item.findtext("voice", "1"))
+                try:
+                    staff_number = int(item.findtext("staff", "1"))
+                except ValueError as exc:
+                    raise SemanticIntegrityError(
+                        "Invalid MusicXML staff number") from exc
+                if not 1 <= staff_number <= staff_count:
+                    raise SemanticIntegrityError(
+                        f"MusicXML staff {staff_number} is outside the declared "
+                        f"range 1-{staff_count}")
+                part_index = staff_offset + staff_number
                 grace = item.find("grace") is not None
                 duration = Fraction(0) if grace else (
                     _fraction(item.findtext("duration", "0"),
@@ -325,6 +359,7 @@ def _source_snapshot(root) -> SemanticSnapshot:
                 if item.find("chord") is None:
                     last_onset = cursor
                     cursor += duration
+        staff_offset += staff_count
     return SemanticSnapshot(
         sorted(events.values(), key=lambda e: (e.part, e.measure, e.voice, e.onset)),
         breaths, repeats, ignored_grace_rests, volta_starts, hairpins,
@@ -435,14 +470,12 @@ def _native_snapshot(root) -> SemanticSnapshot:
         raise SemanticIntegrityError("MSCX contains no Score")
     transpose = {}
     for part in score.findall("Part"):
-        staff = part.find("Staff")
-        if staff is None:
-            continue
         instrument = part.find("Instrument")
         value = 0
         if instrument is not None:
             value = int(instrument.findtext("transposeChromatic", "0"))
-        transpose[staff.get("id")] = value
+        for staff in part.findall("Staff"):
+            transpose[staff.get("id")] = value
 
     events: list[SemanticEvent] = []
     breaths: set[tuple[int, int, int, Fraction]] = set()

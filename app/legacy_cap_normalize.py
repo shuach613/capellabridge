@@ -15,11 +15,44 @@ import tempfile
 import zipfile
 from collections import Counter
 from fractions import Fraction
+from html import entities as html_entities
 from pathlib import Path
 
 from lxml import etree as ET
 
 from .score_validation import DURATION_TYPES, _measure_duration
+
+
+_XML_NAMED_ENTITY_RE = re.compile(br"&([A-Za-z][A-Za-z0-9]+);")
+_XML_PREDEFINED_ENTITIES = {b"amp", b"lt", b"gt", b"apos", b"quot"}
+
+
+def _sanitize_native_xml_entities(data: bytes) -> tuple[bytes, tuple[str, ...]]:
+    """Replace HTML-only entities which make an otherwise valid MSCX unreadable.
+
+    MuseScore normally writes XML-safe text, but its legacy CAP import can
+    occasionally leave HTML entities such as ``&nbsp;`` inside title or staff
+    text. XML has no predefined ``nbsp`` entity, so retaining it makes the
+    delivered MSCZ impossible to reopen. Keep the five XML entities intact,
+    decode only known HTML entities, and leave unknown entities untouched so
+    malformed source data still fails closed rather than being guessed.
+    """
+    repaired: set[str] = set()
+
+    def replace(match):
+        name = match.group(1)
+        if name in _XML_PREDEFINED_ENTITIES:
+            return match.group(0)
+        value = html_entities.html5.get(name.decode("ascii") + ";")
+        if value is None:
+            return match.group(0)
+        # A non-breaking space is formatting noise in native score text. A
+        # regular space is portable in XML and does not alter music or timing.
+        value = value.replace("\xa0", " ")
+        repaired.add(name.decode("ascii"))
+        return value.encode("utf-8")
+
+    return _XML_NAMED_ENTITY_RE.sub(replace, data), tuple(sorted(repaired))
 
 
 def _native_root(path: Path):
@@ -31,11 +64,14 @@ def _native_root(path: Path):
                      if n.lower().endswith(".mscx")), None)
         if not name:
             raise ValueError("MSCZ contains no native MSCX score")
+        source, repaired_entities = _sanitize_native_xml_entities(
+            archive.read(name)
+        )
         root = ET.fromstring(
-            archive.read(name),
+            source,
             parser=ET.XMLParser(resolve_entities=False, no_network=True),
         )
-        return archive, name, root
+        return archive, name, root, repaired_entities
     except Exception:
         archive.close()
         raise
@@ -608,10 +644,45 @@ def _normalize_consensus_lengths(score, ledger, repairs: list[str]) -> bool:
     return changed
 
 
+def _has_complete_reference_voice(ledger, staff_index: int, measure_index: int,
+                                  voice_index: int) -> bool:
+    """Return whether another voice fixes this staff's measure boundary.
+
+    A partial secondary voice is safe to complete with an invisible rest only
+    when the same staff already has another complete timed voice. This avoids
+    converting a genuine irregular single-voice CAP bar into a regular bar.
+    """
+    for (staff, measure, voice), candidate in ledger.items():
+        if (staff == staff_index and measure == measure_index
+                and voice != voice_index and candidate["timed"]
+                and candidate["actual"] == candidate["intended"]
+                and not candidate["tuplet_depth_before"]
+                and not candidate["tuplet_depth_after"]):
+            return True
+    # Preserve the older safe case for a rest-only staff: its matching voice
+    # is complete on every other staff, so the remaining duration is known to
+    # be silent even though this staff has no second voice of its own.
+    peer_entries = [candidate for (staff, measure, voice), candidate
+                    in ledger.items()
+                    if measure == measure_index and voice == voice_index
+                    and staff != staff_index]
+    return bool(peer_entries) and all(
+        candidate["actual"] == candidate["intended"]
+        and not candidate["tuplet_depth_before"]
+        and not candidate["tuplet_depth_after"]
+        for candidate in peer_entries
+    )
+
+
 def _append_safe_silent_gaps(score, ledger, repairs: list[str]) -> bool:
-    """Pad only an isolated, silent trailing gap agreed by the other staves."""
+    """Make confirmed trailing silence explicit without changing a sound.
+
+    CAP imports occasionally leave a secondary voice one small duration short
+    even though a complete sibling voice proves the bar's real boundary. The
+    missing interval is already silent in playback; an invisible rest records
+    that silence explicitly so MuseScore has a complete rhythmic ledger.
+    """
     changed = False
-    staves = score.findall("Staff")
     for key, entry in ledger.items():
         staff_index, measure_index, voice_index = key
         actual = entry["actual"]
@@ -620,16 +691,13 @@ def _append_safe_silent_gaps(score, ledger, repairs: list[str]) -> bool:
             continue
         if entry["explicit_len"] or entry["time_signature"]:
             continue
-        if not entry["timed"] or entry["timed"][-1][0].tag == "Chord":
+        if not entry["timed"]:
             continue
         # A carried tuplet cannot be safely closed by adding a rest here.
         if (entry["tuplet_depth_before"] or entry["tuplet_depth_after"]):
             continue
-        peer_entries = [ledger.get((other_index, measure_index, voice_index))
-                        for other_index in range(1, len(staves) + 1)
-                        if other_index != staff_index]
-        if any(peer is None or peer["actual"] != peer["intended"]
-               for peer in peer_entries):
+        if not _has_complete_reference_voice(
+                ledger, staff_index, measure_index, voice_index):
             continue
         rest = ET.Element("Rest")
         ET.SubElement(rest, "visible").text = "0"
@@ -649,12 +717,18 @@ def normalize_legacy_cap_mscz(path: Path) -> dict:
     path = Path(path)
     repairs: list[str] = []
     diagnostics: list[str] = []
-    archive, score_name, root = _native_root(path)
+    archive, score_name, root, repaired_entities = _native_root(path)
     try:
         score = root.find("Score")
         if score is None:
             raise ValueError("MSCX contains no Score element")
-        changed = _normalize_tuplet_markers(score, repairs)
+        changed = bool(repaired_entities)
+        if repaired_entities:
+            repairs.append(
+                "Replaced XML-incompatible named entity/entities in native "
+                f"score text: {', '.join(repaired_entities)}"
+            )
+        changed = _normalize_tuplet_markers(score, repairs) or changed
         changed = _normalize_playback_directions(
             score, repairs, diagnostics
         ) or changed
