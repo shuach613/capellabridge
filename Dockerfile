@@ -8,7 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MUSESCORE_BIN=/usr/bin/musescor
     MUSESCORE_LEGACY_CAP_BIN=/opt/musescore2/AppRun CAPELLABRIDGE_DATA=/data \
     QT_QPA_PLATFORM=offscreen MU_QT_QPA_PLATFORM=offscreen
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    musescore3 poppler-utils fonts-dejavu-core fonts-liberation ca-certificates curl \
+    musescore3 poppler-utils fonts-dejavu-core fonts-liberation ca-certificates \
+    curl libfuse2 \
     && rm -rf /var/lib/apt/lists/*
 RUN curl --fail --location --retry 3 --silent --show-error \
       "$MUSESCORE2_URL" --output /tmp/musescore2.AppImage \
