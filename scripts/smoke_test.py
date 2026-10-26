@@ -69,6 +69,7 @@ def main():
                 health=json.loads(response.read())
             if health.get('status')=='ok':
                 assert health.get('engine_available'), health
+                assert health.get('legacy_cap_engine_available'), health
                 break
         except (OSError, TimeoutError, urllib.error.URLError):
             pass

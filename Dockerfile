@@ -9,15 +9,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MUSESCORE_BIN=/usr/bin/musescor
     QT_QPA_PLATFORM=offscreen MU_QT_QPA_PLATFORM=offscreen
 RUN apt-get update && apt-get install -y --no-install-recommends \
     musescore3 poppler-utils fonts-dejavu-core fonts-liberation ca-certificates \
-    curl libfuse2 \
+    curl libarchive-tools \
     && rm -rf /var/lib/apt/lists/*
 RUN curl --fail --location --retry 3 --silent --show-error \
       "$MUSESCORE2_URL" --output /tmp/musescore2.AppImage \
  && echo "$MUSESCORE2_SHA256  /tmp/musescore2.AppImage" | sha256sum --check \
- && chmod +x /tmp/musescore2.AppImage \
- && cd /tmp \
- && ./musescore2.AppImage --appimage-extract >/dev/null \
- && mv /tmp/squashfs-root /opt/musescore2 \
+ && mkdir -p /opt/musescore2 \
+ && bsdtar --no-same-owner -xf /tmp/musescore2.AppImage -C /opt/musescore2 \
  && rm /tmp/musescore2.AppImage \
  && test -x /opt/musescore2/AppRun \
  && QT_QPA_PLATFORM=offscreen /opt/musescore2/AppRun --version >/dev/null
