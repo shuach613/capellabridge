@@ -103,3 +103,53 @@ def test_tuplet_scope_can_cross_a_measure_without_false_unclosed_error(tmp_path)
         archive.writestr('score.mscx', ET.tostring(root))
 
     assert audit_mscz(path, repair=False) == []
+
+
+def test_infers_missing_shared_two_four_meter_without_changing_events(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    for staff_id in ('1', '2', '3'):
+        staff = ET.SubElement(score, 'Staff', id=staff_id)
+        for _ in range(4):
+            measure = ET.SubElement(staff, 'Measure')
+            measure.append(_voice(_event('Chord', 'half')))
+    path = tmp_path / 'missing-meter.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert result['changed']
+    assert sum('inferred time signature 2/4' in item
+               for item in result['repairs']) == 3
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert native.xpath('count(./Score/Staff/Measure[1]/voice/TimeSig)') == 3
+    assert audit_mscz(path, repair=False) == []
+
+
+def test_propagates_a_known_meter_to_a_staff_missing_its_signature(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    signed = ET.SubElement(score, 'Staff', id='1')
+    unsigned = ET.SubElement(score, 'Staff', id='2')
+    for staff in (signed, unsigned):
+        for measure_index in range(3):
+            measure = ET.SubElement(staff, 'Measure')
+            voice = _voice(_event('Chord', 'half'))
+            if staff is signed and measure_index == 0:
+                voice.insert(0, ET.fromstring(
+                    '<TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>'))
+            measure.append(voice)
+    path = tmp_path / 'shared-meter.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('shared time signature 2/4 at staff 2' in item
+               for item in result['repairs'])
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert native.findtext('./Score/Staff[2]/Measure[1]/voice/TimeSig/sigN') == '2'
+    assert audit_mscz(path, repair=False) == []

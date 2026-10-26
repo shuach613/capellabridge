@@ -79,6 +79,44 @@ def test_native_inventory_records_music_and_review_risks(tmp_path):
     assert "hidden pitched" in result["warnings"][0]
 
 
+def test_navigation_inventory_accepts_normal_volta_connector_pairs(tmp_path):
+    score = tmp_path / "navigation.mscz"
+    write_native_score(
+        score,
+        """
+        <Staff id="1">
+          <Measure len="1/1">
+            <endRepeat>2</endRepeat>
+            <voice>
+              <Spanner type="Volta">
+                <Volta><endings>1</endings></Volta>
+                <next><location><measures>1</measures></location></next>
+              </Spanner>
+              <Rest><durationType>whole</durationType></Rest>
+            </voice>
+          </Measure>
+          <Measure len="1/1">
+            <voice>
+              <Spanner type="Volta"><prev>
+                <location><measures>-1</measures></location>
+              </prev></Spanner>
+              <Spanner type="Volta">
+                <Volta><endings>2</endings></Volta>
+                <next><location><measures>1</measures></location></next>
+              </Spanner>
+              <Rest><durationType>whole</durationType></Rest>
+            </voice>
+          </Measure>
+        </Staff>
+        """,
+    )
+
+    result = inspect_native_mscz(score)
+
+    assert result["navigation"]["issues"] == []
+    assert result["navigation"]["review_flags"] == []
+
+
 def test_cap_processes_native_first_and_exports_secondarily(monkeypatch, tmp_path):
     from app import main
 

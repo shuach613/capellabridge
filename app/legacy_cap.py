@@ -77,6 +77,115 @@ def _has_hidden_pitch(note) -> bool:
     return visible == "0" or note.get("visible") == "0"
 
 
+def _navigation_diagnostics(score) -> tuple[list[str], list[str]]:
+    """Check playback structure on the score's primary staff.
+
+    Repeat and volta objects are duplicated across imported parts in some
+    legacy files, so navigation is evaluated on the first staff only. Counts
+    alone are not enough: a first ending must terminate at a backward repeat,
+    and a volta span must stay inside the score. We report only malformed
+    structures; unusual but valid count patterns remain observable without
+    being rewritten.
+    """
+    staves = score.findall("Staff")
+    if not staves:
+        return [], []
+    staff = staves[0]
+    measures = staff.findall("Measure")
+    backward_repeats = set()
+    for measure_index, measure in enumerate(measures, 1):
+        if measure.find("endRepeat") is not None:
+            backward_repeats.add(measure_index)
+        for barline in measure.findall("BarLine"):
+            if barline.findtext("subtype") == "end-repeat":
+                backward_repeats.add(measure_index)
+
+    issues = []
+    review_flags = []
+    ending_numbers = set()
+    for measure_index, measure in enumerate(measures, 1):
+        for voice in measure.findall("voice"):
+            for spanner in voice.findall('Spanner[@type="Volta"]'):
+                volta = spanner.find("Volta")
+                if volta is None:
+                    # A connector carrying only <prev> is the normal closing
+                    # half of a volta spanner, not a malformed object.
+                    if spanner.find("prev") is None:
+                        issues.append(
+                            f"Volta at measure {measure_index} has no native Volta object"
+                        )
+                    continue
+                endings = (volta.findtext("endings") or "").strip()
+                if not endings:
+                    issues.append(f"Volta at measure {measure_index} has no ending number")
+                ending_numbers.update(
+                    part.strip() for part in endings.split(",") if part.strip()
+                )
+                try:
+                    span = int(spanner.findtext("next/location/measures", "1"))
+                except ValueError:
+                    issues.append(
+                        f"Volta at measure {measure_index} has an invalid span"
+                    )
+                    continue
+                end_measure = measure_index + max(1, span) - 1
+                if end_measure > len(measures):
+                    issues.append(
+                        f"Volta at measure {measure_index} extends beyond the score"
+                    )
+                    continue
+                if ("1" in {part.strip() for part in endings.split(",")}
+                        and not any(position >= end_measure
+                                    for position in backward_repeats)):
+                    review_flags.append(
+                        f"Volta at measure {measure_index} has no backward repeat "
+                        f"at or after its end (measure {end_measure})"
+                    )
+
+    if "1" in ending_numbers and "2" not in ending_numbers:
+        review_flags.append("A first ending exists without a second ending")
+    return issues, review_flags
+
+
+def _tuplet_scope_inventory(score) -> dict:
+    """Inventory native tuplet boundaries without rewriting their meaning."""
+    starts = 0
+    stops = 0
+    orphan_closes = []
+    open_scopes = []
+    for staff_index, staff in enumerate(score.findall("Staff"), 1):
+        stacks: dict[int, list[int]] = {}
+        for measure_index, measure in enumerate(staff.findall("Measure"), 1):
+            for voice_index, voice in enumerate(measure.findall("voice"), 1):
+                stack = stacks.setdefault(voice_index, [])
+                for item in voice:
+                    if item.tag == "Tuplet":
+                        starts += 1
+                        stack.append(measure_index)
+                    elif item.tag == "endTuplet":
+                        stops += 1
+                        if stack:
+                            stack.pop()
+                        else:
+                            orphan_closes.append({
+                                "staff": staff_index,
+                                "measure": measure_index,
+                                "voice": voice_index,
+                            })
+        for voice_index, stack in stacks.items():
+            open_scopes.extend({
+                "staff": staff_index,
+                "voice": voice_index,
+                "start_measure": measure_index,
+            } for measure_index in stack)
+    return {
+        "starts": starts,
+        "stops": stops,
+        "orphan_closes": orphan_closes,
+        "open_scopes": open_scopes,
+    }
+
+
 def inspect_native_mscz(path: Path) -> dict:
     """Extract a conservative musical inventory from a native MSCZ.
 
@@ -114,6 +223,7 @@ def inspect_native_mscz(path: Path) -> dict:
     notes = [note for chord in chords for note in chord.iter()
              if _local_name(note) == "Note"]
     hidden_pitched = sum(1 for note in notes if _has_hidden_pitch(note))
+    tuplet_scopes = _tuplet_scope_inventory(score)
     measures_per_staff = [len(staff.findall("Measure")) for staff in staves]
     rest_only_staves = [index for index, staff in enumerate(staves, 1)
                         if staff.find('.//Chord') is None
@@ -136,6 +246,10 @@ def inspect_native_mscz(path: Path) -> dict:
         "rests": len(rests),
         "hidden_pitched_events": hidden_pitched,
         "tuplets": _count(root, ("Tuplet",)),
+        "tuplet_starts": tuplet_scopes["starts"],
+        "tuplet_stops": tuplet_scopes["stops"],
+        "open_tuplet_scopes": len(tuplet_scopes["open_scopes"]),
+        "orphan_tuplet_closes": len(tuplet_scopes["orphan_closes"]),
         "ties": _count(root, ("tieBack", "tieFor", "Tie")),
         "slurs": _count(root, ("Slur",)),
         "hairpins": _count(root, ("HairPin",)),
@@ -182,9 +296,17 @@ def inspect_native_mscz(path: Path) -> dict:
                                        "voltas", "jumps", "markers")
         ),
     }
+    navigation_issues, navigation_review = _navigation_diagnostics(score)
+    if navigation_issues:
+        warnings.extend(
+            f"Playback navigation review: {issue}" for issue in navigation_issues
+        )
+    navigation["issues"] = navigation_issues
+    navigation["review_flags"] = navigation_review
     return {
         "counts": count_map,
         "navigation": navigation,
+        "tuplet_scopes": tuplet_scopes,
         "warnings": warnings,
         "score_member": score_name,
     }

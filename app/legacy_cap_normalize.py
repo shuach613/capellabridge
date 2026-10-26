@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import tempfile
 import zipfile
+from collections import Counter
 from fractions import Fraction
 from pathlib import Path
 
@@ -142,8 +143,127 @@ def _measure_ledger(score):
                     "voice": voice,
                     "explicit_len": measure.get("len") is not None,
                     "time_signature": _has_time_signature(measure),
+                    "tuplet_depth": len(stack),
                 }
     return ledger
+
+
+def _meter_signature(value: Fraction) -> tuple[int, int] | None:
+    """Choose a conventional time-signature spelling for an inferred meter."""
+    for denominator in (4, 8, 2, 16, 32, 64):
+        numerator = value * denominator
+        if numerator.denominator == 1 and 1 <= numerator <= 16:
+            return int(numerator), denominator
+    return None
+
+
+def _new_time_signature(meter: Fraction):
+    signature = _meter_signature(meter)
+    if signature is None:
+        return None
+    numerator, denominator = signature
+    node = ET.Element("TimeSig")
+    ET.SubElement(node, "sigN").text = str(numerator)
+    ET.SubElement(node, "sigD").text = str(denominator)
+    return node
+
+
+def _known_meter_states(score):
+    """Return each staff's carried meter, keeping unknown staffs distinct."""
+    states = []
+    for staff in score.findall("Staff"):
+        state = None
+        carried = []
+        for measure in staff.findall("Measure"):
+            signatures = measure.findall("./voice/TimeSig")
+            if signatures:
+                numerator = int(signatures[0].findtext("sigN", "4"))
+                denominator = int(signatures[0].findtext("sigD", "4"))
+                if numerator <= 0 or denominator <= 0:
+                    raise ValueError("Invalid native time signature")
+                state = Fraction(numerator, denominator)
+            carried.append(state)
+        states.append(carried)
+    return states
+
+
+def _infer_meter(ledger, max_measures: int) -> Fraction | None:
+    """Infer a score meter only from consistent, closed native measures."""
+    values = [
+        entry["actual"]
+        for (staff_index, measure_index, _voice_index), entry in ledger.items()
+        if 1 <= measure_index <= max_measures
+        and entry["actual"] > 0
+        and entry["tuplet_depth"] == 0
+    ]
+    if not values:
+        return None
+    value, count = Counter(values).most_common(1)[0]
+    if count / len(values) < 0.8:
+        return None
+    return value
+
+
+def _normalize_shared_meters(score, ledger, repairs: list[str]) -> bool:
+    """Propagate or infer omitted score meter without moving any event."""
+    staves = score.findall("Staff")
+    if not staves:
+        return False
+    states = _known_meter_states(score)
+    max_measures = max((len(staff.findall("Measure")) for staff in staves),
+                       default=0)
+    changed = False
+
+    inferred = None
+    if not any(state is not None for carried in states for state in carried):
+        inferred = _infer_meter(ledger, max_measures)
+
+    consensus: dict[int, Fraction] = {}
+    for measure_index in range(1, max_measures + 1):
+        known = [carried[measure_index - 1]
+                 for carried in states
+                 if len(carried) >= measure_index
+                 and carried[measure_index - 1] is not None]
+        if known:
+            value, count = Counter(known).most_common(1)[0]
+            if count / len(known) >= 0.5:
+                consensus[measure_index] = value
+        elif inferred is not None:
+            consensus[measure_index] = inferred
+
+    for staff_index, staff in enumerate(staves):
+        carried = states[staff_index]
+        established = any(state is not None for state in carried)
+        for measure_index, measure in enumerate(staff.findall("Measure"), 1):
+            if measure.findall("./voice/TimeSig"):
+                established = True
+                continue
+            meter = consensus.get(measure_index)
+            if meter is None:
+                continue
+            # Only insert a signature before the staff has established its
+            # own meter. Once a staff has a later explicit change, leave the
+            # source's local notation untouched.
+            if established:
+                continue
+            signature = _new_time_signature(meter)
+            if signature is None:
+                continue
+            voice = measure.find("voice")
+            if voice is None:
+                continue
+            voice.append(signature)
+            changed = True
+            source = "inferred" if inferred is not None and not any(
+                state is not None for state in carried) else "shared"
+            repairs.append(
+                f"Added {source} time signature {_meter_signature(meter)[0]}/"
+                f"{_meter_signature(meter)[1]} at staff {staff_index + 1}, "
+                f"measure {measure_index}"
+            )
+            carried[measure_index - 1] = meter
+            established = True
+    return changed
 
 
 def _normalize_consensus_lengths(score, ledger, repairs: list[str]) -> bool:
@@ -297,6 +417,9 @@ def normalize_legacy_cap_mscz(path: Path) -> dict:
             raise ValueError("MSCX contains no Score element")
         changed = _normalize_tuplet_markers(score, repairs)
         ledger = _measure_ledger(score)
+        changed = _normalize_shared_meters(score, ledger, repairs) or changed
+        if changed:
+            ledger = _measure_ledger(score)
         changed = _normalize_consensus_lengths(score, ledger, repairs) or changed
         # Rebuild the ledger after changing Measure len so gap decisions use
         # the final timing boundary, not the inherited meter.

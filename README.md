@@ -78,6 +78,12 @@ structural issues are labelled **manual review**, while the editable MSCZ is
 still retained. A failure to render a PDF or preview likewise does not remove
 an already-created editable score.
 
+For legacy CAP imports, the normalizer may propagate a time signature from a
+peer staff or infer one only when closed measures agree across the score. The
+report records those repairs without changing pitched events. Native tuplet
+scope counts and repeat/ending navigation review flags are also recorded; an
+ambiguous playback path is never silently rewritten.
+
 After a batch finishes, use **Start over** to clear the queue and results
 before selecting another batch.
 

@@ -52,20 +52,28 @@ editable score:
    size and SHA-256 hash.
 2. MuseScore imports CAP directly to MSCZ.
 3. A CAP-specific normalizer preserves shared irregular bar boundaries,
-   repairs isolated silent gaps, removes only provably orphaned tuplet closes,
-   and leaves ambiguous tuplet scopes untouched for manual review.
+   repairs isolated silent gaps, propagates a meter already present on a peer
+   staff, and infers a missing meter only when closed measures agree across
+   the score. It removes only provably orphaned tuplet closes and leaves
+   ambiguous tuplet scopes untouched for manual review.
 4. Native CAP title/credit text is moved into a title frame, chord labels are
    converted from importer Lyrics into native Harmony objects, rest-only
    staves are hidden without deleting their events, and text autoplace is
    restored.
 5. The same final MSCZ is structurally audited and exported to MusicXML and
-   PDF.
+   PDF. Native tuplet starts, stops, open scopes and orphan closes are recorded
+   explicitly, while repeat/ending connectors are checked on the primary staff
+   and unusual playback paths are reported as review flags rather than being
+   rewritten automatically.
 
 The CAP report now separates `native-valid` from `verified`: native-valid
 means that the MSCZ is readable and its native timing/structure passed. CAP is
 still marked source-unverified because the binary importer has no lossless
 source event ledger. Unclosed or otherwise structurally ambiguous tuplets
-remain manual-review, but the editable MSCZ is retained.
+remain manual-review, but the editable MSCZ is retained. When a missing meter
+is repaired, the report records the exact staff and measure where the shared
+or inferred time signature was inserted. This changes the measure boundary
+only; it does not add, remove or retime a pitched event.
 
 ## Recommended implementation
 
