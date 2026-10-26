@@ -12,6 +12,7 @@ function display(r){
   const heading=node('div',undefined,'result-title');
   const status=r.verification==='manual-review'?'MuseScore ready · manual review':
     r.verification==='native-valid'?'MuseScore ready · native checks only':
+    r.verification==='source-unverified'?'MuseScore ready · source semantics unverified':
     `${r.measures??'—'} measures · ${(r.parts||[]).length} parts`;
   heading.append(node('strong',r.source_filename),node('span',r.ok?status:'Needs attention'));
   card.append(heading);

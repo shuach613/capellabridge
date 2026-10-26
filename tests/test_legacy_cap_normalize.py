@@ -313,3 +313,30 @@ def test_textual_navigation_is_promoted_but_unquantified_tempo_is_reported(tmp_p
     assert native.find('./Score/Staff[1]/Measure[1]/Marker/label').text == 'fine'
     assert native.find('./Score/Staff[1]/Measure[2]/Jump/jumpTo').text == 'segno'
     assert native.find('./Score/Staff[1]/Measure[2]/Jump/playUntil').text == 'fine'
+
+
+def test_compound_numeric_tempo_becomes_one_native_tempo_event(tmp_path):
+    """German labels such as ``Buehnentempo`` must not remain text-only."""
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    for staff_id in ('1', '2'):
+        staff = ET.SubElement(score, 'Staff', id=staff_id)
+        measure = ET.SubElement(staff, 'Measure')
+        measure.append(_voice(_event('Rest', 'whole')))
+        direction = ET.SubElement(measure, 'StaffText')
+        ET.SubElement(direction, 'text').text = 'Bühnentempo = 120'
+
+    path = tmp_path / 'compound-tempo.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('native numeric tempo 120 BPM' in item
+               for item in result['repairs'])
+    assert not result['diagnostics']
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    tempos = native.findall('.//Tempo')
+    assert len(tempos) == 1
+    assert tempos[0].findtext('tempo') == '2'

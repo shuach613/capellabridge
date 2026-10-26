@@ -161,7 +161,11 @@ def _normalize_tuplet_markers(score, repairs: list[str]) -> bool:
 
 _TEXTUAL_TEMPO_RE = re.compile(
     r"\b(?:allegro|andante|adagio|largo|presto|lento|moderato|vivace|"
-    r"maestoso|rit(?:ardando)?\.?|a\s+tempo|tempo\s+primo|tempo)\b",
+    r"maestoso|rit(?:ardando)?\.?|a\s+tempo|tempo\s+primo)\b"
+    # German compound labels such as "Buehnentempo" are common in the CAP
+    # corpus.  The surrounding word boundaries deliberately apply to the
+    # whole compound, not to its internal "tempo" component.
+    r"|\b[\wäöüÄÖÜß-]*tempo[\wäöüÄÖÜß-]*\b",
     re.IGNORECASE,
 )
 _NUMERIC_TEMPO_RE = re.compile(
@@ -273,7 +277,9 @@ def _normalize_playback_directions(score, repairs: list[str],
                     raw_bpm = tempo_match.group(1) or tempo_match.group(2)
                     bpm = int(raw_bpm)
                     if 20 <= bpm <= 400:
-                        tempo_requests.append((measure_index, bpm, text))
+                        tempo_requests.append(
+                            (staff_index, measure_index, bpm, text)
+                        )
                 elif tempo_word:
                     diagnostics.append(
                         f"Textual tempo direction at staff {staff_index}, "
@@ -312,14 +318,35 @@ def _normalize_playback_directions(score, repairs: list[str],
                 f"{measure_index}"
             )
 
-    for measure_index, bpm, text in tempo_requests:
-        if measure_index > len(primary_staff.findall("Measure")):
+    # A tempo applies to the score timeline, even when the importer happened
+    # to attach the source label to more than one staff.  Insert one native
+    # Tempo at the originating staff/measure and do not duplicate it on the
+    # other staves.
+    seen_tempos = set()
+    for staff_index, measure_index, bpm, text in tempo_requests:
+        key = (measure_index, bpm)
+        if key in seen_tempos:
             continue
-        measure = primary_staff.findall("Measure")[measure_index - 1]
+        if staff_index > len(staves):
+            continue
+        staff = staves[staff_index - 1]
+        measures = staff.findall("Measure")
+        if measure_index > len(measures):
+            continue
+        measure = measures[measure_index - 1]
         voice = measure.find("voice")
-        if voice is None or measure.find(".//Tempo") is not None:
+        if voice is None:
+            continue
+        if any(
+            len(candidate.findall("Measure")) >= measure_index and
+            candidate.findall("Measure")[measure_index - 1].find(".//Tempo")
+            is not None
+            for candidate in staves
+        ):
+            seen_tempos.add(key)
             continue
         _append_numeric_tempo(voice, bpm)
+        seen_tempos.add(key)
         changed = True
         repairs.append(
             f"Added native numeric tempo {bpm} BPM at measure {measure_index} "

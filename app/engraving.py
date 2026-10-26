@@ -205,6 +205,30 @@ def _hide_rest_only_staves(score, changes: dict) -> None:
             )
 
 
+def _hide_internal_view_flags(score, changes: dict) -> None:
+    """Keep editing-only objects out of delivered prints and previews.
+
+    MuseScore's legacy CAP importer can persist ``showInvisible`` and
+    ``showUnprintable`` as enabled.  That makes a staff deliberately marked
+    ``visible=0`` appear in an exported PDF, defeating the rest-only-staff
+    repair and potentially exposing hidden notation.  These are editor view
+    switches, not source notation, so a downloadable score must leave them
+    disabled.
+    """
+    for name in ('showInvisible', 'showUnprintable'):
+        node = score.find(name)
+        if node is None:
+            node = ET.SubElement(score, name)
+        if node.text != '0':
+            node.text = '0'
+            changes['view_flags'].append(name)
+    if changes['view_flags']:
+        changes['repairs'].append(
+            'Disabled editor-only display flag(s): ' +
+            ', '.join(changes['view_flags'])
+        )
+
+
 def _enable_native_text_autoplace(score, changes: dict) -> None:
     count = 0
     for item in score.iter():
@@ -227,7 +251,12 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None,
                         source_format: str | None = None) -> dict:
     """Update score-wide MuseScore styles, preserving every ZIP member."""
     mscz_path = Path(mscz_path)
-    changes = {'repairs': [], 'hidden_staves': [], 'chord_annotations': 0}
+    changes = {
+        'repairs': [],
+        'hidden_staves': [],
+        'chord_annotations': 0,
+        'view_flags': [],
+    }
     temp = None
     try:
         with zipfile.ZipFile(mscz_path, 'r') as archive:
@@ -415,6 +444,7 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None,
                 _normalize_cap_chord_annotations(score, changes)
                 _hide_rest_only_staves(score, changes)
                 _enable_native_text_autoplace(score, changes)
+            _hide_internal_view_flags(score, changes)
             # MusicXML imports a group of four independent parts as a single
             # barLineSpan=4 on the first staff. MuseScore 3 treats staff
             # spanning as a per-adjacent-staff flag, making bars appear joined

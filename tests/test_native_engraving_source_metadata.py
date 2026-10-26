@@ -162,3 +162,5 @@ def test_legacy_cap_text_chords_and_rest_only_staff_are_normalized(tmp_path):
     assert native.find('./Score/Staff[1]/VBox/Text[style="Title"]/text').text=='S Äffli'
     assert native.find('./Score/Staff[1]/Measure/voice/StaffText[text="A"]/autoplace').text=='1'
     assert native.find('./Score/Staff[2]/visible').text=='0'
+    assert native.findtext('./Score/showInvisible')=='0'
+    assert native.findtext('./Score/showUnprintable')=='0'

@@ -306,11 +306,17 @@ def validate_imported_cap(mscz: Path, report: dict, warnings: list[str]) -> str:
         report['verification']='manual-review'
         warnings.extend('Manual-review export: ' + error for error in errors)
     else:
-        report['certification']='native-valid'
-        report['verification']='native-valid'
+        # The CAP binary has not yet been decoded into a source semantic
+        # ledger.  A structurally valid MSCZ is useful and is always
+        # delivered, but it must not be presented as a source-faithful
+        # certification: the legacy importer can omit symbols before the
+        # native checks see them.
+        report['certification']='source-unverified'
+        report['verification']='source-unverified'
         warnings.append(
-            'CAP source equivalence is not independently certified; '
-            'native structural checks passed.'
+            'CAP source semantics are unverified; native structural checks '
+            'passed, but articulation, ornament, and tempo fidelity cannot '
+            'yet be certified.'
         )
     return report['verification']
 
