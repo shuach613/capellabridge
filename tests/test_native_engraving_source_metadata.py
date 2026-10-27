@@ -167,6 +167,65 @@ def test_legacy_cap_text_chords_and_rest_only_staff_are_normalized(tmp_path):
     assert native.findtext('./Score/showUnprintable')=='0'
 
 
+def test_track_addressed_rest_only_staff_is_hidden_without_renumbering(tmp_path):
+    path=tmp_path/'track-addressed-rest.mscz'
+    root=ET.Element('museScore')
+    score=ET.SubElement(root,'Score')
+    for staff_id in ('1','2'):
+        part=ET.SubElement(score,'Part')
+        ET.SubElement(part,'Staff',id=staff_id)
+        staff=ET.SubElement(score,'Staff',id=staff_id)
+        measure=ET.SubElement(staff,'Measure')
+        voice=ET.SubElement(measure,'voice')
+        event=ET.SubElement(voice,'Chord' if staff_id=='1' else 'Rest')
+        ET.SubElement(event,'durationType').text='whole'
+        if staff_id=='1':
+            ET.SubElement(event,'Note')
+    ET.SubElement(score,'track').text='4'
+    with zipfile.ZipFile(path,'w') as archive:
+        archive.writestr('score.mscx',ET.tostring(root))
+
+    changes=prepare_print_ready(path,source_format='cap')
+    native=reread(path)
+
+    assert changes['removed_staves']==[]
+    assert changes['hidden_staves']==['2']
+    assert [staff.get('id') for staff in native.findall('./Score/Staff')]==['1','2']
+    assert native.findtext('./Score/Staff[@id="2"]/visible')=='0'
+    assert native.findtext('./Score/Part/Staff[@id="2"]/visible')=='0'
+    assert native.findtext('./Score/track')=='4'
+
+
+def test_generated_guitar_chord_layer_is_hidden_but_kept_for_playback(tmp_path):
+    path=tmp_path/'guitar-layer.mscz'
+    root=ET.Element('museScore')
+    score=ET.SubElement(root,'Score')
+    part=ET.SubElement(score,'Part')
+    ET.SubElement(part,'trackName').text='Gitarre Akkorde'
+    ET.SubElement(part,'Staff',id='1')
+    staff=ET.SubElement(score,'Staff',id='1')
+    for label in ('D / D9','G / G7'):
+        measure=ET.SubElement(staff,'Measure')
+        voice=ET.SubElement(measure,'voice')
+        text=ET.SubElement(voice,'StaffText')
+        ET.SubElement(text,'text').text=label
+        chord=ET.SubElement(voice,'Chord')
+        ET.SubElement(chord,'durationType').text='whole'
+        for pitch in ('50','54','57','62'):
+            note=ET.SubElement(chord,'Note')
+            ET.SubElement(note,'pitch').text=pitch
+    with zipfile.ZipFile(path,'w') as archive:
+        archive.writestr('score.mscx',ET.tostring(root))
+
+    changes=prepare_print_ready(path,source_format='cap')
+    native=reread(path)
+
+    assert changes['hidden_note_layers']==['1']
+    assert len(native.findall('.//Chord'))==2
+    assert native.xpath('.//Chord/visible/text()')==['0','0']
+    assert len(native.findall('.//Chord/Note'))==8
+
+
 def test_legacy_cap_prunes_empty_part_and_preserves_its_structure(tmp_path):
     path=tmp_path/'legacy-leading-rest.mscz'
     root=ET.Element('museScore')

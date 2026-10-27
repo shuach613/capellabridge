@@ -593,3 +593,37 @@ def test_three_to_two_tuplets_reduce_sounding_time():
         '<heads><head pitch="C5"/></heads></chord>'
     )
     assert converter.duration_of(source)==0
+
+
+def test_hidden_zero_duration_grace_rest_is_not_serialized():
+    source=capx(MINIMAL.replace(
+        b'<chord><duration base="1/4"/><heads><head pitch="C5"/></heads></chord>',
+        b'<rest><duration base="1/32" noDuration="true"/>'
+        b'<display invisible="true"/></rest>'
+        b'<rest><duration base="1/4"/></rest>',
+    ))
+
+    xml,_=converter.serialize_musicxml(source)
+    doc=ET.fromstring(xml)
+    rests=doc.findall('.//part/measure/note[rest]')
+
+    assert len(rests)==1
+    assert rests[0].find('grace') is None
+    assert rests[0].get('print_object') is None
+
+
+def test_extended_graphical_trill_becomes_wavy_line_spanner():
+    source=capx(MINIMAL.replace(
+        b'<heads><head pitch="C5"/></heads>',
+        b'<drawObjects><drawObj><basic noteRange="1"/><trill/>'
+        b'</drawObj></drawObjects><heads><head pitch="C5"/></heads>',
+    ))
+
+    xml,report=converter.serialize_musicxml(source)
+    doc=ET.fromstring(xml)
+
+    assert doc.find('.//note[1]/notations/ornaments/trill-mark') is not None
+    assert doc.find('.//note[1]/notations/ornaments/wavy-line[@type="start"]') is not None
+    assert doc.find('.//note[2]/notations/ornaments/wavy-line[@type="stop"]') is not None
+    assert not any('Extended graphical trill' in warning
+                   for warning in report['warnings'])

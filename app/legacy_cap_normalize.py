@@ -241,6 +241,230 @@ def _repair_escaped_navigation_markers(score, repairs: list[str]) -> bool:
     return changed
 
 
+_CAPELLA_NATIVE_MARKERS = {
+    "y": ("segno", "segno"),
+}
+
+
+def _normalize_capella_navigation_glyphs(score, repairs: list[str]) -> bool:
+    """Replace legacy Capella-font letters with native navigation symbols."""
+    changed = False
+    for measure_index, measure in enumerate(
+            score.findall("./Staff[1]/Measure"), 1):
+        existing = {
+            (marker.findtext("label") or "").strip().lower(): marker
+            for marker in measure.findall("Marker")
+        }
+        for staff_text in list(measure.iter("StaffText")):
+            family = (staff_text.findtext("family") or "").strip().casefold()
+            glyph = _staff_text_value(staff_text)
+            if family not in {"capella", "capella3"}:
+                continue
+            mapped = _CAPELLA_NATIVE_MARKERS.get(glyph)
+            if mapped is None:
+                continue
+            label, symbol = mapped
+            parent = staff_text.getparent()
+            if parent is None:
+                continue
+            index = parent.index(staff_text)
+            marker = existing.get(label)
+            if marker is not None and marker.getparent() is measure:
+                measure.remove(marker)
+            marker = ET.Element("Marker")
+            ET.SubElement(marker, "style").text = "Repeat Left"
+            text = ET.SubElement(marker, "text")
+            ET.SubElement(text, "sym").text = symbol
+            ET.SubElement(marker, "label").text = label
+            offset = staff_text.find("offset")
+            if offset is not None:
+                marker.append(ET.fromstring(ET.tostring(offset)))
+            parent.remove(staff_text)
+            parent.insert(index, marker)
+            existing[label] = marker
+            changed = True
+            repairs.append(
+                f'Replaced Capella-font "{glyph}" with native {label} '
+                f'marker at measure {measure_index}'
+            )
+    return changed
+
+
+def _volta_records(staff):
+    records = []
+    measures = staff.findall("Measure")
+    for measure_index, measure in enumerate(measures):
+        for voice in measure.findall("voice"):
+            for spanner in voice.findall('Spanner[@type="Volta"]'):
+                volta = spanner.find("Volta")
+                if volta is None:
+                    continue
+                try:
+                    step = max(1, int(spanner.findtext(
+                        "next/location/measures", "1")))
+                except ValueError:
+                    continue
+                records.append({
+                    "measure": measure_index,
+                    "measure_node": measure,
+                    "voice": voice,
+                    "spanner": spanner,
+                    "volta": volta,
+                    "step": step,
+                    "numbers": (volta.findtext("endings") or "").strip(),
+                })
+    return records
+
+
+def _connector_for(measures, start: int, endpoint: int):
+    if not 0 <= endpoint < len(measures):
+        return None
+    for voice in measures[endpoint].findall("voice"):
+        for spanner in voice.findall('Spanner[@type="Volta"]'):
+            if spanner.find("Volta") is not None:
+                continue
+            try:
+                target = endpoint + int(spanner.findtext(
+                    "prev/location/measures", "0"))
+            except ValueError:
+                continue
+            if target == start:
+                return voice, spanner
+    return None
+
+
+def _set_volta_endpoint(measures, record, endpoint: int) -> None:
+    start = record["measure"]
+    old_endpoint = start + record["step"]
+    old = _connector_for(measures, start, old_endpoint)
+    if old is not None:
+        old[0].remove(old[1])
+    step = endpoint - start
+    location = record["spanner"].find("next/location")
+    if location is None:
+        next_node = record["spanner"].find("next")
+        if next_node is None:
+            next_node = ET.SubElement(record["spanner"], "next")
+        location = ET.SubElement(next_node, "location")
+    measures_node = location.find("measures")
+    if measures_node is None:
+        measures_node = ET.SubElement(location, "measures")
+    measures_node.text = str(step)
+    record["step"] = step
+    if 0 <= endpoint < len(measures):
+        target_voice = measures[endpoint].find("voice")
+        if target_voice is None:
+            target_voice = ET.SubElement(measures[endpoint], "voice")
+        connector = ET.Element("Spanner", type="Volta")
+        prev = ET.SubElement(connector, "prev")
+        loc = ET.SubElement(prev, "location")
+        ET.SubElement(loc, "measures").text = str(-step)
+        target_voice.insert(0, connector)
+
+
+def _set_volta_number(record, number: str, *, show_text: bool = True) -> None:
+    endings = record["volta"].find("endings")
+    if endings is None:
+        endings = ET.SubElement(record["volta"], "endings")
+    endings.text = number
+    begin = record["volta"].find("beginText")
+    if begin is None:
+        begin = ET.SubElement(record["volta"], "beginText")
+    begin.text = f"{number}." if show_text else ""
+    record["numbers"] = number
+
+
+def _normalize_invalid_voltas(score, repairs: list[str],
+                              diagnostics: list[str]) -> bool:
+    """Repair importer-generated ending zero without inventing ambiguity.
+
+    MuseScore 2 emits ``0.`` for an unlabeled continuation at a system break.
+    It can also emit adjacent zero-numbered first/second endings. We repair
+    only topologies whose neighbouring valid ending or backward repeat makes
+    the intended numbering unambiguous.
+    """
+    changed = False
+    for staff_index, staff in enumerate(score.findall("Staff"), 1):
+        measures = staff.findall("Measure")
+        records = _volta_records(staff)
+        invalid = [r for r in records if not r["numbers"] or all(
+            not token.isdigit() or int(token) <= 0
+            for token in re.split(r"[ ,;]+", r["numbers"])
+            if token
+        )]
+        handled = set()
+        # Merge an unlabeled system continuation into the preceding first
+        # ending when a connector and a later second ending prove the shape.
+        for record in invalid:
+            current = record["measure"]
+            previous = next((candidate for candidate in reversed(records)
+                             if candidate["measure"] < current
+                             and "1" in candidate["numbers"].split(",")), None)
+            later_second = next((candidate for candidate in records
+                                 if candidate["measure"] > current
+                                 and "2" in candidate["numbers"].split(",")), None)
+            if previous is None or later_second is None:
+                continue
+            if previous["measure"] + previous["step"] != current:
+                continue
+            if _connector_for(measures, previous["measure"], current) is None:
+                continue
+            endpoint = current + record["step"]
+            _set_volta_endpoint(measures, previous, endpoint)
+            terminal = _connector_for(measures, current, endpoint)
+            if terminal is not None:
+                terminal[0].remove(terminal[1])
+            record["voice"].remove(record["spanner"])
+            handled.add(id(record))
+            changed = True
+            repairs.append(
+                "Merged unlabeled volta continuation into first ending at "
+                f"staff {staff_index}, measures {previous['measure'] + 1}-"
+                f"{endpoint}"
+            )
+
+        remaining = [r for r in invalid if id(r) not in handled]
+        index = 0
+        while index + 1 < len(remaining):
+            first, second = remaining[index:index + 2]
+            if not (0 < second["measure"] - first["measure"] <= 2):
+                index += 1
+                continue
+            repeat_measure = next((position for position in range(
+                first["measure"], second["measure"])
+                if measures[position].find("endRepeat") is not None), None)
+            # Without a backward repeat, two nearby zero labels are not enough
+            # evidence to infer first/second endings. Leave them diagnosed for
+            # review instead of changing playback on a guess.
+            if repeat_measure is None:
+                index += 1
+                continue
+            endpoint = repeat_measure + 1
+            if endpoint < first["measure"] + 1:
+                index += 1
+                continue
+            _set_volta_number(first, "1")
+            _set_volta_endpoint(measures, first, endpoint)
+            _set_volta_number(second, "2")
+            changed = True
+            handled.update((id(first), id(second)))
+            repairs.append(
+                "Reconstructed adjacent first/second endings from legacy "
+                f"zero-numbered voltas at staff {staff_index}, measures "
+                f"{first['measure'] + 1} and {second['measure'] + 1}"
+            )
+            index += 2
+
+        for record in invalid:
+            if id(record) not in handled:
+                diagnostics.append(
+                    "Unresolved zero-numbered volta at staff "
+                    f"{staff_index}, measure {record['measure'] + 1}; playback "
+                    "ending was not guessed."
+                )
+    return changed
+
+
 def _append_jump(measure, jump_to: str = "", play_until: str = "",
                  continue_at: str = "") -> None:
     jump = ET.Element("Jump")
@@ -277,6 +501,19 @@ def _normalize_playback_directions(score, repairs: list[str],
     changed = False
     navigation_requests = []
     tempo_requests = []
+    known_tempos = []
+    for measure_index, measure in enumerate(
+            primary_staff.findall("Measure"), 1):
+        for tempo in measure.iter("Tempo"):
+            raw = tempo.findtext("tempo")
+            if raw is None:
+                continue
+            try:
+                bpm = int(round(float(Fraction(raw) * 60)))
+            except (ValueError, ZeroDivisionError):
+                continue
+            if 20 <= bpm <= 400:
+                known_tempos.append((measure_index, bpm))
     for staff_index, staff in enumerate(staves, 1):
         measures = staff.findall("Measure")
         for measure_index, measure in enumerate(measures, 1):
@@ -316,11 +553,20 @@ def _normalize_playback_directions(score, repairs: list[str],
                             (staff_index, measure_index, bpm, text)
                         )
                 elif tempo_word:
-                    diagnostics.append(
-                        f"Textual tempo direction at staff {staff_index}, "
-                        f"measure {measure_index} (\"{text}\") has no numeric "
-                        "tempo map; playback needs manual review."
-                    )
+                    restore = re.search(
+                        r"(?i)\b(?:a\s+tempo|tempo\s+primo)\b", text)
+                    prior = [entry for entry in known_tempos
+                             if entry[0] < measure_index]
+                    if restore and prior:
+                        tempo_requests.append((
+                            staff_index, measure_index, prior[-1][1], text
+                        ))
+                    else:
+                        diagnostics.append(
+                            f"Textual tempo direction at staff {staff_index}, "
+                            f"measure {measure_index} (\"{text}\") has no numeric "
+                            "tempo map; playback needs manual review."
+                        )
 
     for measure_index, kind, label, jump_to, play_until, continue_at in navigation_requests:
         if measure_index > len(primary_staff.findall("Measure")):
@@ -792,6 +1038,12 @@ def normalize_legacy_cap_mscz(path: Path) -> dict:
             )
         changed = _repair_escaped_navigation_markers(
             score, repairs
+        ) or changed
+        changed = _normalize_capella_navigation_glyphs(
+            score, repairs
+        ) or changed
+        changed = _normalize_invalid_voltas(
+            score, repairs, diagnostics
         ) or changed
         changed = _normalize_tuplet_markers(score, repairs) or changed
         changed = _normalize_playback_directions(

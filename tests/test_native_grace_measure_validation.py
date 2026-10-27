@@ -54,3 +54,28 @@ def test_a_real_overfull_eighth_is_still_rejected(tmp_path):
     native_score(path,with_grace=False)
     with pytest.raises(ScoreIntegrityError,match=r"overfull: 5/8 of 1/2"):
         audit_mscz(path,repair=False)
+
+
+def test_trailing_negative_location_for_direction_does_not_shorten_music():
+    voice=ET.Element("voice")
+    voice.append(chord("whole"))
+    location=ET.SubElement(voice,"location")
+    ET.SubElement(location,"fractions").text="-1/2"
+    ET.SubElement(voice,"Dynamic")
+
+    total,timed=_measure_duration(voice,Fraction(1,1))
+
+    assert total==Fraction(1,1)
+    assert [duration for _,duration in timed]==[Fraction(1,1)]
+
+
+def test_positive_location_before_later_note_still_extends_timeline():
+    voice=ET.Element("voice")
+    voice.append(chord("quarter"))
+    location=ET.SubElement(voice,"location")
+    ET.SubElement(location,"fractions").text="1/4"
+    voice.append(chord("quarter"))
+
+    total,_=_measure_duration(voice,Fraction(1,1))
+
+    assert total==Fraction(3,4)

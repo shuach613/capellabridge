@@ -418,8 +418,28 @@ def process_score(name,ext,raw,work,layout):
             'legacy_cap_binary':legacy_importer,
         }
         mscz=work/(prefix+'.mscz')
-        import_cap(inp,mscz)
+        # Older integrations and test doubles returned no metadata. Keep that
+        # compatible while newer importers report the exact per-file strategy.
+        import_result=import_cap(inp,mscz) or {}
+        report['import_strategy']=import_result.get(
+            'strategy', report['import_strategy'])
+        if import_result.get('fallback'):
+            report['legacy_import_failure']={
+                'returncode':import_result.get('legacy_returncode'),
+                'diagnostic':import_result.get('legacy_error','')[:1200],
+            }
+            warnings.append(
+                'Manual-review export: The pinned legacy CAP importer failed; '
+                'MuseScore 3 produced the editable fallback. Legacy CAP '
+                'articulations, drawing objects, and hidden-note semantics '
+                'require manual review. '
+                + import_result.get('legacy_error','')[:500]
+            )
         verification=validate_imported_cap(mscz,report,warnings)
+        if import_result.get('fallback'):
+            verification='manual-review'
+            report['verification']='manual-review'
+            report['certification']='manual-review'
         xml_path=work/(prefix+'.musicxml')
         try:
             export_musicxml(mscz,xml_path)

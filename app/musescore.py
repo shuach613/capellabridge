@@ -11,7 +11,13 @@ import shutil
 import tempfile
 from pathlib import Path
 
-class ConversionFailure(Exception):pass
+class ConversionFailure(Exception):
+    """A converter process failed without producing a trustworthy result."""
+
+    def __init__(self, message, *, returncode=None, diagnostic=""):
+        super().__init__(message)
+        self.returncode = returncode
+        self.diagnostic = diagnostic
 
 
 def run(*argv, timeout=150, cwd=None):
@@ -34,7 +40,11 @@ def run(*argv, timeout=150, cwd=None):
         raise ConversionFailure(f'Timeout after {timeout} seconds') from exc
     if cp.returncode!=0:
         diagnostic=(cp.stderr or cp.stdout or 'Unknown error')[-1200:]
-        raise ConversionFailure(f'MuseScore failed (exit {cp.returncode}): {diagnostic}')
+        raise ConversionFailure(
+            f'MuseScore failed (exit {cp.returncode}): {diagnostic}',
+            returncode=cp.returncode,
+            diagnostic=diagnostic,
+        )
 
 
 def musescore_path():
@@ -86,19 +96,52 @@ def import_cap(source, target):
     legacy=legacy_cap_musescore_path()
     if legacy is None:
         convert(source, target, timeout=300)
-        return
+        return {'strategy':'native-cap-to-mscz','fallback':False}
     target_path=Path(target)
     with tempfile.TemporaryDirectory(
         prefix='.legacy-cap-import-', dir=target_path.parent
     ) as root:
         intermediate=Path(root)/(target_path.stem+'-ms2.mscz')
-        run(legacy,'-o',intermediate,source,
-            timeout=300,cwd=intermediate.parent)
+        def fallback(exc):
+            target_path.unlink(missing_ok=True)
+            convert(source, target_path, timeout=300)
+            return {
+                'strategy':'musescore3-cap-fallback',
+                'fallback':True,
+                'legacy_error':str(exc),
+                'legacy_returncode':getattr(exc, 'returncode', None),
+            }
+
+        try:
+            run(legacy,'-o',intermediate,source,
+                timeout=300,cwd=intermediate.parent)
+        except ConversionFailure as exc:
+            # The pinned MuseScore 2 CAP reader is valuable because it keeps
+            # legacy articulation objects that MuseScore 3 can omit. It is
+            # nevertheless old native code and malformed drawing anchors can
+            # terminate it with SIGSEGV (exit 139). A single importer crash
+            # must not withhold the user's editable score or abort a batch.
+            # MuseScore 3 is a deliberately degraded but isolated fallback;
+            # callers surface the diagnostic and retain manual-review status.
+            return fallback(exc)
         if not intermediate.is_file() or intermediate.stat().st_size < 100:
-            raise ConversionFailure(
-                'Pinned legacy CAP importer did not create an MSCZ file'
-            )
-        convert(intermediate,target_path,timeout=300)
+            return fallback(ConversionFailure(
+                'Pinned legacy CAP importer did not create a usable MSCZ file'
+            ))
+        try:
+            convert(intermediate,target_path,timeout=300)
+        except ConversionFailure as exc:
+            # A damaged MuseScore 2 intermediate should not prevent a direct
+            # MuseScore 3 import from producing a separately reviewable score.
+            return fallback(ConversionFailure(
+                'Pinned legacy CAP intermediate could not be upgraded: '
+                f'{exc}', returncode=exc.returncode,
+                diagnostic=exc.diagnostic,
+            ))
+    return {
+        'strategy':'musescore2-cap-to-musescore3-mscz',
+        'fallback':False,
+    }
 
 
 def export_musicxml(source_mscz, target):

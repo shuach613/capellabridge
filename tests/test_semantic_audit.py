@@ -3,9 +3,11 @@ from pathlib import Path
 import zipfile
 
 import pytest
+from lxml import etree as ET
 
 from app.semantic_audit import (
     SemanticIntegrityError,
+    _native_volta_spans,
     audit_cap_musicxml_export,
     audit_musicxml_against_mscz,
 )
@@ -200,6 +202,24 @@ def test_volta_starts_are_checked_as_semantic_boundaries(tmp_path):
         '</Volta><next><location><measures>2</measures></location></next></Spanner>'))
     with pytest.raises(SemanticIntegrityError, match="Volta spans changed"):
         audit_musicxml_against_mscz(source, output)
+
+
+def test_terminal_volta_connector_does_not_extend_single_measure_ending():
+    staff = ET.fromstring("""
+      <Staff id="1">
+        <Measure><voice>
+          <Spanner type="Volta"><Volta><endings>2</endings></Volta>
+            <next><location><measures>1</measures></location></next>
+          </Spanner>
+        </voice></Measure>
+        <Measure><voice>
+          <Spanner type="Volta"><prev><location><measures>-1</measures>
+          </location></prev></Spanner>
+        </voice></Measure>
+      </Staff>
+    """)
+
+    assert _native_volta_spans(staff) == {(1, 1, '2')}
 
 
 def test_measure_level_native_navigation_is_audited(tmp_path):

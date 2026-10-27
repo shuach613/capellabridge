@@ -395,3 +395,81 @@ def test_compound_numeric_tempo_becomes_one_native_tempo_event(tmp_path):
     tempos = native.findall('.//Tempo')
     assert len(tempos) == 1
     assert tempos[0].findtext('tempo') == '2'
+
+
+def test_a_tempo_restores_most_recent_numeric_tempo(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    staff = ET.SubElement(score, 'Staff', id='1')
+    first = ET.SubElement(staff, 'Measure')
+    first.append(_voice(_event('Rest', 'whole')))
+    tempo = ET.SubElement(first, 'Tempo')
+    ET.SubElement(tempo, 'tempo').text = '3/2'
+    ET.SubElement(tempo, 'text').text = '90'
+    second = ET.SubElement(staff, 'Measure')
+    second.append(_voice(_event('Rest', 'whole')))
+    direction = ET.SubElement(second, 'StaffText')
+    ET.SubElement(direction, 'text').text = 'a tempo'
+    path = tmp_path / 'a-tempo.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert not result['diagnostics']
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    restored = native.find('./Score/Staff/Measure[2]/voice/Tempo')
+    assert restored is not None
+    assert restored.findtext('tempo') == '3/2'
+
+
+def test_capella_segno_font_glyph_becomes_native_marker(tmp_path):
+    path = tmp_path / 'segno.mscz'
+    _write(
+        path,
+        '<Staff id="1"><Measure><StaffText><family>capella3</family>'
+        '<text>y</text></StaffText><voice><Rest><durationType>whole'
+        '</durationType></Rest></voice></Measure></Staff>',
+    )
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('native segno marker' in item for item in result['repairs'])
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    marker = native.find('./Score/Staff/Measure/Marker')
+    assert marker.findtext('label') == 'segno'
+    assert marker.findtext('text/sym') == 'segno'
+    assert native.find('.//StaffText') is None
+
+
+def test_adjacent_zero_numbered_voltas_are_reconstructed_as_first_and_second(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    staff = ET.SubElement(score, 'Staff', id='1')
+    for index in range(4):
+        measure = ET.SubElement(staff, 'Measure')
+        voice = _voice(_event('Rest', 'whole'))
+        measure.append(voice)
+        if index in (1, 2):
+            spanner = ET.SubElement(voice, 'Spanner', type='Volta')
+            volta = ET.SubElement(spanner, 'Volta')
+            ET.SubElement(volta, 'endings').text = '0'
+            ET.SubElement(volta, 'beginText').text = '0.'
+            next_node = ET.SubElement(spanner, 'next')
+            location = ET.SubElement(next_node, 'location')
+            ET.SubElement(location, 'measures').text = '1'
+        if index == 1:
+            ET.SubElement(measure, 'endRepeat')
+    path = tmp_path / 'zero-voltas.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('first/second endings' in item for item in result['repairs'])
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert native.xpath('.//Volta/endings/text()') == ['1', '2']
+    assert native.xpath('.//Volta/beginText/text()') == ['1.', '2.']

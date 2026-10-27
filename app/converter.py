@@ -1323,7 +1323,11 @@ def shifted_tied_rest_pairs(parts):
     return overrides
 
 
-def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVISIONS, graphic_links=None, tuplet_links=None, suppress_uniform_strongbeat=False, display_override=None, split_before=False, split_after=False, link_event=None, source_tie_links=None):
+def make_note(meas, event, voice, state, slur_starts, slur_ends,
+              divisions=DIVISIONS, graphic_links=None, tuplet_links=None,
+              trill_links=None, suppress_uniform_strongbeat=False,
+              display_override=None, split_before=False, split_after=False,
+              link_event=None, source_tie_links=None):
     """Write MusicXML note elements in MusicXML 4.0 schema order."""
     ob=event.node
     linked_id=id(link_event) if link_event is not None else id(event)
@@ -1386,6 +1390,13 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
     invisible=display is not None and display.get('invisible')=='true'
     if display_override and 'visible' in display_override:
         invisible=not display_override['visible']
+    # MuseScore 3 can collapse an invisible zero-duration grace rest into the
+    # following real rest and transfer invisibility to that timed event. Such
+    # rests are graphical placeholders, carry no sound or duration, and are
+    # intentionally ignored by the semantic ledger. Omitting them preserves
+    # the following printed rest exactly.
+    if event.kind=='rest' and is_grace and invisible:
+        return 0
     for hi,head in enumerate(heads):
         note=sub(meas,'note',**({'print_object':'no'} if invisible else {}))
         if is_grace:sub(note,'grace',slash='yes')
@@ -1465,6 +1476,7 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
         if shape in ('diamond','cross','triangle','slash'):
             sub(note,'notehead','x' if shape=='cross' else shape)
         gliss_start, gliss_end = graphic_links if graphic_links else ({},{})
+        trill_start, trill_end = trill_links if trill_links else ({},{})
         tuplet_start, tuplet_end = tuplet_links if tuplet_links else ({},{})
         graphical_trill=(not split_before) and (
             't' in glyphs or '¿' in glyphs or any(child(d,'trill') is not None for d in
@@ -1489,7 +1501,9 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
             notation_ties=[]
         else:
             notation_ties=ties
-        has_notation=bool(breath_mark or marks or notation_ties or graphical_trill or upper_mordent or fermata_glyph or (not split_before and linked_id in slur_starts)
+        has_notation=bool(breath_mark or marks or notation_ties or graphical_trill
+                          or linked_id in trill_start or linked_id in trill_end
+                          or upper_mordent or fermata_glyph or (not split_before and linked_id in slur_starts)
                           or (not split_after and linked_id in slur_ends)
                           or (not split_before and linked_id in gliss_start)
                           or (not split_after and linked_id in gliss_end)
@@ -1515,10 +1529,20 @@ def make_note(meas, event, voice, state, slur_starts, slur_ends, divisions=DIVIS
                 if not split_before:
                     for sn in gliss_start.get(linked_id,[]):
                         sub(nt,'glissando',type='start',number=sn,line_type='wavy')
-                if graphical_trill or upper_mordent:
+                if (graphical_trill or upper_mordent
+                        or linked_id in trill_start or linked_id in trill_end):
                     ornaments=sub(nt,'ornaments')
                     if graphical_trill:sub(ornaments,'trill-mark')
                     if upper_mordent:sub(ornaments,'mordent')
+                    for number in trill_end.get(linked_id,[]):
+                        sub(ornaments,'wavy-line',type='stop',number=number)
+                    for number in trill_start.get(linked_id,[]):
+                        # The start note needs both the trill sign and the
+                        # wavy continuation line. Avoid a duplicate sign when
+                        # graphical_trill already emitted it above.
+                        if not graphical_trill:
+                            sub(ornaments,'trill-mark')
+                        sub(ornaments,'wavy-line',type='start',number=number)
                 if fermata_glyph:
                     sub(nt,'fermata',type=('upright' if fermata_glyph=='u' else 'inverted'))
             if (marks or breath_mark) and hi == 0:
@@ -1781,6 +1805,41 @@ def make_graphic_links(events):
                 starts[id(event)].append(identifier)
                 ends[id(chords[index+span])].append(identifier)
     return starts, ends
+
+
+def make_trill_links(events):
+    """Link extended Capella trill graphics to exact note endpoints.
+
+    ``basic@noteRange`` is the same source-relative note reference used by
+    other anchored Capella drawing objects. A trill without a positive range
+    remains an ordinary one-note trill mark; a ranged trill becomes a native
+    MusicXML wavy-line spanner so both engraving and playback duration can be
+    retained by MuseScore.
+    """
+    starts=collections.defaultdict(list)
+    ends=collections.defaultdict(list)
+    by_voice=collections.defaultdict(list)
+    for event in events:
+        if event.kind=='chord':
+            by_voice[event.voice].append(event)
+    for chords in by_voice.values():
+        for index,event in enumerate(chords):
+            for graphic in children(child(event.node,'drawObjects'),'drawObj'):
+                if child(graphic,'trill') is None:
+                    continue
+                basic=child(graphic,'basic')
+                if basic is None:
+                    continue
+                try:
+                    span=int(basic.get('noteRange','0'))
+                except ValueError:
+                    continue
+                if span<=0 or index+span>=len(chords):
+                    continue
+                number=1+len(starts[id(event)])
+                starts[id(event)].append(number)
+                ends[id(chords[index+span])].append(number)
+    return starts,ends
 
 
 def make_tuplet_links(events):
@@ -2163,6 +2222,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         events=sorted(p.events,key=lambda x:(x.time,x.voice))
         slur_starts,slur_ends=make_slur_links(events)
         graphic_links=make_graphic_links(events)
+        trill_links=make_trill_links(events)
         wedge_starts,wedge_stops=make_wedge_links(events)
         tuplet_links=make_tuplet_links(events)
         source_tie_links=make_source_tie_links(
@@ -2302,6 +2362,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                         nnotes+=make_note(measure,event_for_note,voice,state,
                                           slur_starts,slur_ends,active_divisions,
                                           graphic_links,tuplet_links,
+                                          trill_links,
                                           suppress_uniform_strongbeat=pi in uniform_strongbeat,
                                           display_override=graphical_rest_overrides.get(id(e)),
                                           split_before=e.time<start and not is_multi_rest,
@@ -2362,8 +2423,6 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
     # Notation-level warnings: emphasize these instead of silently promising fidelity.
     if root.xpath('//c:systems//c:volta | //c:pageObjects//c:volta',namespaces=N):
         warnings.append('Some graphical ending brackets may need layout review.')
-    if root.xpath('//c:systems//c:drawObj[c:trill]/c:basic[number(@noteRange)>1]',namespaces=N):
-        warnings.append('Extended graphical trill lines were reduced to trill markings; review their endpoints.')
     if root.xpath('//c:systems//c:drawObj/c:text[c:font[@face="capella3"]]',namespaces=N):
         warnings.append('Capella-specific music-font symbols may need manual correction.')
     data=ET.tostring(score,encoding='utf-8',xml_declaration=True,pretty_print=True,doctype='<!DOCTYPE score-partwise  PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">')

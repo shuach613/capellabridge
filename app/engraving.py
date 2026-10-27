@@ -47,6 +47,16 @@ _CAP_NON_TITLE = {
     'tutti', 'fine', 'rip', 'rit.', 'rall.', 'accelerando', '1', '2',
     '3', '1.', '2.', '3.',
 }
+_CHORD_LAYER_NAME = re.compile(r'(?i)\b(?:gitarre|guitar|akkord|chord)\b')
+_CHORD_TOKEN = re.compile(
+    r'(?i)^[A-H](?:#|b|is|es)?(?:m|maj|min|dim|aug|sus|add)?\d*'
+    r'(?:[-+](?:5|9))?$'
+)
+
+
+def _is_chord_choice_label(value: str) -> bool:
+    tokens = [token.strip() for token in value.split('/') if token.strip()]
+    return bool(tokens) and all(_CHORD_TOKEN.fullmatch(token) for token in tokens)
 
 
 def _native_text(item) -> str:
@@ -57,6 +67,11 @@ def _native_text(item) -> str:
 def _cap_title_candidate(label: str) -> bool:
     folded = label.casefold().strip()
     if len(folded) < 4 or folded in _CAP_NON_TITLE:
+        return False
+    # Legacy generated accompaniment staves commonly place choices such as
+    # "D / D9" in the first measures. They are printed chord labels, not a
+    # title, and must remain attached to their musical measures.
+    if _is_chord_choice_label(label):
         return False
     if _CAP_DATE.search(label):
         return True
@@ -361,7 +376,37 @@ def _prune_rest_only_staves(score, changes: dict) -> None:
     # Track-addressed objects require a wider remapping than is safe in this
     # targeted repair. Retain the staff in that rare form rather than risk
     # moving a direction to another playback track.
-    if any(item.tag == 'track' or 'track' in item.attrib for item in score.iter()):
+    has_track_addresses = any(
+        item.tag in {'track', 'track2'} or 'track' in item.attrib
+        for item in score.iter()
+    )
+    if has_track_addresses:
+        # Removing a staff would require remapping every track-addressed
+        # spanner. Hiding a provably rest-only staff is musically equivalent,
+        # keeps those references stable, and prevents empty lines in PDF.
+        score_staves = score.findall('Staff')
+        prunable = [staff for staff in score_staves
+                    if _is_prunable_rest_only_staff(staff)]
+        for staff in prunable:
+            staff_id = staff.get('id')
+            visible = staff.find('visible')
+            if visible is None:
+                visible = ET.Element('visible')
+                staff.insert(0, visible)
+            visible.text = '0'
+            for part_staff in score.findall(f'./Part/Staff[@id="{staff_id}"]'):
+                part_visible = part_staff.find('visible')
+                if part_visible is None:
+                    part_visible = ET.SubElement(part_staff, 'visible')
+                part_visible.text = '0'
+            if staff_id not in changes['hidden_staves']:
+                changes['hidden_staves'].append(staff_id)
+        if prunable:
+            changes['repairs'].append(
+                'Hid globally rest-only CAP staff/staves while preserving '
+                'track-addressed objects: ' + ', '.join(
+                    str(staff.get('id')) for staff in prunable)
+            )
         return
 
     score_staves = score.findall('Staff')
@@ -418,6 +463,60 @@ def _prune_rest_only_staves(score, changes: dict) -> None:
     )
 
 
+def _hide_nonprinting_chord_layers(score, changes: dict) -> None:
+    """Keep dense CAP playback voicings sounding but out of the print.
+
+    Some legacy accordion files carry a generated guitar accompaniment on a
+    staff which Capella prints as chord labels only. MuseScore's CAP importer
+    loses that staff-level non-printing flag. The detection is intentionally
+    narrow: an accompaniment-named part, chord labels across at least half of
+    its measures, and uniformly dense four-or-more-note playback chords.
+    """
+    names = {}
+    for part in score.findall('Part'):
+        name = ' '.join((part.findtext('trackName') or '').split())
+        for staff in part.findall('Staff'):
+            names[staff.get('id')] = name
+    for staff in score.findall('Staff'):
+        name = names.get(staff.get('id'), '')
+        if not _CHORD_LAYER_NAME.search(name):
+            continue
+        measures = staff.findall('Measure')
+        if not measures:
+            continue
+        labelled = 0
+        for measure in measures:
+            labels = [
+                ' '.join(''.join(text.itertext()).split())
+                for text in measure.findall('.//StaffText/text')
+            ]
+            if any(_is_chord_choice_label(label) for label in labels):
+                labelled += 1
+        chords = staff.findall('.//Chord')
+        if labelled * 2 < len(measures) or len(chords) < len(measures):
+            continue
+        note_counts = [len(chord.findall('Note')) for chord in chords]
+        if not note_counts or sum(count >= 4 for count in note_counts) * 10 < len(chords) * 9:
+            continue
+        if staff.find('.//Articulation') is not None:
+            continue
+        hidden = 0
+        for chord in chords:
+            visible = chord.find('visible')
+            if visible is None:
+                visible = ET.Element('visible')
+                chord.insert(0, visible)
+            if visible.text != '0':
+                visible.text = '0'
+                hidden += 1
+        if hidden:
+            changes['hidden_note_layers'].append(staff.get('id'))
+            changes['repairs'].append(
+                f'Hid {hidden} generated playback chord(s) on non-printing '
+                f'CAP accompaniment staff {staff.get("id")} ({name})'
+            )
+
+
 def _hide_internal_view_flags(score, changes: dict) -> None:
     """Keep editing-only objects out of delivered prints and previews.
 
@@ -471,6 +570,7 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None,
         'chord_annotations': 0,
         'deduplicated_structure': 0,
         'view_flags': [],
+        'hidden_note_layers': [],
     }
     temp = None
     try:
@@ -657,6 +757,7 @@ def prepare_print_ready(mscz_path: Path, metadata: dict | None = None,
                 if frame is not None:
                     _normalize_cap_opening_text(score, frame, changes)
                 _normalize_cap_chord_annotations(score, changes)
+                _hide_nonprinting_chord_layers(score, changes)
                 _prune_rest_only_staves(score, changes)
                 _deduplicate_measure_structure(score, changes)
                 _enable_native_text_autoplace(score, changes)

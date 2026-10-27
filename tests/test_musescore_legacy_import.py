@@ -48,3 +48,63 @@ def test_binary_cap_falls_back_to_current_engine_without_legacy_configuration(
     assert len(calls) == 1
     assert calls[0][0][0] == '/usr/bin/musescore3'
     assert calls[0][0][3] == source
+
+
+def test_crashing_legacy_importer_falls_back_per_file_and_keeps_diagnostic(
+        tmp_path, monkeypatch):
+    source = tmp_path / 'bogey.cap'
+    source.write_bytes(b'cap3-v:a')
+    target = tmp_path / 'bogey.mscz'
+    legacy = tmp_path / 'MuseScore2'
+    legacy.write_bytes(b'legacy')
+    calls = []
+
+    def run(*argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv[0] == str(legacy):
+            raise musescore.ConversionFailure(
+                'MuseScore failed (exit 139): invalid slur anchor',
+                returncode=139,
+                diagnostic='invalid slur anchor',
+            )
+        Path(argv[2]).write_bytes(b'x' * 128)
+
+    monkeypatch.setenv('MUSESCORE_LEGACY_CAP_BIN', str(legacy))
+    monkeypatch.setattr(musescore, 'musescore_path', lambda: '/usr/bin/musescore3')
+    monkeypatch.setattr(musescore, 'run', run)
+
+    result = musescore.import_cap(source, target)
+
+    assert result['strategy'] == 'musescore3-cap-fallback'
+    assert result['fallback'] is True
+    assert result['legacy_returncode'] == 139
+    assert 'invalid slur anchor' in result['legacy_error']
+    assert calls[1][0][0] == '/usr/bin/musescore3'
+    assert calls[1][0][3] == source
+    assert target.read_bytes() == b'x' * 128
+
+
+def test_unusable_legacy_intermediate_also_falls_back_to_current_engine(
+        tmp_path, monkeypatch):
+    source = tmp_path / 'source.cap'
+    source.write_bytes(b'cap3-v:a')
+    target = tmp_path / 'result.mscz'
+    legacy = tmp_path / 'MuseScore2'
+    legacy.write_bytes(b'legacy')
+    calls = []
+
+    def run(*argv, **kwargs):
+        calls.append((argv, kwargs))
+        output = Path(argv[2])
+        output.write_bytes(b'bad' if argv[0] == str(legacy) else b'x' * 128)
+
+    monkeypatch.setenv('MUSESCORE_LEGACY_CAP_BIN', str(legacy))
+    monkeypatch.setattr(musescore, 'musescore_path', lambda: '/usr/bin/musescore3')
+    monkeypatch.setattr(musescore, 'run', run)
+
+    result = musescore.import_cap(source, target)
+
+    assert result['strategy'] == 'musescore3-cap-fallback'
+    assert 'did not create a usable MSCZ' in result['legacy_error']
+    assert calls[1][0][3] == source
+    assert target.read_bytes() == b'x' * 128

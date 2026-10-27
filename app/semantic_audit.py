@@ -433,6 +433,11 @@ def _native_volta_spans(staff):
                     connector_measure = end_measure + 1
                     connector = any(
                         candidate.find("Volta") is None
+                        # A terminal connector has only <prev>; it marks the
+                        # exclusive barline endpoint and does not add the next
+                        # measure to the ending. Only a connector which also
+                        # continues with <next> extends a multi-system volta.
+                        and candidate.find("next/location") is not None
                         and _volta_connector_targets(
                             candidate, connector_measure, start_measure)
                         for next_voice in measures[end_measure].findall("voice")

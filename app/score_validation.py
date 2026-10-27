@@ -85,7 +85,13 @@ def _measure_duration(voice, meter, tuplet_stack=None):
     check it only after the last measure.  The default remains strict for the
     small public helper and existing tests.
     """
-    total = Fraction(0)
+    cursor = Fraction(0)
+    # Native <location> elements position following annotations as well as
+    # notes. A final negative location used to place a Dynamic or HairPin does
+    # not shorten music that has already occupied the complete measure. Track
+    # the furthest timed endpoint instead of treating the final cursor as the
+    # performed duration.
+    timed_end = Fraction(0)
     ratio_stack = tuplet_stack if tuplet_stack is not None else []
     timed = []
     for item in voice:
@@ -100,7 +106,8 @@ def _measure_duration(voice, meter, tuplet_stack=None):
             for ratio in ratio_stack:
                 scale *= ratio
             duration = _duration(item, meter, scale)
-            total += duration
+            cursor += duration
+            timed_end = max(timed_end, cursor)
             timed.append((item, duration))
         elif item.tag == "location":
             # MuseScore uses a direct child <location> to advance or rewind
@@ -109,19 +116,19 @@ def _measure_duration(voice, meter, tuplet_stack=None):
             # spans disappear from the timing ledger and caused false short-
             # measure diagnostics or incorrectly sized padding.
             try:
-                total += Fraction(item.findtext("measures", "0")) * meter
-                total += Fraction(item.findtext("fractions", "0"))
+                cursor += Fraction(item.findtext("measures", "0")) * meter
+                cursor += Fraction(item.findtext("fractions", "0"))
             except (ZeroDivisionError, ValueError) as exc:
                 raise ScoreIntegrityError(
                     "Invalid native voice location offset"
                 ) from exc
-            if total < 0:
+            if cursor < 0:
                 raise ScoreIntegrityError(
                     "Native voice location moved before the measure start"
                 )
     if tuplet_stack is None and ratio_stack:
         raise ScoreIntegrityError("Unclosed native tuplet")
-    return total, timed
+    return timed_end, timed
 
 
 def audit_mscz(path: Path, repair: bool = False,
