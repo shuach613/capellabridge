@@ -50,6 +50,10 @@ jobs:
       - name: Run container
         run: |
           docker run -d --name capellabridge-smoke --memory=2g -p 127.0.0.1:18765:8080 capellabridge:ci
+      - name: Verify unprivileged legacy CAP decoder can start
+        run: |
+          docker exec --user 10001:10001 capellabridge-smoke \
+            /usr/local/bin/musescore2-cap --version
       - name: Test conversion and outputs
         env:
           STUDIO_COMPAT_OUTPUT: /tmp/capellabridge-studio4.mscz

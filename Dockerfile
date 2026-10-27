@@ -17,6 +17,9 @@ RUN curl --fail --location --retry 3 --silent --show-error \
  && echo "$MUSESCORE2_SHA256  /tmp/musescore2.AppImage" | sha256sum --check \
  && mkdir -p /opt/musescore2 \
  && bsdtar --no-same-owner -xf /tmp/musescore2.AppImage -C /opt/musescore2 \
+ && chmod 0755 /opt/musescore2/AppRun \
+      /opt/musescore2/bin/mscore-portable \
+      /opt/musescore2/bin/portable-utils \
  && rm /tmp/musescore2.AppImage \
  && test -x /opt/musescore2/AppRun
 COPY scripts/musescore2-cap /usr/local/bin/musescore2-cap
