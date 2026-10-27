@@ -224,6 +224,39 @@ def test_generated_guitar_chord_layer_is_hidden_but_kept_for_playback(tmp_path):
     assert len(native.findall('.//Chord'))==2
     assert native.xpath('.//Chord/visible/text()')==['0','0']
     assert len(native.findall('.//Chord/Note'))==8
+    assert native.findtext('./Score/Staff[@id="1"]/visible')=='0'
+    assert native.findtext('./Score/Part/Staff[@id="1"]/visible')=='0'
+
+
+def test_rest_only_staff_with_voice_barline_is_pruned_and_transferred(tmp_path):
+    path=tmp_path/'barline-empty-staff.mscz'
+    root=ET.Element('museScore')
+    score=ET.SubElement(root,'Score')
+    for staff_id in ('1','2'):
+        part=ET.SubElement(score,'Part')
+        ET.SubElement(part,'Staff',id=staff_id)
+    empty=ET.SubElement(score,'Staff',id='1')
+    measure=ET.SubElement(empty,'Measure')
+    voice=ET.SubElement(measure,'voice')
+    rest=ET.SubElement(voice,'Rest')
+    ET.SubElement(rest,'durationType').text='half'
+    barline=ET.SubElement(voice,'BarLine')
+    ET.SubElement(barline,'subtype').text='double'
+    musical=ET.SubElement(score,'Staff',id='2')
+    measure=ET.SubElement(musical,'Measure')
+    voice=ET.SubElement(measure,'voice')
+    chord=ET.SubElement(voice,'Chord')
+    ET.SubElement(chord,'durationType').text='half'
+    ET.SubElement(chord,'Note')
+    with zipfile.ZipFile(path,'w') as archive:
+        archive.writestr('score.mscx',ET.tostring(root))
+
+    changes=prepare_print_ready(path,source_format='cap')
+    native=reread(path)
+
+    assert changes['removed_staves']==[1]
+    assert len(native.findall('./Score/Staff'))==1
+    assert native.findtext('.//BarLine/subtype')=='double'
 
 
 def test_legacy_cap_prunes_empty_part_and_preserves_its_structure(tmp_path):

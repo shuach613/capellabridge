@@ -102,6 +102,7 @@ def import_cap(source, target):
         prefix='.legacy-cap-import-', dir=target_path.parent
     ) as root:
         intermediate=Path(root)/(target_path.stem+'-ms2.mscz')
+        uncompressed=Path(root)/(target_path.stem+'-ms2.mscx')
         def fallback(exc):
             target_path.unlink(missing_ok=True)
             convert(source, target_path, timeout=300)
@@ -123,7 +124,33 @@ def import_cap(source, target):
             # must not withhold the user's editable score or abort a batch.
             # MuseScore 3 is a deliberately degraded but isolated fallback;
             # callers surface the diagnostic and retain manual-review status.
-            return fallback(exc)
+            # Some malformed draw-object graphs crash MuseScore 2 only while
+            # serializing its compressed container. Retry the same import to
+            # uncompressed MSCX before falling back to MuseScore 3. This is a
+            # different writer boundary, not a blind repeat, and retains all
+            # music whenever the CAP reader itself completed successfully.
+            try:
+                run(legacy, '-o', uncompressed, source,
+                    timeout=300, cwd=uncompressed.parent)
+                if not uncompressed.is_file() or uncompressed.stat().st_size < 100:
+                    raise ConversionFailure(
+                        'Pinned legacy CAP importer did not create usable MSCX'
+                    )
+                convert(uncompressed, target_path, timeout=300)
+                return {
+                    'strategy': 'musescore2-cap-to-mscx-to-musescore3-mscz',
+                    'fallback': True,
+                    'legacy_error': str(exc),
+                    'legacy_returncode': getattr(exc, 'returncode', None),
+                }
+            except ConversionFailure as retry_exc:
+                combined = ConversionFailure(
+                    f'{exc}; uncompressed retry failed: {retry_exc}',
+                    returncode=getattr(exc, 'returncode', None),
+                    diagnostic=(getattr(exc, 'diagnostic', '') + '\n' +
+                                getattr(retry_exc, 'diagnostic', '')).strip(),
+                )
+                return fallback(combined)
         if not intermediate.is_file() or intermediate.stat().st_size < 100:
             return fallback(ConversionFailure(
                 'Pinned legacy CAP importer did not create a usable MSCZ file'

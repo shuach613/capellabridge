@@ -473,3 +473,103 @@ def test_adjacent_zero_numbered_voltas_are_reconstructed_as_first_and_second(tmp
         native = ET.fromstring(archive.read('score.mscx'))
     assert native.xpath('.//Volta/endings/text()') == ['1', '2']
     assert native.xpath('.//Volta/beginText/text()') == ['1.', '2.']
+
+
+def test_repeated_duplicate_full_measure_tail_rests_are_removed(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    for staff_id in ('1', '2'):
+        staff = ET.SubElement(score, 'Staff', id=staff_id)
+        for _ in range(4):
+            measure = ET.SubElement(staff, 'Measure')
+            voice = _voice(
+                ET.fromstring('<TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>'),
+                _event('Chord', 'half'),
+                _event('Rest', 'half'),
+            )
+            measure.append(voice)
+    path = tmp_path / 'duplicate-tail-rests.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert sum('duplicate importer-generated' in item
+               for item in result['repairs']) == 8
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert not native.findall('.//Rest')
+    assert audit_mscz(path, repair=False) == []
+
+
+def test_isolated_overfull_tail_rest_is_not_guessed(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    staff = ET.SubElement(score, 'Staff', id='1')
+    measure = ET.SubElement(staff, 'Measure')
+    measure.append(_voice(
+        ET.fromstring('<TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>'),
+        _event('Chord', 'half'), _event('Rest', 'half')))
+    path = tmp_path / 'isolated-overfull.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert not any('duplicate importer-generated' in item
+                   for item in result['repairs'])
+
+
+def test_playback_only_tempos_are_hidden_and_staff_duplicates_removed(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    for staff_id in ('1', '2'):
+        staff = ET.SubElement(score, 'Staff', id=staff_id)
+        measure = ET.SubElement(staff, 'Measure')
+        voice = _voice()
+        tempo = ET.SubElement(voice, 'Tempo')
+        ET.SubElement(tempo, 'tempo').text = '5/3'
+        voice.append(_event('Rest', 'whole'))
+        measure.append(voice)
+    path = tmp_path / 'tempo-map.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('duplicate score-global' in item for item in result['repairs'])
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert len(native.findall('.//Tempo')) == 1
+    assert native.findtext('.//Tempo/visible') == '0'
+
+
+def test_missing_terminal_second_ending_is_restored_from_repeated_pairs(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    staff = ET.SubElement(score, 'Staff', id='1')
+    for index in range(7):
+        measure = ET.SubElement(staff, 'Measure')
+        voice = _voice(_event('Rest', 'whole'))
+        measure.append(voice)
+        number = {0: '1', 1: '2', 2: '1', 3: '2', 5: '1'}.get(index)
+        if number:
+            spanner = ET.Element('Spanner', type='Volta')
+            volta = ET.SubElement(spanner, 'Volta')
+            ET.SubElement(volta, 'endings').text = number
+            next_node = ET.SubElement(spanner, 'next')
+            location = ET.SubElement(next_node, 'location')
+            ET.SubElement(location, 'measures').text = '1'
+            voice.insert(0, spanner)
+    path = tmp_path / 'terminal-ending.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('terminal second ending' in item for item in result['repairs'])
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    final = native.find('./Score/Staff/Measure[7]/voice/Spanner/Volta')
+    assert final.findtext('endings') == '2'
+    assert final.findtext('beginText') == '2.'

@@ -68,6 +68,10 @@ def _cap_title_candidate(label: str) -> bool:
     folded = label.casefold().strip()
     if len(folded) < 4 or folded in _CAP_NON_TITLE:
         return False
+    # Numbered dialect section headings such as "1 dr Aafang" belong above
+    # their measure; they are not a missing score title.
+    if re.match(r"^\d+\s+(?:dr|de|d')\b", folded):
+        return False
     # Legacy generated accompaniment staves commonly place choices such as
     # "D / D9" in the first measures. They are printed chord labels, not a
     # title, and must remain attached to their musical measures.
@@ -208,7 +212,10 @@ _SAFE_EMPTY_STAFF_MEASURE_TAGS = {
     'voice', 'LayoutBreak', 'startRepeat', 'endRepeat', 'repeatCount',
 }
 _SAFE_EMPTY_STAFF_VOICE_TAGS = {
-    'Rest', 'TimeSig', 'KeySig', 'Clef',
+    # Legacy CAP stores ordinary and repeat barlines inside the voice of an
+    # otherwise empty staff. They are score structure, not musical content;
+    # transfer them before pruning instead of retaining a blank printed staff.
+    'Rest', 'TimeSig', 'KeySig', 'Clef', 'BarLine',
 }
 
 
@@ -285,7 +292,7 @@ def _transfer_empty_staff_structure(source, target) -> None:
         if source_voice is None or target_voice is None:
             continue
         for item in source_voice:
-            if item.tag not in {'TimeSig', 'KeySig', 'Clef'}:
+            if item.tag not in {'TimeSig', 'KeySig', 'Clef', 'BarLine'}:
                 continue
             fingerprint = _structural_fingerprint(item)
             existing = {
@@ -509,7 +516,26 @@ def _hide_nonprinting_chord_layers(score, changes: dict) -> None:
             if visible.text != '0':
                 visible.text = '0'
                 hidden += 1
-        if hidden:
+        staff_hidden = False
+        # Chord visibility is not honoured consistently by MuseScore's PDF
+        # exporter for imported CAP material. Hide the staff and its Part
+        # declaration as well. The notes remain and continue to sound.
+        visible = staff.find('visible')
+        if visible is None:
+            visible = ET.Element('visible')
+            staff.insert(0, visible)
+        if visible.text != '0':
+            visible.text = '0'
+            staff_hidden = True
+        for part_staff in score.findall(
+                f'./Part/Staff[@id="{staff.get("id")}"]'):
+            part_visible = part_staff.find('visible')
+            if part_visible is None:
+                part_visible = ET.SubElement(part_staff, 'visible')
+            if part_visible.text != '0':
+                part_visible.text = '0'
+                staff_hidden = True
+        if hidden or staff_hidden:
             changes['hidden_note_layers'].append(staff.get('id'))
             changes['repairs'].append(
                 f'Hid {hidden} generated playback chord(s) on non-printing '

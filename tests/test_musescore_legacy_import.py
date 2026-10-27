@@ -79,8 +79,40 @@ def test_crashing_legacy_importer_falls_back_per_file_and_keeps_diagnostic(
     assert result['fallback'] is True
     assert result['legacy_returncode'] == 139
     assert 'invalid slur anchor' in result['legacy_error']
-    assert calls[1][0][0] == '/usr/bin/musescore3'
-    assert calls[1][0][3] == source
+    assert calls[1][0][0] == str(legacy)
+    assert Path(calls[1][0][2]).suffix == '.mscx'
+    assert calls[2][0][0] == '/usr/bin/musescore3'
+    assert calls[2][0][3] == source
+    assert target.read_bytes() == b'x' * 128
+
+
+def test_crashing_compressed_writer_retries_uncompressed_legacy_import(
+        tmp_path, monkeypatch):
+    source = tmp_path / 'recoverable.cap'
+    source.write_bytes(b'cap3-v:a')
+    target = tmp_path / 'recoverable.mscz'
+    legacy = tmp_path / 'MuseScore2'
+    legacy.write_bytes(b'legacy')
+    calls = []
+
+    def run(*argv, **kwargs):
+        calls.append((argv, kwargs))
+        output = Path(argv[2])
+        if argv[0] == str(legacy) and output.suffix == '.mscz':
+            raise musescore.ConversionFailure(
+                'compressed writer crashed', returncode=139)
+        output.write_bytes(b'x' * 128)
+
+    monkeypatch.setenv('MUSESCORE_LEGACY_CAP_BIN', str(legacy))
+    monkeypatch.setattr(musescore, 'musescore_path', lambda: '/usr/bin/musescore3')
+    monkeypatch.setattr(musescore, 'run', run)
+
+    result = musescore.import_cap(source, target)
+
+    assert result['strategy'] == 'musescore2-cap-to-mscx-to-musescore3-mscz'
+    assert result['fallback'] is True
+    assert Path(calls[1][0][2]).suffix == '.mscx'
+    assert Path(calls[2][0][3]).suffix == '.mscx'
     assert target.read_bytes() == b'x' * 128
 
 

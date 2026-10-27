@@ -20,7 +20,9 @@ from pathlib import Path
 
 from lxml import etree as ET
 
-from .score_validation import DURATION_TYPES, _measure_duration
+from .score_validation import (
+    DURATION_TYPES, _duration, _measure_duration, _tuplet_ratio,
+)
 
 
 _XML_NAMED_ENTITY_RE = re.compile(br"&([A-Za-z][A-Za-z0-9]+);")
@@ -431,8 +433,20 @@ def _normalize_invalid_voltas(score, repairs: list[str],
                 index += 1
                 continue
             repeat_measure = next((position for position in range(
-                first["measure"], second["measure"])
-                if measures[position].find("endRepeat") is not None), None)
+                first["measure"], min(second["measure"] + 1, len(measures)))
+                if measures[position].find(".//endRepeat") is not None), None)
+            if repeat_measure is None:
+                # Some legacy imports encode the boundary as a terminal
+                # BarLine and begin a new repeated section immediately after
+                # the second ending. The connected adjacent spanners plus
+                # that new start-repeat make the pair unambiguous.
+                second_endpoint = second["measure"] + second["step"]
+                if (second_endpoint < len(measures)
+                        and measures[second_endpoint].find(".//startRepeat")
+                        is not None
+                        and _connector_for(measures, first["measure"],
+                                           second["measure"]) is not None):
+                    repeat_measure = first["measure"]
             # Without a backward repeat, two nearby zero labels are not enough
             # evidence to infer first/second endings. Leave them diagnosed for
             # review instead of changing playback on a guess.
@@ -455,6 +469,33 @@ def _normalize_invalid_voltas(score, repairs: list[str],
             )
             index += 2
 
+        # A terminal zero ending immediately following a valid first ending
+        # is a common importer spelling for a second ending. The preceding
+        # numbered span and its repeat connector make this unambiguous even
+        # when the backward-repeat element was attached to another staff.
+        for record in remaining:
+            if id(record) in handled:
+                continue
+            previous = next((candidate for candidate in reversed(records)
+                             if candidate["measure"] < record["measure"]
+                             and "1" in candidate["numbers"].split(",")), None)
+            if previous is None:
+                continue
+            previous_endpoint = previous["measure"] + previous["step"]
+            if previous_endpoint != record["measure"]:
+                continue
+            if any(candidate["measure"] > record["measure"]
+                   for candidate in records):
+                continue
+            _set_volta_number(record, "2")
+            handled.add(id(record))
+            changed = True
+            repairs.append(
+                "Reconstructed terminal second ending after a proven first "
+                f"ending at staff {staff_index}, measure "
+                f"{record['measure'] + 1}"
+            )
+
         for record in invalid:
             if id(record) not in handled:
                 diagnostics.append(
@@ -462,6 +503,57 @@ def _normalize_invalid_voltas(score, repairs: list[str],
                     f"{staff_index}, measure {record['measure'] + 1}; playback "
                     "ending was not guessed."
                 )
+    return changed
+
+
+def _restore_missing_terminal_second_endings(score, repairs: list[str]) -> bool:
+    """Restore a lost final second ending only from repeated score topology."""
+    changed = False
+    for staff_index, staff in enumerate(score.findall("Staff"), 1):
+        measures = staff.findall("Measure")
+        if len(measures) < 2:
+            continue
+        records = _volta_records(staff)
+        pairs = 0
+        for first in records:
+            if "1" not in first["numbers"].split(","):
+                continue
+            if any(second["measure"] == first["measure"] + first["step"]
+                   and "2" in second["numbers"].split(",")
+                   for second in records):
+                pairs += 1
+        terminal_first = next((record for record in reversed(records)
+                               if "1" in record["numbers"].split(",")
+                               and record["measure"] + record["step"]
+                               == len(measures) - 1), None)
+        if terminal_first is None or pairs < 2:
+            continue
+        final_index = len(measures) - 1
+        if any(record["measure"] == final_index for record in records):
+            continue
+        voice = measures[final_index].find("voice")
+        if voice is None:
+            continue
+        spanner = ET.Element("Spanner", type="Volta")
+        volta = ET.SubElement(spanner, "Volta")
+        ET.SubElement(volta, "endHookType").text = "1"
+        ET.SubElement(volta, "beginText").text = "2."
+        ET.SubElement(volta, "endings").text = "2"
+        next_node = ET.SubElement(spanner, "next")
+        location = ET.SubElement(next_node, "location")
+        # A fractional endpoint closes the bracket at the score's final
+        # barline without referring to a non-existent following measure.
+        meter = Fraction(4, 4)
+        for candidate in measures[:final_index + 1]:
+            meter = _meter_for_measure(candidate, meter)
+        ET.SubElement(location, "fractions").text = str(meter)
+        voice.insert(0, spanner)
+        changed = True
+        repairs.append(
+            "Restored missing terminal second ending from repeated first/"
+            f"second-ending topology at staff {staff_index}, measure "
+            f"{final_index + 1}"
+        )
     return changed
 
 
@@ -480,7 +572,75 @@ def _append_jump(measure, jump_to: str = "", play_until: str = "",
 def _append_numeric_tempo(voice, bpm: int) -> None:
     tempo = ET.Element("Tempo")
     ET.SubElement(tempo, "tempo").text = str(Fraction(bpm, 60))
+    # The original CAP text remains visible. This generated object exists for
+    # playback only and must not print a second numeric label.
+    ET.SubElement(tempo, "visible").text = "0"
     voice.insert(0, tempo)
+
+
+def _normalize_tempo_objects(score, repairs: list[str]) -> bool:
+    """Hide playback-only tempo values and remove proven staff duplicates."""
+    changed = False
+    seen = set()
+    removed = 0
+    hidden = 0
+    for staff_index, staff in enumerate(score.findall("Staff"), 1):
+        meter = Fraction(4, 4)
+        stacks: dict[int, list[Fraction]] = {}
+        for measure_index, measure in enumerate(staff.findall("Measure"), 1):
+            meter = _meter_for_measure(measure, meter)
+            for voice_index, voice in enumerate(measure.findall("voice"), 1):
+                cursor = Fraction(0)
+                stack = stacks.setdefault(voice_index, [])
+                for item in list(voice):
+                    if item.tag == "Tuplet":
+                        stack.append(_tuplet_ratio(item))
+                        continue
+                    if item.tag == "endTuplet":
+                        if stack:
+                            stack.pop()
+                        continue
+                    if item.tag in {"Chord", "Rest"}:
+                        scale = Fraction(1)
+                        for ratio in stack:
+                            scale *= ratio
+                        cursor += _duration(item, meter, scale)
+                        continue
+                    if item.tag == "location":
+                        cursor += Fraction(item.findtext("measures", "0")) * meter
+                        cursor += Fraction(item.findtext("fractions", "0"))
+                        continue
+                    if item.tag != "Tempo":
+                        continue
+                    value = (item.findtext("tempo") or item.get("tempo") or "").strip()
+                    text = " ".join((item.findtext("text") or "").split())
+                    key = (measure_index, cursor, value)
+                    if key in seen:
+                        voice.remove(item)
+                        removed += 1
+                        changed = True
+                        continue
+                    seen.add(key)
+                    # A Tempo without display text is a playback map entry.
+                    # Keeping it visible prints hundreds of decimal BPM labels
+                    # in scores with expressive tempo curves.
+                    if not text:
+                        visible = item.find("visible")
+                        if visible is None:
+                            visible = ET.SubElement(item, "visible")
+                        if visible.text != "0":
+                            visible.text = "0"
+                            hidden += 1
+                            changed = True
+    if removed:
+        repairs.append(
+            f"Removed {removed} duplicate score-global CAP tempo object(s)"
+        )
+    if hidden:
+        repairs.append(
+            f"Hid {hidden} playback-only CAP tempo object(s) from print"
+        )
+    return changed
 
 
 def _normalize_playback_directions(score, repairs: list[str],
@@ -502,6 +662,7 @@ def _normalize_playback_directions(score, repairs: list[str],
     navigation_requests = []
     tempo_requests = []
     known_tempos = []
+    reported_textual_tempos = set()
     for measure_index, measure in enumerate(
             primary_staff.findall("Measure"), 1):
         for tempo in measure.iter("Tempo"):
@@ -562,11 +723,14 @@ def _normalize_playback_directions(score, repairs: list[str],
                             staff_index, measure_index, prior[-1][1], text
                         ))
                     else:
-                        diagnostics.append(
-                            f"Textual tempo direction at staff {staff_index}, "
-                            f"measure {measure_index} (\"{text}\") has no numeric "
-                            "tempo map; playback needs manual review."
-                        )
+                        diagnostic_key = (measure_index, normalized)
+                        if diagnostic_key not in reported_textual_tempos:
+                            diagnostics.append(
+                                f"Textual tempo direction at measure "
+                                f"{measure_index} (\"{text}\") has no numeric "
+                                "tempo map; playback needs manual review."
+                            )
+                            reported_textual_tempos.add(diagnostic_key)
 
     for measure_index, kind, label, jump_to, play_until, continue_at in navigation_requests:
         if measure_index > len(primary_staff.findall("Measure")):
@@ -1020,6 +1184,43 @@ def _append_safe_silent_gaps(score, ledger, repairs: list[str]) -> bool:
     return changed
 
 
+def _remove_repeated_duplicate_measure_rests(ledger, repairs: list[str]) -> bool:
+    """Remove only a proven importer-added whole-measure tail rest.
+
+    Some CAP imports append a second full-measure rest after an already
+    complete musical voice. A single overfull measure can be intentional, so
+    this repair requires either agreement across at least two active staves in
+    the same measure or a repeated run on one staff. Tuplet scopes and voices
+    without pitched music are never changed.
+    """
+    candidates = []
+    for key, entry in ledger.items():
+        timed = entry["timed"]
+        if (entry["tuplet_depth_before"] or entry["tuplet_depth_after"]
+                or len(timed) < 2 or not _entry_has_chord(entry)):
+            continue
+        tail, tail_duration = timed[-1]
+        if (tail.tag != "Rest" or tail_duration != entry["intended"]):
+            continue
+        prefix = sum((duration for _item, duration in timed[:-1]), Fraction(0))
+        if prefix != entry["intended"]:
+            continue
+        candidates.append((key, entry, tail))
+    by_measure = Counter(key[1] for key, _entry, _tail in candidates)
+    by_staff = Counter(key[0] for key, _entry, _tail in candidates)
+    changed = False
+    for key, entry, tail in candidates:
+        if by_measure[key[1]] < 2 and by_staff[key[0]] < 4:
+            continue
+        entry["voice"].remove(tail)
+        changed = True
+        repairs.append(
+            "Removed duplicate importer-generated full-measure tail rest at "
+            f"staff {key[0]}, measure {key[1]}, voice {key[2]}"
+        )
+    return changed
+
+
 def normalize_legacy_cap_mscz(path: Path) -> dict:
     """Apply safe CAP-import repairs and return an auditable repair record."""
     path = Path(path)
@@ -1045,11 +1246,20 @@ def normalize_legacy_cap_mscz(path: Path) -> dict:
         changed = _normalize_invalid_voltas(
             score, repairs, diagnostics
         ) or changed
+        changed = _restore_missing_terminal_second_endings(
+            score, repairs
+        ) or changed
         changed = _normalize_tuplet_markers(score, repairs) or changed
         changed = _normalize_playback_directions(
             score, repairs, diagnostics
         ) or changed
+        changed = _normalize_tempo_objects(score, repairs) or changed
         ledger = _measure_ledger(score)
+        changed = _remove_repeated_duplicate_measure_rests(
+            ledger, repairs
+        ) or changed
+        if changed:
+            ledger = _measure_ledger(score)
         changed = _normalize_shared_meters(score, ledger, repairs) or changed
         if changed:
             ledger = _measure_ledger(score)

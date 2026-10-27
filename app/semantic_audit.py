@@ -394,7 +394,21 @@ def _native_marks(chord) -> set[str]:
         subtype = articulation.findtext("subtype")
         if subtype in NATIVE_MARKS:
             marks.add(NATIVE_MARKS[subtype])
+    for spanner in chord.findall('Spanner[@type="Trill"]'):
+        if _native_spanner_mark(spanner):
+            marks.add("trill")
     return marks
+
+
+def _native_spanner_mark(item) -> str | None:
+    """Map native ornament spanners to the event mark they affect."""
+    if item.tag != "Spanner" or item.get("type") != "Trill":
+        return None
+    trill = item.find("Trill")
+    if trill is None:
+        return None
+    subtype = (trill.findtext("subtype") or "trill").strip().lower()
+    return "trill" if "trill" in subtype else None
 
 
 def _native_volta_spans(staff):
@@ -595,6 +609,10 @@ def _native_snapshot(root) -> SemanticSnapshot:
                             # MSCX stores quarter notes per second.
                             tempos.add((part_index, measure_index, voice_index,
                                         cursor, _fraction(value, "native tempo") * 60))
+                        continue
+                    spanner_mark = _native_spanner_mark(item)
+                    if spanner_mark:
+                        pending_marks.add(spanner_mark)
                         continue
                     if item.tag == "Spanner" and item.get("type") == "HairPin":
                         hairpin = item.find("HairPin")
@@ -811,10 +829,18 @@ def audit_musicxml_against_mscz(source_xml: Path, mscz: Path) -> dict:
         raise SemanticIntegrityError(
             f"Volta spans changed: source={sorted(source.volta_spans)} "
             f"native={sorted(native.volta_spans)}")
-    if source.hairpins != native.hairpins:
+    # Wedges are staff-level directions. MuseScore may move one between
+    # voices while preserving the exact staff and onset.
+    source_hairpins = {(part, measure, onset, kind)
+                       for part, measure, _voice, onset, kind
+                       in source.hairpins}
+    native_hairpins = {(part, measure, onset, kind)
+                       for part, measure, _voice, onset, kind
+                       in native.hairpins}
+    if source_hairpins != native_hairpins:
         raise SemanticIntegrityError(
-            f"Hairpins changed: source={sorted(source.hairpins)} "
-            f"native={sorted(native.hairpins)}")
+            f"Hairpins changed: source={sorted(source_hairpins)} "
+            f"native={sorted(native_hairpins)}")
     for label, left, right in (
         ("Dynamics", source.dynamics, native.dynamics),
         ("Time signatures", source.time_signatures, native.time_signatures),
@@ -828,16 +854,19 @@ def audit_musicxml_against_mscz(source_xml: Path, mscz: Path) -> dict:
         if left != right:
             raise SemanticIntegrityError(
                 f"{label} changed: source={sorted(left)} native={sorted(right)}")
+    # Tempo is score-global. Importers legitimately move duplicate tempo
+    # objects from secondary parts to the leading staff. Compare the canonical
+    # score timeline and tolerate sub-centi-BPM serialization rounding.
     source_tempos = {
-        (part, measure, voice, onset): value
-        for part, measure, voice, onset, value in source.tempos
+        (measure, onset): value
+        for _part, measure, _voice, onset, value in source.tempos
     }
     native_tempos = {
-        (part, measure, voice, onset): value
-        for part, measure, voice, onset, value in native.tempos
+        (measure, onset): value
+        for _part, measure, _voice, onset, value in native.tempos
     }
     if (source_tempos.keys() != native_tempos.keys() or any(
-            abs(source_tempos[key] - native_tempos[key]) > Fraction(1, 1000)
+            abs(source_tempos[key] - native_tempos[key]) > Fraction(1, 50)
             for key in source_tempos)):
         raise SemanticIntegrityError(
             f"Tempos changed: source={sorted(source.tempos)} "

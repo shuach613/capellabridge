@@ -180,6 +180,48 @@ def test_dynamics_hairpins_and_tempo_are_compared_at_exact_onsets(tmp_path):
         audit_musicxml_against_mscz(source, output)
 
 
+def test_hairpin_voice_reassignment_is_staff_equivalent(tmp_path):
+    source = tmp_path / "source.musicxml"
+    source.write_text(SOURCE.replace(
+        '<note>',
+        '<direction><direction-type><wedge type="crescendo"/>'
+        '</direction-type><voice>2</voice></direction><note>', 1),
+        encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    native_zip(output, native().replace(
+        '<TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>',
+        '<TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>'
+        '<Spanner type="HairPin"><HairPin><subtype>0</subtype>'
+        '</HairPin></Spanner>'))
+    audit_musicxml_against_mscz(source, output)
+
+
+def test_native_trill_spanner_counts_as_trill_mark(tmp_path):
+    source = tmp_path / "source.musicxml"
+    source.write_text(SOURCE.replace(
+        '<articulations><accent/></articulations>',
+        '<ornaments><trill-mark/></ornaments>'), encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    native_zip(output, native().replace(
+        '<Articulation><subtype>articAccentAbove</subtype></Articulation>',
+        '<Spanner type="Trill"><Trill><subtype>trill</subtype></Trill>'
+        '<next/></Spanner>'))
+    audit_musicxml_against_mscz(source, output)
+
+
+def test_score_global_tempo_can_move_between_parts_with_small_rounding(tmp_path):
+    source = tmp_path / "source.musicxml"
+    source.write_text(SOURCE.replace(
+        '<note>', '<direction><sound tempo="100"/></direction><note>', 1),
+        encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    native_zip(output, native().replace(
+        '<TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>',
+        '<TimeSig><sigN>2</sigN><sigD>4</sigD></TimeSig>'
+        '<Tempo><tempo>1.6665</tempo></Tempo>'))
+    audit_musicxml_against_mscz(source, output)
+
+
 def test_volta_starts_are_checked_as_semantic_boundaries(tmp_path):
     source = tmp_path / "source.musicxml"
     source.write_text(SOURCE.replace(
