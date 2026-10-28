@@ -144,3 +144,15 @@ index 823d879..5e1785a 100644
                                            score->addSpanner(hp);
                                            score->updateHairpin(hp);
                                            }
+diff --git a/mscore/prefsdialog.ui b/mscore/prefsdialog.ui
+index 2195aff..961ad49 100644
+--- a/mscore/prefsdialog.ui
++++ b/mscore/prefsdialog.ui
+@@ -4214,7 +4214,6 @@ Adjusting latency can help synchronize your MIDI hardware with MuseScore's inter
+    </item>
+   </layout>
+  </widget>
+- <pixmapfunction>getPixmap</pixmapfunction>
+  <customwidgets>
+   <customwidget>
+    <class>Awl::ColorLabel</class>
