@@ -8,7 +8,7 @@ FROM debian:bookworm-slim AS musescore2-builder
 ARG MUSESCORE2_SOURCE_URL=https://github.com/musescore/MuseScore/archive/refs/tags/v2.3.2.tar.gz
 ARG MUSESCORE2_SOURCE_SHA256=8d84a081ca03bdb0bbf706c2848064f27c3a6331033e313954133d44fb769aee
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential ca-certificates cmake curl patch pkg-config \
+    build-essential ca-certificates cmake curl patch pkg-config xvfb xauth \
     qtbase5-dev qtdeclarative5-dev qttools5-dev qttools5-dev-tools qtscript5-dev \
     libqt5opengl5-dev libqt5svg5-dev libqt5xmlpatterns5-dev libfreetype6-dev \
     libsndfile1-dev zlib1g-dev libssl-dev libgl1-mesa-dev \
@@ -32,8 +32,15 @@ RUN cd /src/musescore2 \
       -DDOWNLOAD_SOUNDFONT=OFF -DZERBERUS=OFF -DOSC=OFF \
       -DSOUNDFONT3=OFF -DHAS_AUDIOFILE=OFF \
       -DUSE_SYSTEM_FREETYPE=ON \
- && cmake --build build.release --target mscore --parallel 2 \
- && cmake --install build.release
+ && cmake --build build.release --target mscore manpages --parallel 2 \
+ && cmake --install build.release \
+ && mkdir -p /tmp/cap-smoke \
+ && for source in /src/musescore2/test/cap/*.cap; do \
+      name="$(basename "$source" .cap)"; \
+      xvfb-run -a -s "-screen 0 1024x768x24 -nolisten tcp" \
+        /opt/musescore2/bin/mscore -o "/tmp/cap-smoke/$name.mscx" "$source"; \
+      test -s "/tmp/cap-smoke/$name.mscx"; \
+    done
 
 FROM python:3.12-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MUSESCORE_BIN=/usr/bin/musescore3 \
