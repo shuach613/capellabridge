@@ -1,0 +1,146 @@
+diff --git a/mscore/capella.cpp b/mscore/capella.cpp
+index 823d879..5e1785a 100644
+--- a/mscore/capella.cpp
++++ b/mscore/capella.cpp
+@@ -461,14 +461,19 @@ static bool findChordRests(BasicDrawObj const* const o, Score* score, const int
+             ChordRest* cr = static_cast<ChordRest*>(seg->element(track));
+             if (cr) {
+                   if (graceNumber1 > 0) { // the spanner is starting from a grace note
+-                        Chord* chord = static_cast<Chord*>(cr);
+-                        foreach(Chord* cc, chord->graceNotes()) {
+-                              --graceNumber1;
+-                              if ((graceNumber1 == 0) && (!cr1))
+-                                    cr1 = static_cast<ChordRest*>(cc); // found first ChordRest
++                        if (cr->type() == Element::Type::CHORD) {
++                              Chord* chord = static_cast<Chord*>(cr);
++                              foreach(Chord* cc, chord->graceNotes()) {
++                                    --graceNumber1;
++                                    if ((graceNumber1 == 0) && (!cr1))
++                                          cr1 = static_cast<ChordRest*>(cc); // found first ChordRest
++                                    }
+                               }
++                        // A missing grace-note anchor must not silently bind
++                        // the spanner to the principal note (or to a rest).
++                        break;
+                         }
+-                  if (!cr1) cr1 = cr; // found first ChordRest
++                  cr1 = cr; // found first ChordRest
+                   break;
+                   }
+             }
+@@ -484,11 +489,39 @@ static bool findChordRests(BasicDrawObj const* const o, Score* score, const int
+                               if ((graceNumber == 0) && (!cr2))
+                                     cr2 = static_cast<ChordRest*>(cc); // found 2nd ChordRest
+                               }
++                        // Do not retarget a missing grace endpoint to the
++                        // principal chord. That creates a zero-length or
++                        // reverse spanner which can crash layout/export.
++                        break;
+                         }
+-                  if (!cr2) cr2 = cr; // found 2nd ChordRest
++                  if (graceNumber > 0)
++                        break;
++                  cr2 = cr; // found 2nd ChordRest
+                   break;
+                   }
+             }
++
++      // Old Capella files can encode a final volta endpoint as the logical
++      // position immediately after the score's last rhythmic event. There is
++      // no ChordRest segment at that sentinel tick. Clamp only this specific
++      // terminal-volta case to the last event on the same track; other broken
++      // spanners remain rejected instead of being musically re-targeted.
++      Measure* lastMeasure = score->lastMeasure();
++      if (!cr2 && cr1 && o->type == CapellaType::VOLTA
++         && lastMeasure && tick2 >= lastMeasure->endTick()) {
++            for (Segment* seg = score->lastSegment(); seg; seg = seg->prev1()) {
++                  if (seg->segmentType() != Segment::Type::ChordRest)
++                        continue;
++                  ChordRest* candidate = static_cast<ChordRest*>(seg->element(track));
++                  if (candidate && candidate->tick() >= cr1->tick()
++                     && candidate->tick() <= tick2) {
++                        cr2 = candidate;
++                        qDebug("clamped terminal volta endpoint (tick %d track %d first %p second %p)",
++                               tick, track, cr1, cr2);
++                        break;
++                        }
++                  }
++            }
+       qDebug("findChordRests o %p nNotes %d score %p track %d tick %d cr1 %p cr2 %p", o, o->nNotes, score, track, tick, cr1, cr2);
+ 
+       if (!(cr1 && cr2)) {
+@@ -496,6 +529,16 @@ static bool findChordRests(BasicDrawObj const* const o, Score* score, const int
+                    tick, int(o->type), track, cr1, cr2);
+             return false;
+             }
++      if (cr1->score() != score || cr2->score() != score
++         || !cr1->measure() || !cr2->measure()
++         || cr1->track() != track || cr2->track() != track
++         || cr2->tick() < cr1->tick()) {
++            qDebug("invalid BasicDrawObj anchor topology (tick %d type %d track %d first %p second %p)",
++                   tick, int(o->type), track, cr1, cr2);
++            cr1 = 0;
++            cr2 = 0;
++            return false;
++            }
+       return true;
+       }
+ 
+@@ -933,18 +976,22 @@ static int readCapVoice(Score* score, CapVoice* cvoice, int staffIdx, int tick,
+                               bool res = findChordRests(o, score, track, tick, cr1, cr2, no, cvoice->objects);
+ 
+                               if (res) {
+-                                    if (cr1 == cr2)
++                                    if (cr1->type() != Element::Type::CHORD
++                                       || cr2->type() != Element::Type::CHORD)
++                                          qDebug("slur anchor is not a chord (tick %d track %d first %p second %p)",
++                                                 tick, track, cr1, cr2);
++                                    else if (cr1 == cr2 || cr1->tick() >= cr2->tick())
+                                           qDebug("first and second anchor for slur identical (tick %d track %d first %p second %p)",
+                                                  tick, track, cr1, cr2);
+                                     else {
+                                           Slur* slur = new Slur(score);
+                                           qDebug("tick %d track %d cr1 %p cr2 %p -> slur %p", tick, track, cr1, cr2, slur);
+-                                          slur->setTick(cr1->tick());
+-                                          slur->setTick2(cr2->tick());
+                                           slur->setStartElement(cr1);
+                                           slur->setEndElement(cr2);
+                                           slur->setTrack(cr1->track());
+                                           slur->setTrack2(cr2->track());
++                                          slur->setTick(cr1->tick());
++                                          slur->setTick2(cr2->tick());
+                                           score->addElement(slur);
+                                           }
+                                     }
+@@ -1002,7 +1049,7 @@ static int readCapVoice(Score* score, CapVoice* cvoice, int staffIdx, int tick,
+                               ChordRest* cr2 = 0; // ChordRest where trill line ends
+                               bool res = findChordRests(o, score, track, tick, cr1, cr2, no, cvoice->objects);
+                               if (res) {
+-                                    if (cr1 == cr2)
++                                    if (cr1 == cr2 || cr1->tick() >= cr2->tick())
+                                           qDebug("first and second anchor for trill line identical (tick %d track %d first %p second %p)",
+                                                  tick, track, cr1, cr2);
+                                     else {
+@@ -1025,7 +1072,7 @@ static int readCapVoice(Score* score, CapVoice* cvoice, int staffIdx, int tick,
+                               ChordRest* cr2 = 0; // ChordRest where hairpin ends
+                               bool res = findChordRests(o, score, track, tick, cr1, cr2, no, cvoice->objects);
+                               if (res) {
+-                                    if (cr1 == cr2)
++                                    if (cr1 == cr2 || cr1->tick() >= cr2->tick())
+                                           qDebug("first and second anchor for hairpin identical (tick %d track %d first %p second %p)",
+                                                  tick, track, cr1, cr2);
+                                     else {
+@@ -1034,11 +1081,11 @@ static int readCapVoice(Score* score, CapVoice* cvoice, int staffIdx, int tick,
+                                                 hp->setHairpinType(Hairpin::Type::DECRESCENDO);
+                                           else
+                                                 hp->setHairpinType(Hairpin::Type::CRESCENDO);
+-                                          hp->setTick(cr1->tick());
+-                                          hp->setTick2(cr2->tick());
+                                           hp->setTrack(track);
+                                           hp->setTrack2(track);
+                                           hp->setAnchor(Spanner::Anchor::SEGMENT);
++                                          hp->setTick(cr1->tick());
++                                          hp->setTick2(cr2->tick());
+                                           score->addSpanner(hp);
+                                           score->updateHairpin(hp);
+                                           }
