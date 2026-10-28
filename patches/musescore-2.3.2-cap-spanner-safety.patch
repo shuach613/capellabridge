@@ -178,3 +178,18 @@ index 21a621b..daeb76b 100644
              newCheck->setCheckState(strg.open ? Qt::Checked : Qt::Unchecked);
              stringList->setItem(i, 0, newCheck);
              QTableWidgetItem *newPitch = new QTableWidgetItem(midiCodeToStr(strg.pitch));
+diff --git a/mscore/CMakeLists.txt b/mscore/CMakeLists.txt
+index 50379c5..65eef18 100644
+--- a/mscore/CMakeLists.txt
++++ b/mscore/CMakeLists.txt
+@@ -307,9 +307,9 @@ target_link_libraries(mscore
+       bww
+       rtf2html
+       ${QTSINGLEAPPLICATION_LIBRARIES}
+-      synthesizer
+       midi
+       fluid
++      synthesizer
+       effects
+       vorbisfile
+       libmscore
