@@ -24,6 +24,7 @@ RUN cd /src/musescore2 \
  && patch -p1 < /tmp/cap-spanner-safety.patch \
  && cmake -S . -B build.release \
       -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CXX_FLAGS=-fpermissive \
       -DCMAKE_INSTALL_PREFIX=/opt/musescore2 \
       -DBUILD_ALSA=OFF -DBUILD_JACK=OFF -DBUILD_LAME=OFF \
       -DBUILD_PORTAUDIO=OFF -DBUILD_PORTMIDI=OFF \
