@@ -152,6 +152,29 @@ def _has_hidden_pitch(note) -> bool:
     return visible == "0" or note.get("visible") == "0"
 
 
+_PLAYBACK_HELPER_NAME = re.compile(
+    r"\b(?:gitarre|guitar|akkord|chord)\b",
+    re.IGNORECASE,
+)
+
+
+def _intentional_hidden_playback_notes(score) -> set:
+    """Return hidden notes on a wholly non-printing accompaniment layer."""
+    names = {}
+    for part in score.findall("Part"):
+        name = " ".join((part.findtext("trackName") or "").split())
+        for staff in part.findall("Staff"):
+            names[staff.get("id")] = name
+    intentional = set()
+    for staff in score.findall("Staff"):
+        if not _PLAYBACK_HELPER_NAME.search(names.get(staff.get("id"), "")):
+            continue
+        notes = staff.findall(".//Note")
+        if notes and all(_has_hidden_pitch(note) for note in notes):
+            intentional.update(notes)
+    return intentional
+
+
 def _navigation_diagnostics(score) -> tuple[list[str], list[str]]:
     """Check playback structure on the score's primary staff.
 
@@ -408,7 +431,9 @@ def inspect_native_mscz(path: Path) -> dict:
     rests = [item for voice in voices for item in voice if _local_name(item) == "Rest"]
     notes = [note for chord in chords for note in chord.iter()
              if _local_name(note) == "Note"]
-    hidden_pitched = sum(1 for note in notes if _has_hidden_pitch(note))
+    hidden_notes = {note for note in notes if _has_hidden_pitch(note)}
+    intentional_hidden = _intentional_hidden_playback_notes(score)
+    hidden_pitched = len(hidden_notes - intentional_hidden)
     tuplet_scopes = _tuplet_scope_inventory(score)
     measures_per_staff = [len(staff.findall("Measure")) for staff in staves]
     rest_only_staves = [index for index, staff in enumerate(staves, 1)
@@ -431,6 +456,7 @@ def inspect_native_mscz(path: Path) -> dict:
         "notes": len(notes),
         "rests": len(rests),
         "hidden_pitched_events": hidden_pitched,
+        "intentional_hidden_playback_events": len(intentional_hidden),
         "tuplets": _count(root, ("Tuplet",)),
         "tuplet_starts": tuplet_scopes["starts"],
         "tuplet_stops": tuplet_scopes["stops"],

@@ -397,6 +397,30 @@ def test_compound_numeric_tempo_becomes_one_native_tempo_event(tmp_path):
     assert tempos[0].findtext('tempo') == '2'
 
 
+def test_parenthesized_tempo_heading_becomes_native_tempo_event(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    staff = ET.SubElement(score, 'Staff', id='1')
+    measure = ET.SubElement(staff, 'Measure')
+    measure.append(_voice(_event('Rest', 'whole')))
+    direction = ET.SubElement(measure, 'StaffText')
+    ET.SubElement(direction, 'text').text = 'Allegro (104)'
+    path = tmp_path / 'parenthesized-tempo.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('native numeric tempo 104 BPM' in item
+               for item in result['repairs'])
+    assert not result['diagnostics']
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    tempo = native.find('.//Tempo')
+    assert tempo is not None
+    assert tempo.findtext('tempo') == '26/15'
+
+
 def test_a_tempo_restores_most_recent_numeric_tempo(tmp_path):
     root = ET.Element('museScore')
     score = ET.SubElement(root, 'Score')
@@ -520,6 +544,87 @@ def test_isolated_overfull_tail_rest_is_not_guessed(tmp_path):
                    for item in result['repairs'])
 
 
+def test_small_displaced_single_staff_overflow_becomes_irregular_measure(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    staff = ET.SubElement(score, 'Staff', id='1')
+    for index in range(3):
+        measure = ET.SubElement(staff, 'Measure')
+        voice = _voice()
+        if index == 1:
+            voice.append(_event('Chord', 'whole'))
+            location = ET.SubElement(voice, 'location')
+            ET.SubElement(location, 'fractions').text = '-1/16'
+            voice.append(_event('Chord', 'eighth'))
+        else:
+            voice.append(_event('Chord', 'whole'))
+        measure.append(voice)
+    path = tmp_path / 'displaced-irregular.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('displaced CAP polyphony' in item
+               for item in result['repairs'])
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert native.find('./Score/Staff/Measure[2]').get('len') == '17/16'
+    assert len(native.findall('.//Chord')) == 4
+    assert audit_mscz(path, repair=False) == []
+
+
+def test_displaced_overflow_is_not_relabelled_in_multistaff_score(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    for staff_id in ('1', '2'):
+        staff = ET.SubElement(score, 'Staff', id=staff_id)
+        measure = ET.SubElement(staff, 'Measure')
+        voice = _voice(_event('Chord', 'whole'))
+        if staff_id == '1':
+            location = ET.SubElement(voice, 'location')
+            ET.SubElement(location, 'fractions').text = '-1/16'
+            voice.append(_event('Chord', 'eighth'))
+        measure.append(voice)
+    path = tmp_path / 'multistaff-overflow.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert not any('displaced CAP polyphony' in item
+                   for item in result['repairs'])
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert native.find('./Score/Staff[1]/Measure').get('len') is None
+
+
+def test_displaced_overflow_is_not_relabelled_with_multiple_voices(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    staff = ET.SubElement(score, 'Staff', id='1')
+    for index in range(3):
+        measure = ET.SubElement(staff, 'Measure')
+        first = _voice(_event('Chord', 'whole'))
+        if index == 1:
+            location = ET.SubElement(first, 'location')
+            ET.SubElement(location, 'fractions').text = '-1/16'
+            first.append(_event('Chord', 'eighth'))
+            measure.append(_voice(_event('Rest', 'whole')))
+        measure.insert(0, first)
+    path = tmp_path / 'multivoice-overflow.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert not any('displaced CAP polyphony' in item
+                   for item in result['repairs'])
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert native.find('./Score/Staff/Measure[2]').get('len') is None
+
+
 def test_playback_only_tempos_are_hidden_and_staff_duplicates_removed(tmp_path):
     root = ET.Element('museScore')
     score = ET.SubElement(root, 'Score')
@@ -639,7 +744,7 @@ def test_overlapping_first_ending_is_shrunk_to_backward_repeat(tmp_path):
     assert native.xpath('.//Spanner[Volta]/next/location/measures/text()') == ['1', '1']
 
 
-def test_hidden_dense_chord_label_staff_is_silenced_without_losing_rhythm(tmp_path):
+def test_hidden_dense_chord_label_staff_is_not_silenced_by_normalizer(tmp_path):
     root = ET.Element('museScore')
     score = ET.SubElement(root, 'Score')
     part = ET.SubElement(score, 'Part')
@@ -665,14 +770,12 @@ def test_hidden_dense_chord_label_staff_is_silenced_without_losing_rhythm(tmp_pa
 
     result = normalize_legacy_cap_mscz(path)
 
-    assert any('generated harmony' in item for item in result['repairs'])
+    assert not any('generated harmony' in item for item in result['repairs'])
     with zipfile.ZipFile(path) as archive:
         native = ET.fromstring(archive.read('score.mscx'))
-    assert native.findall('.//Staff[@id="1"]/Measure/voice/Chord') == []
-    assert len(native.findall('.//Staff[@id="1"]/Measure/voice/Rest')) == 8
+    assert len(native.findall('.//Staff[@id="1"]/Measure/voice/Chord')) == 8
+    assert native.findall('.//Staff[@id="1"]/Measure/voice/Rest') == []
     assert len(native.findall('.//Staff[@id="1"]//StaffText')) == 8
-    assert all(rest.findtext('visible') == '0'
-               for rest in native.findall('.//Staff[@id="1"]//Rest'))
 
 
 def test_hidden_musical_staff_without_chord_labels_is_not_silenced(tmp_path):

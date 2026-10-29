@@ -27,11 +27,6 @@ from .score_validation import (
 
 _XML_NAMED_ENTITY_RE = re.compile(br"&([A-Za-z][A-Za-z0-9]+);")
 _XML_PREDEFINED_ENTITIES = {b"amp", b"lt", b"gt", b"apos", b"quot"}
-_CHORD_TOKEN_RE = re.compile(
-    r"^[A-GH](?:[#b])?(?:(?:maj|min|dim|aug|sus|add|m)\d*|\d*)?"
-    r"(?:\([#b]?\d+(?:,[#b]?\d+)*\))?$",
-    re.IGNORECASE,
-)
 
 
 def _sanitize_native_xml_entities(data: bytes) -> tuple[bytes, tuple[str, ...]]:
@@ -177,7 +172,11 @@ _TEXTUAL_TEMPO_RE = re.compile(
 )
 _NUMERIC_TEMPO_RE = re.compile(
     r"(?:[♩♪]|quarter(?:\s+note)?|bpm)\s*(?:=|:)\s*(\d{2,3})"
-    r"|=\s*(\d{2,3})",
+    r"|=\s*(\d{2,3})"
+    # Legacy CAP tempo headings commonly use "Allegro (104)" rather than an
+    # equals sign. Parentheses are accepted only in the presence of a tempo
+    # word by the caller, so dates and catalogue numbers are not promoted.
+    r"|\(\s*(\d{2,3})\s*\)",
     re.IGNORECASE,
 )
 
@@ -337,85 +336,6 @@ def _normalize_capella_ornament_glyphs(score, repairs: list[str]) -> bool:
                         "Replaced repeated Capella mordent glyphs with a native "
                         f"ornament at staff {staff_index}, measure {measure_index}"
                     )
-    return changed
-
-
-def _is_chord_symbol_label(value: str) -> bool:
-    tokens = [token.strip() for token in re.split(r"\s*/\s*", value)
-              if token.strip()]
-    return bool(tokens) and all(_CHORD_TOKEN_RE.fullmatch(token) for token in tokens)
-
-
-def _normalize_generated_harmony_staves(score, repairs: list[str],
-                                         diagnostics: list[str]) -> bool:
-    """Silence importer-generated chord-label accompaniment staves.
-
-    Some CAP files encode printed guitar chord labels through a hidden staff
-    filled with dense, invisible chord voicings. MuseScore imports those
-    helper voicings as real pitched playback. A staff is rewritten only when
-    all independent signals agree: it is hidden or named as accompaniment,
-    nearly every chord is hidden, the chords are predominantly dense, and it
-    contains several text labels that parse as chord symbols. Durations and
-    tuplet scopes are retained as invisible rests.
-    """
-    part_info = {}
-    for part in score.findall("Part"):
-        name = (part.findtext("trackName") or "").strip()
-        for staff_ref in part.findall("Staff"):
-            staff_id = staff_ref.get("id")
-            if not staff_id:
-                continue
-            hidden = staff_ref.findtext("visible") == "0"
-            part_info[staff_id] = (name, hidden)
-
-    changed = False
-    for staff_index, staff in enumerate(score.findall("Staff"), 1):
-        chords = staff.findall(".//Chord")
-        if len(chords) < 8:
-            continue
-        labels = [_staff_text_value(text) for text in staff.findall(".//StaffText")]
-        chord_labels = [label for label in labels if _is_chord_symbol_label(label)]
-        hidden_chords = [chord for chord in chords
-                         if chord.findtext("visible") == "0"
-                         or chord.get("visible") == "0"]
-        dense_chords = [chord for chord in chords
-                        if len(chord.findall("Note")) >= 3]
-        name, part_hidden = part_info.get(staff.get("id"), ("", False))
-        name_hint = re.search(
-            r"(?i)\b(?:gitarre|guitar|akkord|chord|harmony|harmonie)\b", name)
-        if not (
-            len(chord_labels) >= 4
-            and len(hidden_chords) / len(chords) >= 0.95
-            and len(dense_chords) / len(chords) >= 0.80
-            and (part_hidden or name_hint)
-        ):
-            continue
-
-        replaced = 0
-        skipped = 0
-        for chord in list(chords):
-            parent = chord.getparent()
-            if parent is None or chord.find("durationType") is None:
-                skipped += 1
-                continue
-            rest = ET.Element("Rest")
-            ET.SubElement(rest, "visible").text = "0"
-            for tag in ("durationType", "duration", "dots"):
-                for item in chord.findall(tag):
-                    rest.append(ET.fromstring(ET.tostring(item)))
-            parent.replace(chord, rest)
-            replaced += 1
-        if replaced:
-            changed = True
-            repairs.append(
-                f"Silenced {replaced} generated harmony chord(s) at staff "
-                f"{staff_index} while preserving chord labels and rhythm"
-            )
-        if skipped:
-            diagnostics.append(
-                f"Generated harmony staff {staff_index} retained {skipped} "
-                "untimed chord object(s) for manual review."
-            )
     return changed
 
 
@@ -923,7 +843,9 @@ def _normalize_playback_directions(score, repairs: list[str],
                 tempo_match = _NUMERIC_TEMPO_RE.search(text)
                 tempo_word = _TEXTUAL_TEMPO_RE.search(text)
                 if tempo_match and (tempo_word or "bpm" in text.lower()):
-                    raw_bpm = tempo_match.group(1) or tempo_match.group(2)
+                    raw_bpm = next(
+                        value for value in tempo_match.groups() if value
+                    )
                     bpm = int(raw_bpm)
                     if 20 <= bpm <= 400:
                         tempo_requests.append(
@@ -1045,6 +967,77 @@ def _measure_ledger(score):
                     "tuplet_depth": len(stack),
                 }
     return ledger
+
+
+def _normalize_displaced_single_staff_measure_lengths(
+        score, ledger, repairs: list[str]) -> bool:
+    """Declare a narrowly proven irregular bar without rewriting its notes.
+
+    MuseScore 2 represents overlapping CAP voices with a negative ``location``
+    inside one native voice. In a single-staff score this can make the furthest
+    timed endpoint slightly longer than the inherited meter even though all
+    source notes are intentional. Deleting or shortening the tail would change
+    the music. When the discrepancy is small, isolated, contains that explicit
+    displacement, and has no repeat/time-signature boundary, preserve every
+    event and record the actual native bar length explicitly.
+
+    Multi-staff scores are excluded because changing only one staff's boundary
+    could desynchronise parts. Ordinary overfull bars without a negative
+    location remain manual-review.
+    """
+    staves = score.findall("Staff")
+    if len(staves) != 1:
+        return False
+    measures = staves[0].findall("Measure")
+    changed = False
+    for (staff_index, measure_index, _voice_index), entry in ledger.items():
+        if staff_index != 1 or entry["explicit_len"]:
+            continue
+        actual = entry["actual"]
+        intended = entry["intended"]
+        if not intended < actual <= intended + Fraction(1, 8):
+            continue
+        if entry["tuplet_depth_before"] or entry["tuplet_depth_after"]:
+            continue
+        voice = entry["voice"]
+        if len(entry["measure"].findall("voice")) != 1:
+            continue
+        offsets = []
+        for location in voice.findall("location"):
+            try:
+                offsets.append(
+                    Fraction(location.findtext("measures", "0")) * intended
+                    + Fraction(location.findtext("fractions", "0"))
+                )
+            except (ValueError, ZeroDivisionError):
+                offsets = []
+                break
+        if not offsets or not any(offset < 0 for offset in offsets):
+            continue
+        measure = entry["measure"]
+        if any(measure.find(f".//{tag}") is not None for tag in (
+                "TimeSig", "startRepeat", "endRepeat", "Volta", "Jump",
+                "Marker", "RepeatMeasure")):
+            continue
+        # Require normal surrounding bars so a run of malformed importer
+        # output cannot be legitimised measure by measure.
+        neighbours = []
+        for neighbour_index in (measure_index - 1, measure_index + 1):
+            if 1 <= neighbour_index <= len(measures):
+                neighbour = ledger.get((1, neighbour_index, 1))
+                if neighbour is not None:
+                    neighbours.append(neighbour)
+        if not neighbours or any(
+                neighbour["actual"] != neighbour["intended"]
+                for neighbour in neighbours):
+            continue
+        measure.set("len", str(actual))
+        changed = True
+        repairs.append(
+            "Preserved displaced CAP polyphony by declaring irregular measure "
+            f"{measure_index} length {actual} instead of inherited {intended}"
+        )
+    return changed
 
 
 def _meter_signature(value: Fraction) -> tuple[int, int] | None:
@@ -1476,10 +1469,12 @@ def normalize_legacy_cap_mscz(path: Path) -> dict:
             score, repairs, diagnostics
         ) or changed
         changed = _normalize_tempo_objects(score, repairs) or changed
-        changed = _normalize_generated_harmony_staves(
-            score, repairs, diagnostics
-        ) or changed
         ledger = _measure_ledger(score)
+        changed = _normalize_displaced_single_staff_measure_lengths(
+            score, ledger, repairs
+        ) or changed
+        if changed:
+            ledger = _measure_ledger(score)
         changed = _remove_repeated_duplicate_measure_rests(
             ledger, repairs
         ) or changed

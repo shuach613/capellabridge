@@ -386,6 +386,30 @@ def test_cap_export_audit_allows_coalesced_silent_rests(tmp_path):
     assert result["rest_representation_normalized"] is True
 
 
+def test_cap_export_audit_treats_print_visibility_as_engraving_only(tmp_path):
+    source = tmp_path / "export.musicxml"
+    source.write_text("""<?xml version="1.0"?>
+    <score-partwise version="4.0">
+      <part-list><score-part id="P1"><part-name>Gitarre</part-name></score-part></part-list>
+      <part id="P1"><measure number="1">
+        <attributes><divisions>1</divisions></attributes>
+        <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice></note>
+      </measure></part>
+    </score-partwise>""", encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    native_zip(output, """<museScore version="3.02"><Score>
+      <Staff id="1"><Measure len="1/4"><voice>
+        <Chord><durationType>quarter</durationType><visible>0</visible>
+          <Note><pitch>60</pitch><visible>0</visible></Note></Chord>
+      </voice></Measure></Staff>
+    </Score></museScore>""")
+
+    result = audit_cap_musicxml_export(source, output)
+
+    assert result["source_chords"] == result["native_chords"] == 1
+    assert result["hidden_representation_normalized"] is True
+
+
 def test_cap_export_audit_maps_multistaff_part_to_native_staffs(tmp_path):
     """A CAP export may use one MusicXML part for a four-staff ensemble."""
     source = tmp_path / "multistaff.musicxml"

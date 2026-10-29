@@ -474,10 +474,15 @@ def _hide_nonprinting_chord_layers(score, changes: dict) -> None:
     """Keep dense CAP playback voicings sounding but out of the print.
 
     Some legacy accordion files carry a generated guitar accompaniment on a
-    staff which Capella prints as chord labels only. MuseScore's CAP importer
-    loses that staff-level non-printing flag. The detection is intentionally
-    narrow: an accompaniment-named part, chord labels across at least half of
-    its measures, and uniformly dense four-or-more-note playback chords.
+    one-line staff which Capella prints as chord labels only. MuseScore's CAP
+    importer expands that into an ordinary five-line pitched staff. Hiding the
+    Chord container alone is not sufficient: MuseScore 3's PDF exporter still
+    prints its Note children. Keep the source chord-symbol line, hide every
+    generated timed object at element level, and restore the one-line staff.
+
+    Detection is intentionally narrow: an accompaniment-named part, chord
+    labels across at least half of its measures, and uniformly dense
+    four-or-more-note playback chords. The sounding notes remain in the MSCZ.
     """
     names = {}
     for part in score.findall('Part'):
@@ -508,6 +513,7 @@ def _hide_nonprinting_chord_layers(score, changes: dict) -> None:
         if staff.find('.//Articulation') is not None:
             continue
         hidden = 0
+        hidden_notes = 0
         for chord in chords:
             visible = chord.find('visible')
             if visible is None:
@@ -516,30 +522,56 @@ def _hide_nonprinting_chord_layers(score, changes: dict) -> None:
             if visible.text != '0':
                 visible.text = '0'
                 hidden += 1
-        staff_hidden = False
-        # Chord visibility is not honoured consistently by MuseScore's PDF
-        # exporter for imported CAP material. Hide the staff and its Part
-        # declaration as well. The notes remain and continue to sound.
-        visible = staff.find('visible')
-        if visible is None:
-            visible = ET.Element('visible')
-            staff.insert(0, visible)
-        if visible.text != '0':
-            visible.text = '0'
-            staff_hidden = True
+            for note in chord.findall('Note'):
+                note_visible = note.find('visible')
+                if note_visible is None:
+                    note_visible = ET.Element('visible')
+                    note.insert(0, note_visible)
+                if note_visible.text != '0':
+                    note_visible.text = '0'
+                    hidden_notes += 1
+        hidden_rests = 0
+        for rest in staff.findall('.//Rest'):
+            rest_visible = rest.find('visible')
+            if rest_visible is None:
+                rest_visible = ET.Element('visible')
+                rest.insert(0, rest_visible)
+            if rest_visible.text != '0':
+                rest_visible.text = '0'
+                hidden_rests += 1
+
+        # The source still displays a chord-symbol guide line, so the staff
+        # itself must remain present. A previous repair hid the Staff node,
+        # which MuseScore 3 ignored for PDF but newer MuseScore releases obey.
+        # Explicitly restore visibility and describe the source line instead.
+        staff_visible = staff.find('visible')
+        if staff_visible is not None:
+            staff_visible.text = '1'
+        staff_shape_changed = False
         for part_staff in score.findall(
                 f'./Part/Staff[@id="{staff.get("id")}"]'):
             part_visible = part_staff.find('visible')
-            if part_visible is None:
-                part_visible = ET.SubElement(part_staff, 'visible')
-            if part_visible.text != '0':
-                part_visible.text = '0'
-                staff_hidden = True
-        if hidden or staff_hidden:
+            if part_visible is not None:
+                part_visible.text = '1'
+            staff_type = part_staff.find('StaffType')
+            if staff_type is None:
+                staff_type = ET.Element('StaffType', group='pitched')
+                part_staff.insert(0, staff_type)
+            for tag, value in (
+                    ('lines', '1'), ('genClef', '0'),
+                    ('genKeysig', '0'), ('genTimesig', '0')):
+                node = staff_type.find(tag)
+                if node is None:
+                    node = ET.SubElement(staff_type, tag)
+                if node.text != value:
+                    node.text = value
+                    staff_shape_changed = True
+        if hidden or hidden_notes or hidden_rests or staff_shape_changed:
             changes['hidden_note_layers'].append(staff.get('id'))
             changes['repairs'].append(
-                f'Hid {hidden} generated playback chord(s) on non-printing '
-                f'CAP accompaniment staff {staff.get("id")} ({name})'
+                f'Preserved {len(chords)} generated playback chord(s) but hid '
+                f'{hidden_notes} notehead(s) and {hidden_rests} rest(s) on '
+                f'CAP chord-symbol staff {staff.get("id")} ({name})'
             )
 
 

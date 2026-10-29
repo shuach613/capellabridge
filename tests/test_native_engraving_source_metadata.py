@@ -2,6 +2,7 @@
 import zipfile
 from lxml import etree as ET
 from app.engraving import prepare_print_ready
+from app.legacy_cap import inspect_native_mscz
 
 
 def make_mscz(path):
@@ -224,8 +225,19 @@ def test_generated_guitar_chord_layer_is_hidden_but_kept_for_playback(tmp_path):
     assert len(native.findall('.//Chord'))==2
     assert native.xpath('.//Chord/visible/text()')==['0','0']
     assert len(native.findall('.//Chord/Note'))==8
-    assert native.findtext('./Score/Staff[@id="1"]/visible')=='0'
-    assert native.findtext('./Score/Part/Staff[@id="1"]/visible')=='0'
+    assert native.xpath('.//Chord/Note/visible/text()')==['0']*8
+    assert native.findtext('./Score/Staff[@id="1"]/visible')!='0'
+    part_staff=native.find('./Score/Part/Staff[@id="1"]')
+    assert part_staff.findtext('visible')!='0'
+    assert part_staff.findtext('StaffType/lines')=='1'
+    assert part_staff.findtext('StaffType/genClef')=='0'
+    assert part_staff.findtext('StaffType/genKeysig')=='0'
+    assert part_staff.findtext('StaffType/genTimesig')=='0'
+    audit=inspect_native_mscz(path)
+    assert audit['counts']['hidden_pitched_events']==0
+    assert audit['counts']['intentional_hidden_playback_events']==8
+    assert not any('hidden pitched event' in warning
+                   for warning in audit['warnings'])
 
 
 def test_rest_only_staff_with_voice_barline_is_pruned_and_transferred(tmp_path):

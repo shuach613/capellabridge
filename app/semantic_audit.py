@@ -954,8 +954,13 @@ def audit_cap_musicxml_export(source_xml: Path, mscz: Path) -> dict:
     # strict CAPX audit remains responsible for exact event timing; this CAP
     # boundary must still reject a lost chord or changed pitch.
     def chord_fingerprint(event):
-        return (event.part, event.measure, event.pitches,
-                event.hidden, event.grace)
+        # Element visibility is an engraving property, not a sounding-event
+        # property. MuseScore's secondary MusicXML exporter can normalize a
+        # hidden native playback chord to ``print-object=no`` on its notes (or
+        # omit that print hint) without changing pitch or playback. The strict
+        # CAPX source audit still checks source visibility exactly; this CAP
+        # boundary verifies the sounding ledger only.
+        return (event.part, event.measure, event.pitches, event.grace)
 
     source_chords = Counter(
         chord_fingerprint(event) for event in source_events
@@ -972,6 +977,11 @@ def audit_cap_musicxml_export(source_xml: Path, mscz: Path) -> dict:
             f"native_chords={len(native_chords)}")
 
     rest_representation_normalized = source_counts["rest"] != native_counts["rest"]
+    hidden_representation_normalized = sum(
+        event.hidden for event in source_events if event.kind == "chord"
+    ) != sum(
+        event.hidden for event in native_events if event.kind == "chord"
+    )
 
     # These features affect playback or the audible/printed interpretation.
     # A native import may contain an additional copy on a hidden rest-only
@@ -1028,6 +1038,7 @@ def audit_cap_musicxml_export(source_xml: Path, mscz: Path) -> dict:
         "source_rests": source_counts["rest"],
         "native_rests": native_counts["rest"],
         "rest_representation_normalized": rest_representation_normalized,
+        "hidden_representation_normalized": hidden_representation_normalized,
         "source_repeats": len(source.repeats),
         "native_repeats": len(native.repeats),
         "source_volta_starts": len(source.volta_starts),
