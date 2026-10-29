@@ -168,12 +168,39 @@ def _navigation_diagnostics(score) -> tuple[list[str], list[str]]:
     staff = staves[0]
     measures = staff.findall("Measure")
     backward_repeats = set()
+    marker_positions = {}
+    jumps = []
     for measure_index, measure in enumerate(measures, 1):
         if measure.find("endRepeat") is not None:
             backward_repeats.add(measure_index)
         for barline in measure.findall("BarLine"):
             if barline.findtext("subtype") == "end-repeat":
                 backward_repeats.add(measure_index)
+        for marker in measure.iter("Marker"):
+            label = (marker.findtext("label") or "").strip().lower()
+            if label:
+                marker_positions.setdefault(label, set()).add(measure_index)
+        for jump in measure.iter("Jump"):
+            jumps.append((
+                measure_index,
+                (jump.findtext("jumpTo") or "").strip().lower(),
+                (jump.findtext("playUntil") or "").strip().lower(),
+            ))
+
+    def jump_proves_alternate_pass(first_start, second_start):
+        for jump_measure, jump_to, play_until in jumps:
+            if jump_measure <= second_start or not play_until:
+                continue
+            stop_positions = marker_positions.get(play_until, set())
+            if not any(second_start <= position <= jump_measure
+                       for position in stop_positions):
+                continue
+            if jump_to == "start":
+                return True
+            target_positions = marker_positions.get(jump_to, set())
+            if any(position <= first_start for position in target_positions):
+                return True
+        return False
 
     issues = []
     review_flags = []
@@ -197,27 +224,23 @@ def _navigation_diagnostics(score) -> tuple[list[str], list[str]]:
                              and "2" in second_numbers]
             if second_starts:
                 next_second = min(second_starts)
-                if not any(end_measure <= position < next_second
-                           for position in backward_repeats):
+                has_local_repeat = any(
+                    end_measure <= position < next_second
+                    for position in backward_repeats
+                )
+                if (not has_local_repeat
+                        and not jump_proves_alternate_pass(
+                            start_measure, next_second)):
                     review_flags.append(
                         f"Volta at measure {start_measure} has no backward "
                         f"repeat before its second ending at measure {next_second}"
                     )
-
-        # A first ending at the end of the score is not a complete playback
-        # path: on the repeated pass MuseScore has nowhere to continue. Do
-        # not invent a second ending, because the binary CAP source is not
-        # losslessly available here; report the exact local defect instead.
-        if "1" in endings and end_measure == len(measures):
-            matching_second = any(
-                second_start > end_measure and "2" in second_numbers
-                for second_start, _second_end, second_numbers in ending_spans
-            )
-            if not matching_second:
+            elif not any("2" in second_numbers
+                         for _second_start, _second_end, second_numbers
+                         in ending_spans):
                 review_flags.append(
                     f"First ending at measures {start_measure}-{end_measure} "
-                    "has no matching second ending before the score ends; "
-                    "playback may skip the final continuation on repeat"
+                    "has no matching second ending"
                 )
 
     if "1" in ending_numbers and "2" not in ending_numbers:
@@ -262,12 +285,10 @@ def _has_volta_connector(measure, connector_measure: int,
 def _ending_spans(measures, issues: list[str] | None = None):
     """Return ``(start, end, numbers)`` for each native volta line.
 
-    MuseScore represents a multi-measure ending as a start object followed by
-    one or more connector objects. The old audit only used the start object's
-    ``next`` value, which made a final first ending look like a one-measure
-    object and missed the fact that its connector reached the end of the
-    score. This parser follows those native connectors without changing the
-    score.
+    MuseScore's ``next/location/measures`` value is an exclusive endpoint.
+    Connector objects normally repeat that endpoint and therefore do not add
+    another bar. The parser recognises the importer's special terminal
+    connector spelling without broadly extending ordinary endings.
     """
     issues = issues if issues is not None else []
     spans = []
@@ -297,11 +318,14 @@ def _ending_spans(measures, issues: list[str] | None = None):
                     f"Volta at measure {start_measure} extends beyond the score"
                 )
                 continue
-            # The first connector is often the measure immediately after the
-            # start object. Continue while a native <prev> connector exists.
-            while end_measure < len(measures) and _has_volta_connector(
-                    measures[end_measure], end_measure + 1, start_measure
-            ):
+            # ``next/location/measures`` already encodes an exclusive endpoint;
+            # an ordinary connector at that endpoint must not add another bar.
+            # A multi-bar terminal ending is the one importer spelling where
+            # the connector can sit in the score's final measure and represents
+            # that measure as part of the bracket.
+            if (step > 1 and end_measure + 1 == len(measures)
+                    and _has_volta_connector(
+                        measures[end_measure], end_measure + 1, start_measure)):
                 end_measure += 1
             candidate = (start_measure, end_measure, numbers)
             if candidate not in spans:
@@ -493,7 +517,7 @@ def inspect_native_mscz(path: Path) -> dict:
     navigation["unpaired_first_endings"] = [
         {"start_measure": start, "end_measure": end}
         for start, end, numbers in ending_spans
-        if "1" in numbers and end == len(primary_staff.findall("Measure"))
+        if "1" in numbers
         and not any(
             second_start > end and "2" in second_numbers
             for second_start, _second_end, second_numbers in ending_spans

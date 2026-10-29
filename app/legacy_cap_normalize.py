@@ -27,6 +27,11 @@ from .score_validation import (
 
 _XML_NAMED_ENTITY_RE = re.compile(br"&([A-Za-z][A-Za-z0-9]+);")
 _XML_PREDEFINED_ENTITIES = {b"amp", b"lt", b"gt", b"apos", b"quot"}
+_CHORD_TOKEN_RE = re.compile(
+    r"^[A-GH](?:[#b])?(?:(?:maj|min|dim|aug|sus|add|m)\d*|\d*)?"
+    r"(?:\([#b]?\d+(?:,[#b]?\d+)*\))?$",
+    re.IGNORECASE,
+)
 
 
 def _sanitize_native_xml_entities(data: bytes) -> tuple[bytes, tuple[str, ...]]:
@@ -288,6 +293,128 @@ def _normalize_capella_navigation_glyphs(score, repairs: list[str]) -> bool:
             repairs.append(
                 f'Replaced Capella-font "{glyph}" with native {label} '
                 f'marker at measure {measure_index}'
+            )
+    return changed
+
+
+def _normalize_capella_ornament_glyphs(score, repairs: list[str]) -> bool:
+    """Promote unambiguous repeated Capella mordent glyphs to notation.
+
+    The legacy importer can leave a Capella3 ornament line as literal text
+    such as ``llllllll``. Capella's ``l`` glyph is the upper-mordent symbol;
+    retaining the font letters both prints incorrectly and provides no
+    ornament playback. Only a repeated run immediately before a chord is
+    promoted, so ordinary text and isolated proprietary glyphs remain
+    untouched for review.
+    """
+    changed = False
+    for staff_index, staff in enumerate(score.findall("Staff"), 1):
+        for measure_index, measure in enumerate(staff.findall("Measure"), 1):
+            for voice in measure.findall("voice"):
+                children = list(voice)
+                for index, element in enumerate(children):
+                    if element.tag != "StaffText":
+                        continue
+                    family = (element.findtext("family") or "").strip().casefold()
+                    glyph = _staff_text_value(element)
+                    if (family not in {"capella", "capella3"}
+                            or re.fullmatch(r"l{3,}", glyph) is None):
+                        continue
+                    target = next((candidate for candidate in children[index + 1:]
+                                   if candidate.tag in {"Chord", "Rest"}), None)
+                    if target is None or target.tag != "Chord":
+                        continue
+                    if not any(
+                        articulation.findtext("subtype") == "ornamentMordent"
+                        for articulation in target.findall("Articulation")
+                    ):
+                        articulation = ET.Element("Articulation")
+                        ET.SubElement(articulation, "subtype").text = "ornamentMordent"
+                        target.append(articulation)
+                    voice.remove(element)
+                    changed = True
+                    repairs.append(
+                        "Replaced repeated Capella mordent glyphs with a native "
+                        f"ornament at staff {staff_index}, measure {measure_index}"
+                    )
+    return changed
+
+
+def _is_chord_symbol_label(value: str) -> bool:
+    tokens = [token.strip() for token in re.split(r"\s*/\s*", value)
+              if token.strip()]
+    return bool(tokens) and all(_CHORD_TOKEN_RE.fullmatch(token) for token in tokens)
+
+
+def _normalize_generated_harmony_staves(score, repairs: list[str],
+                                         diagnostics: list[str]) -> bool:
+    """Silence importer-generated chord-label accompaniment staves.
+
+    Some CAP files encode printed guitar chord labels through a hidden staff
+    filled with dense, invisible chord voicings. MuseScore imports those
+    helper voicings as real pitched playback. A staff is rewritten only when
+    all independent signals agree: it is hidden or named as accompaniment,
+    nearly every chord is hidden, the chords are predominantly dense, and it
+    contains several text labels that parse as chord symbols. Durations and
+    tuplet scopes are retained as invisible rests.
+    """
+    part_info = {}
+    for part in score.findall("Part"):
+        name = (part.findtext("trackName") or "").strip()
+        for staff_ref in part.findall("Staff"):
+            staff_id = staff_ref.get("id")
+            if not staff_id:
+                continue
+            hidden = staff_ref.findtext("visible") == "0"
+            part_info[staff_id] = (name, hidden)
+
+    changed = False
+    for staff_index, staff in enumerate(score.findall("Staff"), 1):
+        chords = staff.findall(".//Chord")
+        if len(chords) < 8:
+            continue
+        labels = [_staff_text_value(text) for text in staff.findall(".//StaffText")]
+        chord_labels = [label for label in labels if _is_chord_symbol_label(label)]
+        hidden_chords = [chord for chord in chords
+                         if chord.findtext("visible") == "0"
+                         or chord.get("visible") == "0"]
+        dense_chords = [chord for chord in chords
+                        if len(chord.findall("Note")) >= 3]
+        name, part_hidden = part_info.get(staff.get("id"), ("", False))
+        name_hint = re.search(
+            r"(?i)\b(?:gitarre|guitar|akkord|chord|harmony|harmonie)\b", name)
+        if not (
+            len(chord_labels) >= 4
+            and len(hidden_chords) / len(chords) >= 0.95
+            and len(dense_chords) / len(chords) >= 0.80
+            and (part_hidden or name_hint)
+        ):
+            continue
+
+        replaced = 0
+        skipped = 0
+        for chord in list(chords):
+            parent = chord.getparent()
+            if parent is None or chord.find("durationType") is None:
+                skipped += 1
+                continue
+            rest = ET.Element("Rest")
+            ET.SubElement(rest, "visible").text = "0"
+            for tag in ("durationType", "duration", "dots"):
+                for item in chord.findall(tag):
+                    rest.append(ET.fromstring(ET.tostring(item)))
+            parent.replace(chord, rest)
+            replaced += 1
+        if replaced:
+            changed = True
+            repairs.append(
+                f"Silenced {replaced} generated harmony chord(s) at staff "
+                f"{staff_index} while preserving chord labels and rhythm"
+            )
+        if skipped:
+            diagnostics.append(
+                f"Generated harmony staff {staff_index} retained {skipped} "
+                "untimed chord object(s) for manual review."
             )
     return changed
 
@@ -554,6 +681,95 @@ def _restore_missing_terminal_second_endings(score, repairs: list[str]) -> bool:
             f"second-ending topology at staff {staff_index}, measure "
             f"{final_index + 1}"
         )
+    return changed
+
+
+def _has_backward_repeat(measure) -> bool:
+    if measure.find("endRepeat") is not None:
+        return True
+    return any(barline.findtext("subtype") == "end-repeat"
+               for barline in measure.findall("BarLine"))
+
+
+def _has_forward_repeat(measure) -> bool:
+    if measure.find("startRepeat") is not None:
+        return True
+    return any(barline.findtext("subtype") == "start-repeat"
+               for barline in measure.findall("BarLine"))
+
+
+def _normalize_numbered_volta_spans(score, repairs: list[str]) -> bool:
+    """Fit numbered endings to proven repeat boundaries.
+
+    MuseScore's CAP importer sometimes preserves the ending numbers but emits
+    a one-measure ``next`` distance, or lets a first ending overlap the second.
+    The backward repeat is the authoritative end of a first ending. A paired
+    second ending is bounded by the next forward repeat, the next ending, or
+    the score end. Extension to the score end is allowed only when the paired
+    first ending was demonstrably truncated, preventing speculative rewrites.
+    """
+    changed = False
+    for staff_index, staff in enumerate(score.findall("Staff"), 1):
+        measures = staff.findall("Measure")
+        records = _volta_records(staff)
+        for first in records:
+            if "1" not in first["numbers"].split(","):
+                continue
+            next_first = next((candidate for candidate in records
+                               if candidate["measure"] > first["measure"]
+                               and "1" in candidate["numbers"].split(",")), None)
+            second = next((candidate for candidate in records
+                           if candidate["measure"] > first["measure"]
+                           and "2" in candidate["numbers"].split(",")
+                           and (next_first is None
+                                or candidate["measure"] < next_first["measure"])),
+                          None)
+            if second is None:
+                continue
+            repeat_measure = next((index for index in range(
+                first["measure"], second["measure"])
+                if _has_backward_repeat(measures[index])), None)
+            if repeat_measure is None:
+                continue
+
+            first_endpoint = repeat_measure + 1
+            old_first_endpoint = first["measure"] + first["step"]
+            first_was_truncated = old_first_endpoint < first_endpoint
+            if old_first_endpoint != first_endpoint:
+                _set_volta_endpoint(measures, first, first_endpoint)
+                changed = True
+                repairs.append(
+                    f"Aligned first ending at staff {staff_index}, measure "
+                    f"{first['measure'] + 1} to backward repeat at measure "
+                    f"{repeat_measure + 1}"
+                )
+
+            later_record = next((candidate for candidate in records
+                                 if candidate["measure"] > second["measure"]),
+                                None)
+            forward_repeat = next((index for index in range(
+                second["measure"] + 1, len(measures))
+                if _has_forward_repeat(measures[index])), None)
+            boundaries = [len(measures)]
+            if later_record is not None:
+                boundaries.append(later_record["measure"])
+            if forward_repeat is not None:
+                boundaries.append(forward_repeat)
+            second_endpoint = min(boundaries)
+            old_second_endpoint = second["measure"] + second["step"]
+            should_shrink = old_second_endpoint > second_endpoint
+            should_extend_terminal = (
+                old_second_endpoint < second_endpoint
+                and second_endpoint == len(measures)
+                and first_was_truncated
+            )
+            if should_shrink or should_extend_terminal:
+                _set_volta_endpoint(measures, second, second_endpoint)
+                changed = True
+                repairs.append(
+                    f"Aligned second ending at staff {staff_index}, measure "
+                    f"{second['measure'] + 1} to measure {second_endpoint}"
+                )
     return changed
 
 
@@ -1243,10 +1459,16 @@ def normalize_legacy_cap_mscz(path: Path) -> dict:
         changed = _normalize_capella_navigation_glyphs(
             score, repairs
         ) or changed
+        changed = _normalize_capella_ornament_glyphs(
+            score, repairs
+        ) or changed
         changed = _normalize_invalid_voltas(
             score, repairs, diagnostics
         ) or changed
         changed = _restore_missing_terminal_second_endings(
+            score, repairs
+        ) or changed
+        changed = _normalize_numbered_volta_spans(
             score, repairs
         ) or changed
         changed = _normalize_tuplet_markers(score, repairs) or changed
@@ -1254,6 +1476,9 @@ def normalize_legacy_cap_mscz(path: Path) -> dict:
             score, repairs, diagnostics
         ) or changed
         changed = _normalize_tempo_objects(score, repairs) or changed
+        changed = _normalize_generated_harmony_staves(
+            score, repairs, diagnostics
+        ) or changed
         ledger = _measure_ledger(score)
         changed = _remove_repeated_duplicate_measure_rests(
             ledger, repairs

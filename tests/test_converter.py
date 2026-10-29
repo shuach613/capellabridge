@@ -579,6 +579,65 @@ def test_meter_changes_tuplets_grace_and_full_bar_rests_in_all_layouts():
             './measure/direction/direction-type/words')]==['No 1','No 2']
 
 
+def test_score_wide_signatures_reach_temporarily_absent_staff():
+    def staff(name, objects):
+        return ('<staff layout="'+name+'"><voices><voice><noteObjects>'
+                +objects+'</noteObjects></voice></voices></staff>')
+    source = capx((
+        '<score xmlns="http://www.capella.de/CapXML/2.0">'
+        '<layout><staves><staffLayout description="Upper"/>'
+        '<staffLayout description="Lower"/></staves></layout><systems>'
+        '<system><staves>'
+        + staff('Upper','<keySign fifths="0"/><timeSign time="2/4"/>'
+                         '<rest><duration base="1/2"/></rest>')
+        + staff('Lower','<keySign fifths="0"/><timeSign time="2/4"/>'
+                         '<rest><duration base="1/2"/></rest>')
+        + '</staves></system><system><staves>'
+        + staff('Upper','<keySign fifths="2"/><timeSign time="3/4"/>'
+                         '<rest><duration base="3/4"/></rest>')
+        + '</staves></system><system><staves>'
+        + staff('Upper','<rest><duration base="3/4"/></rest>')
+        + staff('Lower','<chord><duration base="3/4"/>'
+                        '<heads><head pitch="F5"/></heads></chord>')
+        + '</staves></system></systems></score>'
+    ).encode())
+
+    xml, report = converter.serialize_musicxml(source)
+    score = ET.fromstring(xml)
+    lower = score.findall('./part')[1]
+
+    assert report['measures'] == 3
+    assert lower.findtext('./measure[2]/attributes/time/beats') == '3'
+    assert lower.findtext('./measure[2]/attributes/time/beat-type') == '4'
+    assert lower.findtext('./measure[2]/attributes/key/fifths') == '2'
+    assert lower.findtext('./measure[2]/note/duration') == '30240'
+    assert lower.findtext('./measure[3]/note/duration') == '30240'
+    assert lower.findtext('./measure[3]/note/pitch/alter') == '1'
+    assert audit_capx_against_musicxml(source, xml)['status'] == 'strict'
+
+
+def test_second_ending_attached_to_repeat_barline_is_preserved():
+    source = capx(b'''<score xmlns="http://www.capella.de/CapXML/2.0">
+    <layout><staves><staffLayout description="Piccolo"/></staves></layout>
+    <systems><system><staves><staff layout="Piccolo"><voices><voice><noteObjects>
+    <timeSign time="2/4"/>
+    <chord><duration base="1/2"/><heads><head pitch="C5"/></heads>
+      <drawObjects><drawObj><volta firstNumber="1"/></drawObj></drawObjects></chord>
+    <barline type="repEnd"><drawObjects><drawObj>
+      <volta firstNumber="2"/></drawObj></drawObjects></barline>
+    <chord><duration base="1/2"/><heads><head pitch="D5"/></heads></chord>
+    </noteObjects></voice></voices></staff></staves></system></systems></score>''')
+
+    xml, report = converter.serialize_musicxml(source)
+    score = ET.fromstring(xml)
+
+    assert report['ending_starts'] == [
+        {'measure': 1, 'number': '1'}, {'measure': 2, 'number': '2'}]
+    assert score.find(
+        './part/measure[2]/barline[@location="left"]/ending[@number="2"]'
+    ) is not None
+
+
 def test_three_to_two_tuplets_reduce_sounding_time():
     from fractions import Fraction
     root=ET.fromstring(

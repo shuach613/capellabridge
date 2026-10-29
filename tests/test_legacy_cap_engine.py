@@ -199,10 +199,10 @@ def test_navigation_inventory_flags_a_final_first_ending_without_local_second(tm
     result = inspect_native_mscz(score)
 
     assert result["navigation"]["ending_spans"] == [
-        {"start_measure": 2, "end_measure": 3, "endings": ["1"]}
+        {"start_measure": 2, "end_measure": 2, "endings": ["1"]}
     ]
     assert result["navigation"]["unpaired_first_endings"] == [
-        {"start_measure": 2, "end_measure": 3}
+        {"start_measure": 2, "end_measure": 2}
     ]
     assert any("no matching second ending" in flag
                for flag in result["navigation"]["review_flags"])
@@ -252,6 +252,31 @@ def test_navigation_inventory_keeps_adjacent_volta_spans_separate(tmp_path):
         {"start_measure": 2, "end_measure": 4, "endings": ["1"]},
         {"start_measure": 4, "end_measure": 5, "endings": ["2"]},
     ]
+    assert result["navigation"]["review_flags"] == []
+
+
+def test_navigation_accepts_dc_al_fine_as_repeat_path_for_endings(tmp_path):
+    score = tmp_path / "dc-fine-endings.mscz"
+    write_native_score(
+        score,
+        """
+        <Staff id="1">
+          <Measure><voice><Rest><durationType>whole</durationType></Rest></voice></Measure>
+          <Measure><voice><Spanner type="Volta"><Volta><endings>1</endings></Volta>
+            <next><location><measures>1</measures></location></next></Spanner>
+            <Rest><durationType>whole</durationType></Rest></voice></Measure>
+          <Measure><Marker><label>fine</label></Marker><voice>
+            <Spanner type="Volta"><Volta><endings>2</endings></Volta>
+              <next><location><measures>1</measures></location></next></Spanner>
+            <Rest><durationType>whole</durationType></Rest></voice></Measure>
+          <Measure><Jump><jumpTo>start</jumpTo><playUntil>fine</playUntil></Jump>
+            <voice><Rest><durationType>whole</durationType></Rest></voice></Measure>
+        </Staff>
+        """,
+    )
+
+    result = inspect_native_mscz(score)
+
     assert result["navigation"]["review_flags"] == []
 
 

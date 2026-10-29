@@ -95,6 +95,11 @@ def _direct_snapshot(root):
     boundaries, _ = converter.compute_boundaries(parts, end)
     rest_overrides = converter.shifted_tied_rest_pairs(parts)
     events = []
+    global_keys = sorted(
+        (event.time, int(event.node.get("fifths", "0")))
+        for event in converter.leading_voice_events(parts)
+        if event.kind == "keySign"
+    )
 
     for part_index, part in enumerate(parts, 1):
         ordered = sorted(part.events, key=lambda item: (item.time, item.voice))
@@ -102,8 +107,13 @@ def _direct_snapshot(root):
         source_tie_links = converter.make_source_tie_links(
             ordered, rest_overrides)
         state = {"key": 0, "accidentals": {}}
+        global_key_index = 0
         current_measure = None
         for event in ordered:
+            while (global_key_index < len(global_keys)
+                   and global_keys[global_key_index][0] <= event.time):
+                state["key"] = global_keys[global_key_index][1]
+                global_key_index += 1
             if event.kind == "keySign":
                 state["key"] = int(event.node.get("fifths", "0"))
                 continue

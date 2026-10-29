@@ -1930,6 +1930,22 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             'engravings to timed musical notes and rests.'
         )
     boundaries,meter=compute_boundaries(parts,end)
+    # Time and key signatures are score-wide in Capella even when a sparse or
+    # temporarily absent staff does not repeat the object in its own voice.
+    # Keep a global timeline so every MusicXML part receives the same musical
+    # state at the same measure boundary. Without this, hidden rests in a
+    # re-entering part can be interpreted under the previous meter and become
+    # short or overfull after MuseScore imports the MusicXML.
+    score_time_changes={
+        event.time:event.node.get('time','4/4')
+        for event in leading_voice_events(parts)
+        if event.kind=='timeSign'
+    }
+    score_key_changes={
+        event.time:int(event.node.get('fifths','0'))
+        for event in leading_voice_events(parts)
+        if event.kind=='keySign'
+    }
     # A time signature's written form is semantically significant: 2/4 is
     # NOT displayed as 1/2, and 6/8 is NOT displayed as 3/4, even though
     # both pairs have equal Fraction values.
@@ -1938,6 +1954,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         for event in leading_voice_events(parts)
         if event.kind=='timeSign' and event.time==0
     ),str(meter.numerator)+'/'+str(meter.denominator))
+    opening_key=score_key_changes.get(Fraction(0),0)
     if len(boundaries)<2: raise CapellaError('Could not determine measures')
     # CapXML permits tuplets whose prime denominators (e.g. 11, 13)
     # cannot be represented by the old fixed 10080 divisions/quarter.
@@ -2161,10 +2178,12 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
             'dashed' if 'dashed' in types else None
         )
     # Most Capella ending brackets are attached graphically to the first chord
-    # of the ending measure. Their firstNumber is a semantic indicator.
+    # of the ending measure. Some legacy scores attach the second ending to the
+    # repeat barline itself, so barlines must participate in the same semantic
+    # scan or the playback route loses that ending completely.
     ending_starts={}
     for event in leading_voice_events(parts):
-        if event.kind not in ('chord','rest') or event.voice!=1:continue
+        if event.kind not in ('chord','rest','barline') or event.voice!=1:continue
         for obj in children(child(event.node,'drawObjects'),'drawObj'):
             volta=child(obj,'volta')
             if volta is not None and volta.get('firstNumber'):
@@ -2227,7 +2246,7 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
         tuplet_links=make_tuplet_links(events)
         source_tie_links=make_source_tie_links(
             events,graphical_rest_overrides)
-        state={'key':0,'time':opening_time,'clef':'treble','accidentals':{}}
+        state={'key':opening_key,'time':opening_time,'clef':'treble','accidentals':{}}
         nnotes=0
         for mi in range(measure_count):
             start,stop=boundaries[mi],boundaries[mi+1]
@@ -2247,7 +2266,16 @@ def serialize_musicxml(raw, layout='balanced', filename=None):
                 add_variation_heading(measure,variation_numbers[start],
                                       boxed=start in boxed_sections)
             if mi==0:
-                add_attributes(measure, key=0, time=opening_time,clef='treble',transpose=p.transpose,initial=True,divisions=active_divisions)
+                add_attributes(measure, key=opening_key, time=opening_time,clef='treble',transpose=p.transpose,initial=True,divisions=active_divisions)
+            else:
+                global_key=score_key_changes.get(start)
+                if global_key is not None and global_key!=state['key']:
+                    add_attributes(measure,key=global_key)
+                    state['key']=global_key
+                global_time=score_time_changes.get(start)
+                if global_time is not None and global_time!=state['time']:
+                    add_attributes(measure,time=global_time)
+                    state['time']=global_time
             # A staff which exists only in later Capella systems must not
             # appear throughout the entire score. MusicXML staff-details
             # controls its visibility independently of musical durations.

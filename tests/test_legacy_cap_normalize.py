@@ -573,3 +573,147 @@ def test_missing_terminal_second_ending_is_restored_from_repeated_pairs(tmp_path
     final = native.find('./Score/Staff/Measure[7]/voice/Spanner/Volta')
     assert final.findtext('endings') == '2'
     assert final.findtext('beginText') == '2.'
+
+
+def _volta(voice, number, step):
+    spanner = ET.Element('Spanner', type='Volta')
+    volta = ET.SubElement(spanner, 'Volta')
+    ET.SubElement(volta, 'endings').text = number
+    ET.SubElement(volta, 'beginText').text = f'{number}.'
+    next_node = ET.SubElement(spanner, 'next')
+    location = ET.SubElement(next_node, 'location')
+    ET.SubElement(location, 'measures').text = str(step)
+    voice.insert(0, spanner)
+
+
+def test_truncated_terminal_numbered_endings_follow_repeat_topology(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    staff = ET.SubElement(score, 'Staff', id='1')
+    for index in range(8):
+        measure = ET.SubElement(staff, 'Measure')
+        voice = _voice(_event('Rest', 'whole'))
+        measure.append(voice)
+        if index == 1:
+            _volta(voice, '1', 1)
+        if index == 3:
+            ET.SubElement(measure, 'endRepeat').text = '2'
+        if index == 4:
+            _volta(voice, '2', 1)
+    path = tmp_path / 'truncated-endings.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert sum('Aligned' in item for item in result['repairs']) == 2
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    spans = native.xpath('.//Spanner[Volta]/next/location/measures/text()')
+    assert spans == ['3', '4']
+
+
+def test_overlapping_first_ending_is_shrunk_to_backward_repeat(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    staff = ET.SubElement(score, 'Staff', id='1')
+    for index in range(4):
+        measure = ET.SubElement(staff, 'Measure')
+        voice = _voice(_event('Rest', 'whole'))
+        measure.append(voice)
+        if index == 0:
+            _volta(voice, '1', 2)
+            ET.SubElement(measure, 'endRepeat').text = '2'
+        if index == 1:
+            _volta(voice, '2', 1)
+        if index == 2:
+            ET.SubElement(measure, 'startRepeat')
+    path = tmp_path / 'overlapping-endings.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    normalize_legacy_cap_mscz(path)
+
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert native.xpath('.//Spanner[Volta]/next/location/measures/text()') == ['1', '1']
+
+
+def test_hidden_dense_chord_label_staff_is_silenced_without_losing_rhythm(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    part = ET.SubElement(score, 'Part')
+    staff_ref = ET.SubElement(part, 'Staff', id='1')
+    ET.SubElement(staff_ref, 'visible').text = '0'
+    ET.SubElement(part, 'trackName').text = 'Gitarre'
+    staff = ET.SubElement(score, 'Staff', id='1')
+    for index in range(8):
+        measure = ET.SubElement(staff, 'Measure')
+        voice = _voice()
+        label = ET.SubElement(voice, 'StaffText')
+        ET.SubElement(label, 'text').text = ('D / D9' if index % 2 == 0 else 'G7')
+        chord = _event('Chord', 'whole')
+        ET.SubElement(chord, 'visible').text = '0'
+        for pitch in (50, 54, 57):
+            note = ET.SubElement(chord, 'Note')
+            ET.SubElement(note, 'pitch').text = str(pitch)
+        voice.append(chord)
+        measure.append(voice)
+    path = tmp_path / 'harmony-staff.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('generated harmony' in item for item in result['repairs'])
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert native.findall('.//Staff[@id="1"]/Measure/voice/Chord') == []
+    assert len(native.findall('.//Staff[@id="1"]/Measure/voice/Rest')) == 8
+    assert len(native.findall('.//Staff[@id="1"]//StaffText')) == 8
+    assert all(rest.findtext('visible') == '0'
+               for rest in native.findall('.//Staff[@id="1"]//Rest'))
+
+
+def test_hidden_musical_staff_without_chord_labels_is_not_silenced(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    part = ET.SubElement(score, 'Part')
+    staff_ref = ET.SubElement(part, 'Staff', id='1')
+    ET.SubElement(staff_ref, 'visible').text = '0'
+    ET.SubElement(part, 'trackName').text = 'Piccolo playback'
+    staff = ET.SubElement(score, 'Staff', id='1')
+    for _ in range(8):
+        measure = ET.SubElement(staff, 'Measure')
+        chord = _event('Chord', 'whole')
+        ET.SubElement(chord, 'visible').text = '0'
+        for pitch in (72, 76, 79):
+            note = ET.SubElement(chord, 'Note')
+            ET.SubElement(note, 'pitch').text = str(pitch)
+        measure.append(_voice(chord))
+    path = tmp_path / 'hidden-musical-staff.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert not any('generated harmony' in item for item in result['repairs'])
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert len(native.findall('.//Staff[@id="1"]//Chord')) == 8
+
+
+def test_repeated_capella_mordent_text_becomes_typed_ornament(tmp_path):
+    path = tmp_path / 'mordent.mscz'
+    _write(path, '<Staff id="1"><Measure><voice>'
+           '<StaffText><family>capella3</family><text>llllllll</text></StaffText>'
+           '<Chord><durationType>quarter</durationType><Note><pitch>72</pitch></Note>'
+           '</Chord></voice></Measure></Staff>')
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('native ornament' in item for item in result['repairs'])
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert native.find('.//StaffText') is None
+    assert native.findtext('.//Chord/Articulation/subtype') == 'ornamentMordent'
