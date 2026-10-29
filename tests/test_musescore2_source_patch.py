@@ -11,7 +11,7 @@ def test_patched_legacy_decoder_is_pinned_and_built_from_source():
     assert "musescore-2.3.2-cap-spanner-safety.patch" in dockerfile
     assert "/opt/musescore2/bin/mscore" in dockerfile
     assert "DOWNLOAD_SOUNDFONT=OFF" in dockerfile
-    assert "--target mscore manpages" in dockerfile
+    assert "--target mscore mscore_alias manpages" in dockerfile
 
 
 def test_patched_decoder_imports_the_upstream_cap_fixtures_during_build():

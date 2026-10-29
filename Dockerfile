@@ -32,7 +32,7 @@ RUN cd /src/musescore2 \
       -DDOWNLOAD_SOUNDFONT=OFF -DZERBERUS=OFF -DOSC=OFF \
       -DSOUNDFONT3=OFF -DHAS_AUDIOFILE=OFF \
       -DUSE_SYSTEM_FREETYPE=ON \
- && cmake --build build.release --target mscore manpages --parallel 2 \
+ && cmake --build build.release --target mscore mscore_alias manpages --parallel 2 \
  && cmake --install build.release \
  && mkdir -p /tmp/cap-smoke \
  && for source in /src/musescore2/test/cap/*.cap; do \
