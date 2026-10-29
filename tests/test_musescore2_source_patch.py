@@ -31,6 +31,7 @@ def test_cap_patch_repairs_only_terminal_voltas_and_rejects_bad_spanners():
     assert "cr2->tick() < cr1->tick()" in patch
     assert "slur anchor is not a chord" in patch
     assert "cr1 == cr2 || cr1->tick() >= cr2->tick()" in patch
+    assert "${PROJECT_BINARY_DIR}/share/manual/plugins" in patch
 
 
 def test_legacy_wrapper_executes_the_patched_binary():

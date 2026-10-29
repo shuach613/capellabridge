@@ -193,3 +193,16 @@ index 50379c5..65eef18 100644
        effects
        vorbisfile
        libmscore
+diff --git a/share/manual/CMakeLists.txt b/share/manual/CMakeLists.txt
+index 79aff11..2f196b7 100644
+--- a/share/manual/CMakeLists.txt
++++ b/share/manual/CMakeLists.txt
+@@ -27,8 +27,3 @@
+-install (DIRECTORY
+-      ${PROJECT_BINARY_DIR}/share/manual/plugins
+-      DESTINATION ${Mscore_SHARE_NAME}${Mscore_INSTALL_NAME}manual
+-      )
+-
+ install(FILES
+       DESTINATION ${Mscore_SHARE_NAME}${Mscore_INSTALL_NAME}manual
+       )
