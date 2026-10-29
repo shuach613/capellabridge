@@ -559,7 +559,13 @@ def _hide_nonprinting_chord_layers(score, changes: dict) -> None:
                 part_staff.insert(0, staff_type)
             for tag, value in (
                     ('lines', '1'), ('genClef', '0'),
-                    ('genKeysig', '0'), ('genTimesig', '0')):
+                    ('genKeysig', '0'), ('genTimesig', '0'),
+                    # MuseScore can still draw stems and beams when both the
+                    # Chord and Note children are marked invisible.  This is
+                    # the native StaffType switch used by MuseScore 3 for a
+                    # chord-symbol guide that sounds but does not engrave its
+                    # generated voicings.
+                    ('stemless', '1'), ('slashStyle', '1')):
                 node = staff_type.find(tag)
                 if node is None:
                     node = ET.SubElement(staff_type, tag)
@@ -570,7 +576,8 @@ def _hide_nonprinting_chord_layers(score, changes: dict) -> None:
             changes['hidden_note_layers'].append(staff.get('id'))
             changes['repairs'].append(
                 f'Preserved {len(chords)} generated playback chord(s) but hid '
-                f'{hidden_notes} notehead(s) and {hidden_rests} rest(s) on '
+                f'{hidden_notes} notehead(s), their stems, and '
+                f'{hidden_rests} rest(s) on '
                 f'CAP chord-symbol staff {staff.get("id")} ({name})'
             )
 

@@ -297,18 +297,21 @@ def _normalize_capella_navigation_glyphs(score, repairs: list[str]) -> bool:
 
 
 def _normalize_capella_ornament_glyphs(score, repairs: list[str]) -> bool:
-    """Promote unambiguous repeated Capella mordent glyphs to notation.
+    """Promote unambiguous Capella ornament runs to native notation.
 
     The legacy importer can leave a Capella3 ornament line as literal text
-    such as ``llllllll``. Capella's ``l`` glyph is the upper-mordent symbol;
-    retaining the font letters both prints incorrectly and provides no
-    ornament playback. Only a repeated run immediately before a chord is
-    promoted, so ordinary text and isolated proprietary glyphs remain
-    untouched for review.
+    such as ``llllllll`` or ``tllllll``. A pure repeated ``l`` run is the
+    upper-mordent symbol used by the existing corpus. A leading ``t`` followed
+    by repeated ``l`` glyphs is a trill sign plus its wavy extension line.
+    Retaining either run as font letters prints incorrectly and provides no
+    ornament playback. Only a run immediately before a chord is promoted, so
+    ordinary text and isolated proprietary glyphs remain untouched for review.
     """
     changed = False
     for staff_index, staff in enumerate(score.findall("Staff"), 1):
+        meter = Fraction(4, 4)
         for measure_index, measure in enumerate(staff.findall("Measure"), 1):
+            meter = _meter_for_measure(measure, meter)
             for voice in measure.findall("voice"):
                 children = list(voice)
                 for index, element in enumerate(children):
@@ -316,25 +319,63 @@ def _normalize_capella_ornament_glyphs(score, repairs: list[str]) -> bool:
                         continue
                     family = (element.findtext("family") or "").strip().casefold()
                     glyph = _staff_text_value(element)
+                    mordent_run = re.fullmatch(r"l{3,}", glyph)
+                    trill_run = re.fullmatch(r"t+l{2,}", glyph)
                     if (family not in {"capella", "capella3"}
-                            or re.fullmatch(r"l{3,}", glyph) is None):
+                            or (mordent_run is None and trill_run is None)):
                         continue
                     target = next((candidate for candidate in children[index + 1:]
                                    if candidate.tag in {"Chord", "Rest"}), None)
                     if target is None or target.tag != "Chord":
                         continue
-                    if not any(
-                        articulation.findtext("subtype") == "ornamentMordent"
-                        for articulation in target.findall("Articulation")
-                    ):
-                        articulation = ET.Element("Articulation")
-                        ET.SubElement(articulation, "subtype").text = "ornamentMordent"
-                        target.append(articulation)
+                    if trill_run is not None:
+                        # Place the endpoints around the timed chord. Keeping
+                        # the native start before the Chord and the endpoint
+                        # after it makes the line duration explicit without
+                        # adding or moving a musical event.
+                        tuplet_stack = []
+                        for candidate in voice:
+                            if candidate is target:
+                                break
+                            if candidate.tag == "Tuplet":
+                                tuplet_stack.append(_tuplet_ratio(candidate))
+                            elif candidate.tag == "endTuplet" and tuplet_stack:
+                                tuplet_stack.pop()
+                        scale = Fraction(1)
+                        for ratio in tuplet_stack:
+                            scale *= ratio
+                        duration = _duration(target, meter, scale)
+                        start = ET.Element("Spanner", type="Trill")
+                        trill = ET.SubElement(start, "Trill")
+                        ET.SubElement(trill, "subtype").text = "trill"
+                        next_node = ET.SubElement(start, "next")
+                        location = ET.SubElement(next_node, "location")
+                        ET.SubElement(location, "fractions").text = str(duration)
+                        end = ET.Element("Spanner", type="Trill")
+                        previous = ET.SubElement(end, "prev")
+                        location = ET.SubElement(previous, "location")
+                        ET.SubElement(location, "fractions").text = str(-duration)
+                        target_index = voice.index(target)
+                        voice.insert(target_index, start)
+                        voice.insert(target_index + 2, end)
+                        description = "trill and extension"
+                        replacement = "native notation"
+                    else:
+                        if not any(
+                            articulation.findtext("subtype") == "ornamentMordent"
+                            for articulation in target.findall("Articulation")
+                        ):
+                            articulation = ET.Element("Articulation")
+                            ET.SubElement(articulation, "subtype").text = "ornamentMordent"
+                            target.append(articulation)
+                        description = "mordent"
+                        replacement = "native ornament"
                     voice.remove(element)
                     changed = True
                     repairs.append(
-                        "Replaced repeated Capella mordent glyphs with a native "
-                        f"ornament at staff {staff_index}, measure {measure_index}"
+                        f"Replaced Capella {description} glyphs with "
+                        f"{replacement} at staff {staff_index}, measure "
+                        f"{measure_index}"
                     )
     return changed
 
@@ -821,12 +862,23 @@ def _normalize_playback_directions(score, repairs: list[str],
                 normalized = re.sub(r"\s+\d+$", "", text.lower()).strip()
                 compact = " ".join(normalized.replace(".", ". ").split())
                 compact = compact.replace("d. s.", "d.s.").replace("d. c.", "d.c.")
+                # Legacy CAP files use all of "D.C.", "D C" and "DC"
+                # (likewise for D.S.). Recognise the command independently of
+                # punctuation while keeping unrelated prose out of playback.
+                da_capo = re.search(
+                    r"(?i)(?:\bd\s*\.?\s*c\s*\.?(?=\s|$)|\bda\s+capo\b)",
+                    normalized,
+                )
+                dal_segno = re.search(
+                    r"(?i)(?:\bd\s*\.?\s*s\s*\.?(?=\s|$)|\bdal\s+segno\b)",
+                    normalized,
+                )
                 if compact in {"fine", "coda", "segno"}:
                     navigation_requests.append((
                         measure_index, "marker", compact, "", "", "",
                     ))
-                elif "d.s." in compact or "d.c." in compact:
-                    jump_to = "segno" if "d.s." in compact else "start"
+                elif dal_segno or da_capo:
+                    jump_to = "segno" if dal_segno else "start"
                     if "coda" in compact:
                         navigation_requests.append((
                             measure_index, "jump", "", jump_to, "", "coda",

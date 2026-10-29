@@ -820,3 +820,54 @@ def test_repeated_capella_mordent_text_becomes_typed_ornament(tmp_path):
         native = ET.fromstring(archive.read('score.mscx'))
     assert native.find('.//StaffText') is None
     assert native.findtext('.//Chord/Articulation/subtype') == 'ornamentMordent'
+
+
+def test_capella_trill_extension_text_becomes_timed_native_spanner(tmp_path):
+    path = tmp_path / 'trill-line.mscz'
+    _write(path, '<Staff id="1"><Measure><voice>'
+           '<StaffText><family>capella3</family><text>tllllll</text></StaffText>'
+           '<Chord><durationType>half</durationType><Note><pitch>72</pitch></Note>'
+           '</Chord></voice></Measure></Staff>')
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('native notation' in item and 'trill' in item
+               for item in result['repairs'])
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    voice = native.find('.//voice')
+    assert voice.find('StaffText') is None
+    assert [item.tag for item in voice[:3]] == ['Spanner', 'Chord', 'Spanner']
+    start, _chord, end = list(voice)[:3]
+    assert start.get('type') == 'Trill'
+    assert start.findtext('Trill/subtype') == 'trill'
+    assert start.findtext('next/location/fractions') == '1/2'
+    assert end.get('type') == 'Trill'
+    assert end.findtext('prev/location/fractions') == '-1/2'
+
+
+def test_unpunctuated_dc_al_fine_becomes_native_jump(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    staff = ET.SubElement(score, 'Staff', id='1')
+    first = ET.SubElement(staff, 'Measure')
+    first.append(_voice(_event('Rest', 'whole')))
+    fine = ET.SubElement(first, 'StaffText')
+    ET.SubElement(fine, 'text').text = 'Fine'
+    second = ET.SubElement(staff, 'Measure')
+    second.append(_voice(_event('Rest', 'whole')))
+    direction = ET.SubElement(second, 'StaffText')
+    ET.SubElement(direction, 'text').text = 'DC al Fine'
+    path = tmp_path / 'dc-al-fine.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert any('playback jump "start|fine"' in item
+               for item in result['repairs'])
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    jump = native.find('./Score/Staff/Measure[2]/Jump')
+    assert jump.findtext('jumpTo') == 'start'
+    assert jump.findtext('playUntil') == 'fine'

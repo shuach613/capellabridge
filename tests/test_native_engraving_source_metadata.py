@@ -233,6 +233,8 @@ def test_generated_guitar_chord_layer_is_hidden_but_kept_for_playback(tmp_path):
     assert part_staff.findtext('StaffType/genClef')=='0'
     assert part_staff.findtext('StaffType/genKeysig')=='0'
     assert part_staff.findtext('StaffType/genTimesig')=='0'
+    assert part_staff.findtext('StaffType/stemless')=='1'
+    assert part_staff.findtext('StaffType/slashStyle')=='1'
     audit=inspect_native_mscz(path)
     assert audit['counts']['hidden_pitched_events']==0
     assert audit['counts']['intentional_hidden_playback_events']==8
