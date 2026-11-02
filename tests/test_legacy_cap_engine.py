@@ -280,6 +280,53 @@ def test_navigation_accepts_dc_al_fine_as_repeat_path_for_endings(tmp_path):
     assert result["navigation"]["review_flags"] == []
 
 
+def test_navigation_flags_volta_crossing_section_closing_barline(tmp_path):
+    score = tmp_path / "crossed-section-ending.mscz"
+    write_native_score(
+        score,
+        """
+        <Staff id="1">
+          <Measure><voice><Rest><durationType>whole</durationType></Rest></voice></Measure>
+          <Measure><voice><Spanner type="Volta"><Volta><endings>2</endings></Volta>
+            <next><location><measures>4</measures></location></next></Spanner>
+            <Rest><durationType>whole</durationType></Rest></voice></Measure>
+          <Measure><voice><BarLine><subtype>end</subtype></BarLine>
+            <Rest><durationType>whole</durationType></Rest></voice></Measure>
+          <Measure><voice><Rest><durationType>whole</durationType></Rest></voice></Measure>
+          <Measure><voice><Rest><durationType>whole</durationType></Rest></voice></Measure>
+        </Staff>
+        """,
+    )
+
+    result = inspect_native_mscz(score)
+
+    assert any("crosses section-closing barline" in issue
+               for issue in result["navigation"]["issues"])
+
+
+def test_inventory_flags_visible_tuplets_on_hidden_playback_layer(tmp_path):
+    score = tmp_path / "visible-helper-tuplet.mscz"
+    write_native_score(
+        score,
+        """
+        <Part><trackName>Gitarre Akkorde</trackName><Staff id="1"/></Part>
+        <Staff id="1"><Measure><voice>
+          <Tuplet><actualNotes>3</actualNotes><normalNotes>2</normalNotes></Tuplet>
+          <Chord><Note><pitch>60</pitch><visible>0</visible></Note></Chord>
+          <endTuplet/>
+        </voice></Measure></Staff>
+        """,
+    )
+
+    result = inspect_native_mscz(score)
+
+    assert result["counts"][
+        "visible_tuplets_on_hidden_playback_layers"
+    ] == 1
+    assert any("visible tuplet marking" in warning
+               for warning in result["warnings"])
+
+
 def test_cap_processes_native_first_and_exports_secondarily(monkeypatch, tmp_path):
     from app import main
 

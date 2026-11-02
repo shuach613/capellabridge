@@ -69,7 +69,9 @@ resulting native score as the authoritative editable score:
    rest-only importer staves are physically removed after safe structure
    transfer, and text autoplace is restored. Structural transfer compares
    musical XML content without indentation and removes exact duplicate
-   clef/key/meter objects.
+   clef/key/meter objects. Dense generated chord-guide layers retain their
+   timed playback notes and tuplets, while noteheads, stems, rests and tuplet
+   brackets are hidden from print.
 5. Unambiguous textual navigation such as "D.S. al Fine", "D.C. al Fine",
    "alla Coda", "Fine", "Coda" and "Segno" is promoted to native MuseScore
    Marker/Jump objects. Numeric tempo text is promoted only when a BPM is
@@ -81,7 +83,9 @@ resulting native score as the authoritative editable score:
    PDF. Native tuplet starts, stops, open scopes and orphan closes are recorded
    explicitly, while repeat/ending connectors are checked on the primary staff
    and unusual playback paths are reported as review flags rather than being
-   rewritten automatically.
+   rewritten automatically. A numbered ending that crosses an internal final
+   barline is rejected by the audit, and second-ending repair uses only proven
+   repeat, ending or section-closing boundaries.
 
 The CAP report now separates `native-valid` from `verified`: native-valid
 means that the MSCZ is readable and its native timing/structure passed. CAP is
@@ -114,10 +118,11 @@ reference PDFs are visual output, not training labels for note-level recovery.
 
 ### 1. Use a pinned legacy decoder and current native writer
 
-Use the official MuseScore 2.3.2 AppImage, verified by SHA-256 during the image
-build, as the binary decoder. It retains legacy CAP chord articulations that
-MuseScore 3 currently drops. Use MuseScore 3 only to upgrade the decoded native
-score, validate it, and produce current MSCZ, MusicXML and PDF outputs.
+Build the binary decoder from pinned MuseScore 2.3.2 source, verified by
+SHA-256 during the image build and patched only for importer safety and modern
+build compatibility. It retains legacy CAP chord articulations that MuseScore
+3 currently drops. Use MuseScore 3 only to upgrade the decoded native score,
+validate it, and produce current MSCZ, MusicXML and PDF outputs.
 
 For CAP input, import directly to a native MSCZ first. Do not make the
 production score by importing CAP to MusicXML and then importing that XML back

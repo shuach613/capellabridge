@@ -649,14 +649,32 @@ def _has_backward_repeat(measure) -> bool:
     if measure.find("endRepeat") is not None:
         return True
     return any(barline.findtext("subtype") == "end-repeat"
-               for barline in measure.findall("BarLine"))
+               for barline in measure.findall(".//BarLine"))
 
 
 def _has_forward_repeat(measure) -> bool:
     if measure.find("startRepeat") is not None:
         return True
     return any(barline.findtext("subtype") == "start-repeat"
-               for barline in measure.findall("BarLine"))
+               for barline in measure.findall(".//BarLine"))
+
+
+def _proven_second_ending_boundary(measures, start: int) -> int | None:
+    """Return an exclusive endpoint proven by a closing score object.
+
+    A legacy import can truncate both numbered endings to one measure.  A
+    backward repeat, a final/end barline, or the start of a new repeated
+    section is reliable evidence for where the second ending closes.  The
+    mere absence of another Volta is not evidence that it runs to score end.
+    """
+    for index in range(start, len(measures)):
+        measure = measures[index]
+        if _has_backward_repeat(measure):
+            return index + 1
+        if any(barline.findtext("subtype") == "end"
+               for barline in measure.findall(".//BarLine")):
+            return index + 1
+    return None
 
 
 def _normalize_numbered_volta_spans(score, repairs: list[str]) -> bool:
@@ -665,9 +683,10 @@ def _normalize_numbered_volta_spans(score, repairs: list[str]) -> bool:
     MuseScore's CAP importer sometimes preserves the ending numbers but emits
     a one-measure ``next`` distance, or lets a first ending overlap the second.
     The backward repeat is the authoritative end of a first ending. A paired
-    second ending is bounded by the next forward repeat, the next ending, or
-    the score end. Extension to the score end is allowed only when the paired
-    first ending was demonstrably truncated, preventing speculative rewrites.
+    second ending is bounded only by a proven closing barline, the next
+    forward repeat, or the next ending. The score end by itself is not a
+    boundary: extending to it without a native closing object can swallow
+    later sections and alter repeat playback.
     """
     changed = False
     for staff_index, staff in enumerate(score.findall("Staff"), 1):
@@ -711,20 +730,27 @@ def _normalize_numbered_volta_spans(score, repairs: list[str]) -> bool:
             forward_repeat = next((index for index in range(
                 second["measure"] + 1, len(measures))
                 if _has_forward_repeat(measures[index])), None)
-            boundaries = [len(measures)]
+            closing_boundary = _proven_second_ending_boundary(
+                measures, second["measure"]
+            )
+            boundaries = []
             if later_record is not None:
                 boundaries.append(later_record["measure"])
             if forward_repeat is not None:
                 boundaries.append(forward_repeat)
+            if closing_boundary is not None:
+                boundaries.append(closing_boundary)
+            if not boundaries:
+                # Preserve the importer endpoint when no independent score
+                # object proves a safer replacement.
+                continue
             second_endpoint = min(boundaries)
             old_second_endpoint = second["measure"] + second["step"]
             should_shrink = old_second_endpoint > second_endpoint
-            should_extend_terminal = (
-                old_second_endpoint < second_endpoint
-                and second_endpoint == len(measures)
-                and first_was_truncated
+            should_extend_to_proven_boundary = (
+                old_second_endpoint < second_endpoint and first_was_truncated
             )
-            if should_shrink or should_extend_terminal:
+            if should_shrink or should_extend_to_proven_boundary:
                 _set_volta_endpoint(measures, second, second_endpoint)
                 changed = True
                 repairs.append(

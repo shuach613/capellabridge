@@ -691,7 +691,7 @@ def _volta(voice, number, step):
     voice.insert(0, spanner)
 
 
-def test_truncated_terminal_numbered_endings_follow_repeat_topology(tmp_path):
+def test_numbered_ending_is_not_extended_without_a_proven_boundary(tmp_path):
     root = ET.Element('museScore')
     score = ET.SubElement(root, 'Score')
     staff = ET.SubElement(score, 'Staff', id='1')
@@ -711,11 +711,44 @@ def test_truncated_terminal_numbered_endings_follow_repeat_topology(tmp_path):
 
     result = normalize_legacy_cap_mscz(path)
 
-    assert sum('Aligned' in item for item in result['repairs']) == 2
+    assert sum('Aligned' in item for item in result['repairs']) == 1
     with zipfile.ZipFile(path) as archive:
         native = ET.fromstring(archive.read('score.mscx'))
     spans = native.xpath('.//Spanner[Volta]/next/location/measures/text()')
-    assert spans == ['3', '4']
+    assert spans == ['3', '1']
+
+
+def test_second_ending_stops_at_proven_section_closing_barline(tmp_path):
+    root = ET.Element('museScore')
+    score = ET.SubElement(root, 'Score')
+    staff = ET.SubElement(score, 'Staff', id='1')
+    for index in range(10):
+        measure = ET.SubElement(staff, 'Measure')
+        voice = _voice(_event('Rest', 'whole'))
+        measure.append(voice)
+        if index == 1:
+            _volta(voice, '1', 1)
+        if index == 3:
+            ET.SubElement(measure, 'endRepeat').text = '2'
+        if index == 4:
+            _volta(voice, '2', 1)
+        if index == 6:
+            # MuseScore's CAP importer commonly nests this visual barline in
+            # the voice rather than as a direct Measure child.
+            barline = ET.SubElement(voice, 'BarLine')
+            ET.SubElement(barline, 'subtype').text = 'end'
+    path = tmp_path / 'section-ending.mscz'
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('score.mscx', ET.tostring(root))
+
+    result = normalize_legacy_cap_mscz(path)
+
+    assert sum('Aligned' in item for item in result['repairs']) == 2
+    with zipfile.ZipFile(path) as archive:
+        native = ET.fromstring(archive.read('score.mscx'))
+    assert native.xpath(
+        './/Spanner[Volta]/next/location/measures/text()'
+    ) == ['3', '3']
 
 
 def test_overlapping_first_ending_is_shrunk_to_backward_repeat(tmp_path):

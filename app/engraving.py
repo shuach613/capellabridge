@@ -539,6 +539,19 @@ def _hide_nonprinting_chord_layers(score, changes: dict) -> None:
             if rest_visible.text != '0':
                 rest_visible.text = '0'
                 hidden_rests += 1
+        # Tuplet brackets are independent engraving objects.  Hiding their
+        # timed Chord/Note children keeps the notes sounding but does not stop
+        # MuseScore from printing the ratio and bracket.  Keep the Tuplet in
+        # the score so its timing still applies, and suppress only its visual
+        # representation on this proven nonprinting playback layer.
+        hidden_tuplets = 0
+        for tuplet in staff.findall('.//Tuplet'):
+            tuplet_visible = tuplet.find('visible')
+            if tuplet_visible is None:
+                tuplet_visible = ET.SubElement(tuplet, 'visible')
+            if tuplet_visible.text != '0':
+                tuplet_visible.text = '0'
+                hidden_tuplets += 1
 
         # The source still displays a chord-symbol guide line, so the staff
         # itself must remain present. A previous repair hid the Staff node,
@@ -572,12 +585,14 @@ def _hide_nonprinting_chord_layers(score, changes: dict) -> None:
                 if node.text != value:
                     node.text = value
                     staff_shape_changed = True
-        if hidden or hidden_notes or hidden_rests or staff_shape_changed:
+        if (hidden or hidden_notes or hidden_rests or hidden_tuplets
+                or staff_shape_changed):
             changes['hidden_note_layers'].append(staff.get('id'))
             changes['repairs'].append(
                 f'Preserved {len(chords)} generated playback chord(s) but hid '
                 f'{hidden_notes} notehead(s), their stems, and '
-                f'{hidden_rests} rest(s) on '
+                f'{hidden_rests} rest(s) plus {hidden_tuplets} tuplet '
+                f'marking(s) on '
                 f'CAP chord-symbol staff {staff.get("id")} ({name})'
             )
 

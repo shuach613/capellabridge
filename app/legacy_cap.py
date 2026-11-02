@@ -152,27 +152,41 @@ def _has_hidden_pitch(note) -> bool:
     return visible == "0" or note.get("visible") == "0"
 
 
+def _is_hidden(element) -> bool:
+    visible = element.findtext("visible")
+    return visible == "0" or element.get("visible") == "0"
+
+
 _PLAYBACK_HELPER_NAME = re.compile(
     r"\b(?:gitarre|guitar|akkord|chord)\b",
     re.IGNORECASE,
 )
 
 
-def _intentional_hidden_playback_notes(score) -> set:
-    """Return hidden notes on a wholly non-printing accompaniment layer."""
+def _intentional_hidden_playback_staves(score) -> list:
+    """Return proven helper staves whose pitched events are all hidden."""
     names = {}
     for part in score.findall("Part"):
         name = " ".join((part.findtext("trackName") or "").split())
         for staff in part.findall("Staff"):
             names[staff.get("id")] = name
-    intentional = set()
+    intentional = []
     for staff in score.findall("Staff"):
         if not _PLAYBACK_HELPER_NAME.search(names.get(staff.get("id"), "")):
             continue
         notes = staff.findall(".//Note")
         if notes and all(_has_hidden_pitch(note) for note in notes):
-            intentional.update(notes)
+            intentional.append(staff)
     return intentional
+
+
+def _intentional_hidden_playback_notes(score) -> set:
+    """Return hidden notes on a wholly non-printing accompaniment layer."""
+    return {
+        note
+        for staff in _intentional_hidden_playback_staves(score)
+        for note in staff.findall(".//Note")
+    }
 
 
 def _navigation_diagnostics(score) -> tuple[list[str], list[str]]:
@@ -196,7 +210,7 @@ def _navigation_diagnostics(score) -> tuple[list[str], list[str]]:
     for measure_index, measure in enumerate(measures, 1):
         if measure.find("endRepeat") is not None:
             backward_repeats.add(measure_index)
-        for barline in measure.findall("BarLine"):
+        for barline in measure.findall(".//BarLine"):
             if barline.findtext("subtype") == "end-repeat":
                 backward_repeats.add(measure_index)
         for marker in measure.iter("Marker"):
@@ -228,12 +242,28 @@ def _navigation_diagnostics(score) -> tuple[list[str], list[str]]:
     issues = []
     review_flags = []
     ending_spans = _ending_spans(measures, issues)
+    section_closures = {
+        measure_index
+        for measure_index, measure in enumerate(measures, 1)
+        if any(barline.findtext("subtype") == "end"
+               for barline in measure.findall(".//BarLine"))
+    }
     ending_numbers = {
         number
         for _start, _end, numbers in ending_spans
         for number in numbers
     }
     for start_measure, end_measure, endings in ending_spans:
+        crossed_closures = sorted(
+            position for position in section_closures
+            if start_measure <= position < end_measure
+        )
+        if crossed_closures:
+            issues.append(
+                f"Volta at measures {start_measure}-{end_measure} crosses "
+                "section-closing barline(s) at measure(s) "
+                + ", ".join(map(str, crossed_closures))
+            )
         if "1" in endings:
             # An imported first ending may end with its connector in one
             # measure and place the repeat barline in the next. The previous
@@ -432,8 +462,17 @@ def inspect_native_mscz(path: Path) -> dict:
     notes = [note for chord in chords for note in chord.iter()
              if _local_name(note) == "Note"]
     hidden_notes = {note for note in notes if _has_hidden_pitch(note)}
-    intentional_hidden = _intentional_hidden_playback_notes(score)
+    intentional_hidden_staves = _intentional_hidden_playback_staves(score)
+    intentional_hidden = {
+        note for staff in intentional_hidden_staves
+        for note in staff.findall(".//Note")
+    }
     hidden_pitched = len(hidden_notes - intentional_hidden)
+    visible_tuplets_on_hidden_layers = sum(
+        not _is_hidden(tuplet)
+        for staff in intentional_hidden_staves
+        for tuplet in staff.findall(".//Tuplet")
+    )
     tuplet_scopes = _tuplet_scope_inventory(score)
     measures_per_staff = [len(staff.findall("Measure")) for staff in staves]
     rest_only_staves = [index for index, staff in enumerate(staves, 1)
@@ -457,6 +496,8 @@ def inspect_native_mscz(path: Path) -> dict:
         "rests": len(rests),
         "hidden_pitched_events": hidden_pitched,
         "intentional_hidden_playback_events": len(intentional_hidden),
+        "visible_tuplets_on_hidden_playback_layers":
+            visible_tuplets_on_hidden_layers,
         "tuplets": _count(root, ("Tuplet",)),
         "tuplet_starts": tuplet_scopes["starts"],
         "tuplet_stops": tuplet_scopes["stops"],
@@ -507,6 +548,12 @@ def inspect_native_mscz(path: Path) -> dict:
         warnings.append(
             f"Native score contains {hidden_pitched} hidden pitched event(s); "
             "verify playback and voice routing."
+        )
+    if visible_tuplets_on_hidden_layers:
+        warnings.append(
+            "Native score contains "
+            f"{visible_tuplets_on_hidden_layers} visible tuplet marking(s) "
+            "on an intentional hidden playback layer."
         )
     if tuplet_scopes["open_scopes"]:
         warnings.append(

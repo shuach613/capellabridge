@@ -210,11 +210,15 @@ def test_generated_guitar_chord_layer_is_hidden_but_kept_for_playback(tmp_path):
         voice=ET.SubElement(measure,'voice')
         text=ET.SubElement(voice,'StaffText')
         ET.SubElement(text,'text').text=label
+        tuplet=ET.SubElement(voice,'Tuplet')
+        ET.SubElement(tuplet,'actualNotes').text='3'
+        ET.SubElement(tuplet,'normalNotes').text='2'
         chord=ET.SubElement(voice,'Chord')
         ET.SubElement(chord,'durationType').text='whole'
         for pitch in ('50','54','57','62'):
             note=ET.SubElement(chord,'Note')
             ET.SubElement(note,'pitch').text=pitch
+        ET.SubElement(voice,'endTuplet')
     with zipfile.ZipFile(path,'w') as archive:
         archive.writestr('score.mscx',ET.tostring(root))
 
@@ -226,6 +230,7 @@ def test_generated_guitar_chord_layer_is_hidden_but_kept_for_playback(tmp_path):
     assert native.xpath('.//Chord/visible/text()')==['0','0']
     assert len(native.findall('.//Chord/Note'))==8
     assert native.xpath('.//Chord/Note/visible/text()')==['0']*8
+    assert native.xpath('.//Tuplet/visible/text()')==['0','0']
     assert native.findtext('./Score/Staff[@id="1"]/visible')!='0'
     part_staff=native.find('./Score/Part/Staff[@id="1"]')
     assert part_staff.findtext('visible')!='0'
@@ -238,6 +243,7 @@ def test_generated_guitar_chord_layer_is_hidden_but_kept_for_playback(tmp_path):
     audit=inspect_native_mscz(path)
     assert audit['counts']['hidden_pitched_events']==0
     assert audit['counts']['intentional_hidden_playback_events']==8
+    assert audit['counts']['visible_tuplets_on_hidden_playback_layers']==0
     assert not any('hidden pitched event' in warning
                    for warning in audit['warnings'])
 
