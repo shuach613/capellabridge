@@ -50,6 +50,23 @@ def native(score_note="<pitch>84</pitch>"):
     </Score></museScore>"""
 
 
+def test_negative_musicxml_cursor_reports_the_physical_part(tmp_path):
+    source=tmp_path/'negative.musicxml'
+    source.write_text("""<?xml version="1.0"?>
+    <score-partwise version="4.0">
+      <part-list><score-part id="P1"><part-name>Piccolo</part-name></score-part></part-list>
+      <part id="P1"><measure number="1">
+        <attributes><divisions>1</divisions></attributes>
+        <backup><duration>1</duration></backup>
+      </measure></part>
+    </score-partwise>""",encoding='utf-8')
+
+    with pytest.raises(
+            SemanticIntegrityError,
+            match='Negative MusicXML cursor in part 1, measure 1'):
+        audit_musicxml_against_mscz(source,tmp_path/'unused.mscz')
+
+
 def test_native_aliases_and_transposition_compare_as_music(tmp_path):
     source = tmp_path / "source.musicxml"
     source.write_text(SOURCE, encoding="utf-8")

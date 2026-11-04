@@ -43,11 +43,14 @@ RUN cd /src/musescore2 \
     done
 
 FROM python:3.12-slim-bookworm
+ARG CAPELLABRIDGE_BUILD_SHA=unknown
+ARG MUSESCORE3_VERSION=3.2.3+dfsg2-16
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MUSESCORE_BIN=/usr/bin/musescore3 \
     MUSESCORE_LEGACY_CAP_BIN=/usr/local/bin/musescore2-cap CAPELLABRIDGE_DATA=/data \
+    CAPELLABRIDGE_BUILD_SHA=$CAPELLABRIDGE_BUILD_SHA \
     QT_QPA_PLATFORM=offscreen MU_QT_QPA_PLATFORM=offscreen
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    musescore3 poppler-utils fonts-dejavu-core fonts-liberation ca-certificates \
+    musescore3=$MUSESCORE3_VERSION poppler-utils fonts-dejavu-core fonts-liberation ca-certificates \
     libxcomposite1 libxcursor1 libxdamage1 libxi6 libxrandr2 libxtst6 \
     libcap2 liborc-0.4-0 libxslt1.1 xvfb xauth \
     && rm -rf /var/lib/apt/lists/*
@@ -58,7 +61,8 @@ RUN chmod 0755 /usr/local/bin/musescore2-cap \
  && /usr/local/bin/musescore2-cap --version >/dev/null
 WORKDIR /opt/capellabridge
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade pip==26.3 \
+ && python -m pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 RUN groupadd -g 10001 scoreapp && useradd -u 10001 -g scoreapp -d /tmp -s /usr/sbin/nologin scoreapp \
  && mkdir -p /data/jobs /tmp/capellabridge-runtime \

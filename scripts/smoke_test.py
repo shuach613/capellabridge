@@ -181,7 +181,7 @@ def main():
             assert len(root.findall('./Score/Staff'))==4
             print('DEBUG_NATIVE_INITIAL_STAVES',
                   [ET.tostring(x,encoding='unicode')[:250] for x in root.findall('./Score/Staff')[:4]],flush=True)
-        import fitz
+        import pymupdf as fitz
         rendered=get(result['results'][0]['downloads']['pdf'])
         with fitz.open(stream=rendered,filetype='pdf') as doc:
             page=doc[0]
@@ -769,7 +769,7 @@ def main():
     visual_pdf=get(result['downloads']['pdf'])
     assert visual_pdf.startswith(b'%PDF-')
     (visual_out/'Waggis-hidden-shifted-rest.pdf').write_bytes(visual_pdf)
-    import fitz
+    import pymupdf as fitz
     with fitz.open(stream=visual_pdf,filetype='pdf') as pdf_doc:
         glyphs=''.join(c['c'] for block in pdf_doc[0].get_text('rawdict')['blocks']
                        if 'lines' in block for line in block['lines']

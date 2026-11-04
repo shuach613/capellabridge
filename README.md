@@ -129,7 +129,6 @@ The following independently provided Capella scores were used to identify genera
 | **Alte Kameraden 94** | 5 | CapXML 3.0, dynamically marked four-part score with p/f/mf glyphs, solo entries, ties and repeat endings |
 | **Alte Kameraden Tutti (Bajass)** | 5 | Older binary .cap file; imported directly into a native MuseScore score, with native inventory and manual-review diagnostics |
 | **Uncle Sam** | 4 | Parenthesized arranger credit, medley tune labels and performance words, RTF D.S. al Segno / Coda navigation |
-| **Waggis** | 3 | Copyright, variable active staff count, nine numbered sections, tuplets, slurs and first/second endings |
 | **Sperber** | 3 | Four-part score and dated dedication, composer metadata separate from full printed author line |
 | **Ryslaifer / Saggodo / Retraite** | 4 / 4 / 1 | Older binary .cap scores; direct native import with individual visual and playback checking |
 
@@ -142,11 +141,11 @@ The converter preserves part identities when staves appear, disappear, or are re
 Requires Python 3.12 for source development. Install the Python dependencies and run unit tests with:
 
 ```bash
-python -m pip install -r requirements.txt pytest httpx
+python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-The CI pipeline runs a growing synthetic notation regression suite, builds the Linux Docker image, converts synthetic CAPX scores through MuseScore 3, checks output file integrity, and verifies that MuseScore Studio 4 can reopen and re-export a generated MSCZ. Original user-owned reference scores and PDFs are not committed to the repository; a successful CI run is not a guarantee of pixel-identical source-PDF layout. Main-branch builds publish the prebuilt image to GitHub Container Registry.
+The CI pipeline runs a growing synthetic notation regression suite, builds the Linux Docker image, converts synthetic CAPX scores through the pinned MuseScore 3 package, checks output file integrity, and verifies that MuseScore Studio 4 can reopen and re-export a generated MSCZ. Original user-owned reference scores and PDFs are not committed to the repository; a successful CI run is not a guarantee of pixel-identical source-PDF layout. Main-branch builds publish the prebuilt image to GitHub Container Registry. The `/health` and `/api/info` responses expose `build_sha`, which can be compared with the Git commit used by GitHub Actions to verify exactly which image is running.
 
 The browser UI lives in `app/static/`. Screenshots are captured from the **real responsive interface** using `scripts/capture_ui.py` (Playwright), rather than generated marketing mockups.
 

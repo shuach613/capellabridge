@@ -25,7 +25,8 @@ function display(r){
   if(r.downloads.preview){const img=node('img');img.className='thumbnail';img.loading='lazy';img.src=r.downloads.preview;img.alt='First page score preview';body.append(img);}else{body.classList.add('no-preview');}
   const side=node('div');
   const links=node('div',undefined,'links');
-  links.append(link('MuseScore',r.downloads.mscz),link('MusicXML',r.downloads.musicxml,true));
+  links.append(link('MuseScore',r.downloads.mscz));
+  if(r.downloads.musicxml)links.append(link('MusicXML',r.downloads.musicxml,true));
   if(r.downloads.pdf)links.append(link('PDF',r.downloads.pdf,true));
   links.append(link('Report',r.downloads.report,true));
   side.append(links);

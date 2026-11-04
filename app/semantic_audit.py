@@ -199,7 +199,7 @@ def _source_snapshot(root) -> SemanticSnapshot:
     volta_spans: set[tuple[int, int, str]] = set()
     ignored_grace_rests = 0
     staff_offset = 0
-    for source_part_index, part in enumerate(root.findall("part"), 1):
+    for part in root.findall("part"):
         # MusicXML can represent a four-staff ensemble either as four parts
         # or as one part with four <staff> lanes. MuseScore's native score
         # always uses physical Staff objects. Use the same physical-staff
@@ -236,7 +236,7 @@ def _source_snapshot(root) -> SemanticSnapshot:
                     cursor += duration if name == "forward" else -duration
                     if cursor < 0:
                         raise SemanticIntegrityError(
-                            f"Negative MusicXML cursor in part {part_index}, "
+                            f"Negative MusicXML cursor in part {default_part_index}, "
                             f"measure {measure_index}")
                     continue
                 if name == "barline":

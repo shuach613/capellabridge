@@ -1,8 +1,9 @@
-"""CapellaBridge 1.0: private self-hosted CAP/CAPX to MuseScore web service."""
+"""Private self-hosted CAP/CAPX to MuseScore web service."""
 from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import json
+import logging
 import os
 import re
 import shutil
@@ -37,13 +38,17 @@ from .semantic_audit import (
 )
 from .source_audit import audit_capx_against_musicxml
 
-VERSION='1.7.9-dev'
+VERSION='1.7.9'
+BUILD_SHA=os.environ.get('CAPELLABRIDGE_BUILD_SHA','unknown')
 BASE=Path(os.environ.get('CAPELLABRIDGE_DATA','/data')).resolve()
 JOBS=BASE/'jobs'
 STATIC=Path(__file__).parent/'static'
 TTL=int(os.environ.get('CAPELLABRIDGE_TTL_HOURS','24'))*3600
 MAX_FILE=int(os.environ.get('CAPELLABRIDGE_MAX_UPLOAD_MB','15'))*1024*1024
 MAX_BATCH=max(1,min(30,int(os.environ.get('CAPELLABRIDGE_MAX_BATCH','30'))))
+logger=logging.getLogger(__name__)
+
+
 async def expire_loop():
     while True:
         await asyncio.to_thread(cleanup)
@@ -103,6 +108,7 @@ def health():
     return {
         'status':'ok',
         'version':VERSION,
+        'build_sha':BUILD_SHA,
         'engine_available':bool(shutil.which(
             os.environ.get('MUSESCORE_BIN','musescore3'))),
         'legacy_cap_engine_available':bool(
@@ -127,7 +133,8 @@ def static(filename:str):
 @app.get('/api/info')
 def info():
     legacy=os.environ.get('MUSESCORE_LEGACY_CAP_BIN','')
-    return {'version':VERSION,'max_upload_mb':MAX_FILE//1024//1024,'max_batch':MAX_BATCH,
+    return {'version':VERSION,'build_sha':BUILD_SHA,
+            'max_upload_mb':MAX_FILE//1024//1024,'max_batch':MAX_BATCH,
             'supported':{'capx':'Native CapXML 1.0–4.0 engine',
                          'cap':'Pinned MuseScore 2 legacy decoder with MuseScore 3 output'},
             'output':['mscz','musicxml','pdf','preview.png'],
@@ -346,7 +353,7 @@ def audit_exported_cap_musicxml(xml_path: Path, mscz: Path,
     MusicXML export drops a sounding chord, changes a pitch, tie, slur,
     ornament, tempo, or navigation object from the native score, the editable
     MSCZ is retained but the result is explicitly manual-review instead of
-    being called native-valid. Rest segmentation differences are recorded as
+    source-unverified. Rest segmentation differences are recorded as
     representation normalization.
     """
     try:
@@ -514,7 +521,8 @@ def process_score(name,ext,raw,work,layout):
         warning for warning in sorted(set(warnings))
         if warning.startswith('Manual-review export:')
     ]
-    info={**report,'source_filename':name,'warnings':sorted(set(warnings)),
+    info={**report,'source_filename':name,'build_sha':BUILD_SHA,
+          'warnings':sorted(set(warnings)),
           'files':files}
     (work/(prefix+'-report.json')).write_text(json.dumps(info,ensure_ascii=False,indent=2),encoding='utf-8')
     info['files']['report']=prefix+'-report.json'
@@ -544,6 +552,7 @@ def retain_partial_mscz(work: Path, name: str, error: Exception) -> dict | None:
     report={
         'source_filename':name,'title':Path(name).stem,'parts':[],
         'measures':None,'layout':'unknown','verification':'manual-review',
+        'build_sha':BUILD_SHA,
         'verification_diagnostics':[str(error)[:500]],'warnings':[diagnostic],
         'files':files,
     }
@@ -551,6 +560,9 @@ def retain_partial_mscz(work: Path, name: str, error: Exception) -> dict | None:
     report_path.write_text(json.dumps(report,ensure_ascii=False,indent=2),
                            encoding='utf-8')
     report['files']['report']=report_path.name
+    # process_score removes this copy on success. A late-stage partial result
+    # must provide the same privacy guarantee.
+    (work/safe_filename(name)).unlink(missing_ok=True)
     return report
 
 
@@ -593,6 +605,7 @@ async def run_batch(job_id, incoming, layout):
                                         'stage':'conversion',
                                         'error':str(exc)[:500]})
                 except Exception as exc:
+                    logger.exception('Unexpected conversion failure for %s',name)
                     partial=retain_partial_mscz(out,name,exc)
                     if partial:
                         partial['downloads']={
@@ -621,7 +634,15 @@ async def run_batch(job_id, incoming, layout):
                         if not result['ok']:
                             continue
                         out=folder/f'{index+1:02d}'
-                        for file in out.iterdir():
+                        # Archive only declared deliverables. This prevents a
+                        # copied source upload or temporary file from leaking
+                        # into a partial-result batch ZIP.
+                        for filename in dict.fromkeys(result['files'].values()):
+                            file=out/filename
+                            if not file.is_file():
+                                logger.warning(
+                                    'Declared batch output is missing: %s',file)
+                                continue
                             archive.write(
                                 file,
                                 arcname=(
@@ -638,6 +659,7 @@ async def run_batch(job_id, incoming, layout):
                 'completed':total, 'results':results, 'batch_url':batch_url,
             })
     except Exception as exc:
+        logger.exception('Batch job %s failed unexpectedly',job_id)
         for _,_,input_path in incoming:
             input_path.unlink(missing_ok=True)
         shutil.rmtree(folder/'input',ignore_errors=True)

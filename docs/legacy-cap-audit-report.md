@@ -87,10 +87,10 @@ resulting native score as the authoritative editable score:
    barline is rejected by the audit, and second-ending repair uses only proven
    repeat, ending or section-closing boundaries.
 
-The CAP report now separates `native-valid` from `verified`: native-valid
-means that the MSCZ is readable and its native timing/structure passed. CAP is
-still marked source-unverified because the binary importer has no lossless
-source event ledger. Unclosed or otherwise structurally ambiguous tuplets
+The CAP report uses `source-unverified` when the MSCZ is readable and its
+native timing/structure passed, because the binary importer has no lossless
+source event ledger. It uses `manual-review` when a structural or export audit
+cannot certify the result. Unclosed or otherwise structurally ambiguous tuplets
 remain manual-review, but the editable MSCZ is retained. When a missing meter
 is repaired, the report records the exact staff and measure where the shared
 or inferred time signature was inserted. This changes the measure boundary
@@ -110,9 +110,9 @@ the exact local measure range. Cross-barline tuplets are carried through the
 normalizer and semantic audit; silent-gap and measure-length heuristics are
 disabled while a tuplet scope is open.
 
-## Recommended implementation
+## Implemented production architecture
 
-This should be a deterministic regression and normalization pipeline, not a
+This is a deterministic regression and normalization pipeline, not a
 machine-learning model. The legacy binary format is proprietary and the
 reference PDFs are visual output, not training labels for note-level recovery.
 
@@ -136,9 +136,9 @@ The implementation records importer provenance, source and native inventories,
 timeline and total measure counts, navigation object counts, safe native
 repairs, the verification scope, and every unresolved structural diagnostic.
 It always retains a genuine MSCZ after a late export or audit failure. The
-browser distinguishes `native-valid` from `manual-review` so a readable CAP
-score is never presented as source-equivalent merely because MuseScore opened
-it.
+browser distinguishes `source-unverified` from `manual-review` so a readable
+CAP score is never presented as source-equivalent merely because MuseScore
+opened it.
 
 The existing CAPX converter and its source audit remain unchanged. CAP and CAPX
 should share only the native-score validation and output packaging layers.
@@ -165,18 +165,18 @@ item. Spacing and page breaks are lower-priority diagnostics.
 
 ### 4. Pin and test the engine
 
-The Dockerfile currently installs an unpinned `musescore3` package. Pin the
-engine version or image digest used for CAP imports. A MuseScore upgrade must
-rerun the 140-pair corpus because legacy import behavior is engine-dependent.
+The Dockerfile pins MuseScore 3 to the Debian Bookworm package used for the
+audited conversions. A MuseScore upgrade must rerun the 140-pair corpus because
+legacy import behavior is engine-dependent.
 The CI suite should continue using synthetic fixtures for normal pull requests,
 with the private corpus audit run locally or in a protected workflow.
 
 ### 5. Define certification honestly
 
-For CAP, distinguish these states:
+For CAP, the application distinguishes these states:
 
-- `native-valid`: MuseScore created a readable MSCZ and all native structural
-  checks pass; source equivalence remains unverified;
+- `source-unverified`: MuseScore created a readable MSCZ and all native
+  structural checks pass; source equivalence remains unverified;
 - `reference-reviewed`: the paired PDF review and corpus checks pass;
 - `manual-review`: the MSCZ exists but a source comparison, importer warning or
   structural check is unresolved.
@@ -197,12 +197,12 @@ mistaken for proof that the original legacy score survived intact.
   playback events. The native score and explicit audit diagnostics must decide
   whether an output is certified.
 
-## Implementation order
+## Production acceptance
 
-1. Keep this manifest and report as the fixed reference contract.
-2. Add the direct-CAP-to-MSCZ adapter and CAP-specific report fields.
-3. Add native-score audits and honest certification states.
-4. Add the local 140-pair corpus runner and normalized PDF comparison tools.
-5. Run the corpus against the pinned engine, inspect every blocking diff, and
-   only then merge the converter changes into `main`.
-
+The direct CAP adapter, CAP-specific reports, native-score audits and local
+140-pair corpus runner are implemented. Before changing either MuseScore
+engine, the legacy normalization rules or the shared engraving layer, rerun
+the complete synthetic suite and private corpus audit and compare the output
+to the last accepted baseline. A deployment is not accepted until `/health`
+reports the expected `build_sha` and a mixed CAP/CAPX batch succeeds in the
+running container.

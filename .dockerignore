@@ -1,0 +1,16 @@
+.git
+.github
+.pytest_cache
+.ruff_cache
+**/__pycache__
+*.py[cod]
+.DS_Store
+.venv
+venv
+tests
+docs
+README.md
+LICENSE
+VERSION
+requirements-dev.txt
+docker-compose.yml

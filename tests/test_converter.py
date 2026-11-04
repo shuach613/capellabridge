@@ -133,10 +133,13 @@ def test_web_upload_without_login(monkeypatch,tmp_path):
     homepage=client.get('/')
     assert homepage.status_code==200
     assert homepage.headers['cache-control']=='no-store'
-    assert 'v1.7.9-dev' in homepage.text
+    assert 'v1.7.9' in homepage.text
     assert 'start-over' in homepage.text
     assert 'Every score produces an editable result' in homepage.text
-    assert client.get('/api/info').status_code==200
+    info=client.get('/api/info')
+    assert info.status_code==200
+    assert info.json()['build_sha']==main.BUILD_SHA
+    assert client.get('/health').json()['build_sha']==main.BUILD_SHA
     app_js=client.get('/static/app.js')
     assert app_js.status_code==200
     assert app_js.headers['cache-control']=='no-store'
@@ -170,6 +173,9 @@ def test_background_batch_accepts_maximum_thirty_files(monkeypatch,tmp_path):
         pdf.write_bytes(b'%PDF-1.4\n%test')
         preview.write_bytes(b'PNG')
         report.write_text('{}')
+        # Simulate the copied upload that process_score normally deletes. The
+        # batch archive must never expose undeclared working files.
+        (work/name).write_bytes(raw)
         return {'source_filename':name,'layout':layout,'warnings':[],
                 'files':{'mscz':mscz.name,'musicxml':musicxml.name,
                          'pdf':pdf.name,'preview':preview.name,
@@ -194,7 +200,29 @@ def test_background_batch_accepts_maximum_thirty_files(monkeypatch,tmp_path):
         assert result['completed']==30
         assert len(result['results'])==30
         assert all(item['ok'] for item in result['results'])
-        assert client.get(result['batch_url']).status_code==200
+        batch=client.get(result['batch_url'])
+        assert batch.status_code==200
+        with zipfile.ZipFile(io.BytesIO(batch.content)) as archive:
+            names=archive.namelist()
+        assert len(names)==30*5
+        assert not any(name.lower().endswith(('.cap','.capx')) for name in names)
+
+
+def test_partial_result_removes_copied_source_upload(tmp_path):
+    from app import main
+    source=tmp_path/'Source.cap'
+    source.write_bytes(b'cap3-v:a source data')
+    output=tmp_path/'Source.mscz'
+    with zipfile.ZipFile(output,'w') as archive:
+        archive.writestr(
+            'score.mscx',
+            '<museScore version="3.02"><Score><Staff/></Score></museScore>')
+
+    result=main.retain_partial_mscz(tmp_path,'Source.cap',RuntimeError('late'))
+
+    assert result is not None
+    assert result['files']['mscz']=='Source.mscz'
+    assert not source.exists()
 
 
 def test_structurally_uncertified_mscz_is_retained_for_manual_review(
