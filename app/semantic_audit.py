@@ -65,6 +65,7 @@ class SemanticSnapshot:
     navigation: set[tuple[int, int, int, Fraction, str, str]] = field(default_factory=set)
     volta_spans: set[tuple[int, int, str]] = field(default_factory=set)
     open_tuplets: set[tuple[int, int, int]] = field(default_factory=set)
+    normalized_orphan_grace_ties: int = 0
 
 
 SOURCE_MARKS = {
@@ -257,23 +258,49 @@ def _source_snapshot(root) -> SemanticSnapshot:
                     continue
                 if name == "direction":
                     voice = int(item.findtext("voice", "1"))
+                    try:
+                        direction_staff = int(item.findtext("staff", "1"))
+                    except ValueError as exc:
+                        raise SemanticIntegrityError(
+                            "Invalid MusicXML direction staff number") from exc
+                    if not 1 <= direction_staff <= staff_count:
+                        raise SemanticIntegrityError(
+                            f"MusicXML direction staff {direction_staff} is outside "
+                            f"the declared range 1-{staff_count}")
+                    direction_part_index = staff_offset + direction_staff
                     offset = (_fraction(item.findtext("offset", "0"),
                                         "MusicXML direction offset") /
                               (divisions * 4))
                     direction_onset = cursor + offset
+                    direction_words = " ".join(
+                        (node.text or "")
+                        for node in item.findall("direction-type/words")
+                    ).strip().lower()
                     for sound in item.findall("sound"):
                         if sound.get("tempo"):
-                            tempos.add((default_part_index, measure_index, voice,
+                            tempos.add((direction_part_index, measure_index, voice,
                                         direction_onset,
                                         _fraction(sound.get("tempo"), "tempo")))
                         for attribute in ("dacapo", "dalsegno", "tocoda",
                                           "coda", "segno", "fine"):
                             if sound.get(attribute):
-                                navigation.add((default_part_index, measure_index, voice,
-                                                direction_onset, attribute,
+                                if attribute in ("dacapo", "dalsegno"):
+                                    navigation_kind = "jump"
+                                elif attribute == "tocoda":
+                                    # MuseScore exports a plain Coda marker as
+                                    # sound@tocoda. A real jump is labelled
+                                    # "To Coda" (or equivalent) in the words.
+                                    navigation_kind = (
+                                        "jump" if "to coda" in direction_words
+                                        or "al coda" in direction_words
+                                        else "marker")
+                                else:
+                                    navigation_kind = "marker"
+                                navigation.add((direction_part_index, measure_index, voice,
+                                                direction_onset, navigation_kind,
                                                 sound.get(attribute)))
                     for dynamic in item.findall("direction-type/dynamics/*"):
-                        dynamics.add((default_part_index, measure_index, voice,
+                        dynamics.add((direction_part_index, measure_index, voice,
                                       direction_onset,
                                       ET.QName(dynamic).localname))
                     for wedge in item.findall("direction-type/wedge"):
@@ -281,7 +308,7 @@ def _source_snapshot(root) -> SemanticSnapshot:
                         # wedge, with the endpoint represented by next/prev;
                         # count only the MusicXML start marker here.
                         if wedge.get("type") != "stop":
-                            hairpins.add((default_part_index, measure_index, voice,
+                            hairpins.add((direction_part_index, measure_index, voice,
                                           direction_onset,
                                           wedge.get("type", "")))
                     continue
@@ -728,6 +755,38 @@ def _filtered_events(snapshot: SemanticSnapshot, source: SemanticSnapshot):
     return filtered
 
 
+def _drop_orphan_grace_ties(events: list[SemanticEvent]) -> int:
+    """Discard only impossible one-sided tie starts on grace notes.
+
+    Some Capella files encode a visual grace connector as a tie start without
+    ever writing a corresponding tie stop.  MuseScore correctly declines to
+    create a native Tie spanner for that malformed endpoint.  Treating the
+    endpoint as a sounding tie makes the semantic audit invent a chain that
+    is absent from both the notation and playback.
+
+    A grace tie is retained whenever a later explicit stop for the same pitch
+    exists in the same staff/voice.  Ordinary ties are never normalized here.
+    """
+    by_voice: dict[tuple[int, int], list[SemanticEvent]] = {}
+    for event in events:
+        by_voice.setdefault((event.part, event.voice), []).append(event)
+    removed = 0
+    for voice_events in by_voice.values():
+        ordered = sorted(voice_events, key=lambda item: (item.measure, item.onset))
+        for index, event in enumerate(ordered):
+            if not event.grace:
+                continue
+            destination = ordered[index + 1] if index + 1 < len(ordered) else None
+            for pitch, endpoint in tuple(event.ties):
+                if endpoint != "start":
+                    continue
+                if (destination is None or pitch not in destination.pitches or
+                        (pitch, "stop") not in destination.ties):
+                    event.ties.discard((pitch, "start"))
+                    removed += 1
+    return removed
+
+
 def _complete_tie_chains(events: list[SemanticEvent]) -> None:
     """Add implicit stop endpoints MuseScore stores on a continued tie.
 
@@ -754,7 +813,14 @@ def _complete_tie_chains(events: list[SemanticEvent]) -> None:
 
 
 def _allowed_tail_padding(source_events, native_events, key, left, right):
-    """Allow only MuseScore's known silent fill after an explicit source rest."""
+    """Allow only a small invisible rest after the source voice has ended.
+
+    MuseScore can quantize a trailing tuplet and add a tiny hidden rest to
+    close its internal measure grid.  This is harmless only when it begins at
+    or after the final source event, has no later source event to displace,
+    and is itself silent and invisible.  Hidden rests inserted between
+    sounding events remain hard failures.
+    """
     if left or len(right) != 1:
         return False
     extra = right[0]
@@ -765,12 +831,13 @@ def _allowed_tail_padding(source_events, native_events, key, left, right):
                   if (event.part, event.measure, event.voice) == key[:3]]
     if not same_voice:
         return False
-    last = max(same_voice, key=lambda event: event.onset + event.duration)
-    return (last.kind == "rest" and last.hidden and
-            last.onset + last.duration == extra.onset)
+    last_end = max(event.onset + event.duration for event in same_voice)
+    return extra.onset >= last_end
 
 
 def _compare_events(source: SemanticSnapshot, native: SemanticSnapshot):
+    source.normalized_orphan_grace_ties += _drop_orphan_grace_ties(source.events)
+    native.normalized_orphan_grace_ties += _drop_orphan_grace_ties(native.events)
     _complete_tie_chains(source.events)
     _complete_tie_chains(native.events)
     source_events = _filtered_events(source, source)
@@ -873,7 +940,7 @@ def audit_musicxml_against_mscz(source_xml: Path, mscz: Path) -> dict:
             f"native={sorted(native.tempos)}")
     source_navigation = {
         (part, measure,
-         "marker" if kind in ("segno", "coda", "fine") else "jump")
+         "marker" if kind in ("segno", "coda", "fine", "marker") else "jump")
         for part, measure, _voice, _onset, kind, _ in source.navigation
     }
     native_navigation = {
@@ -918,7 +985,112 @@ def audit_musicxml_against_mscz(source_xml: Path, mscz: Path) -> dict:
         "native_open_tuplets": len(native.open_tuplets),
         "ignored_grace_rests": source.ignored_grace_rests,
         "source_tail_padding": str(tail_padding),
+        "normalized_orphan_grace_ties": source.normalized_orphan_grace_ties,
     }
+
+
+def reconcile_cap_musicxml_export(xml_path: Path, mscz: Path) -> dict[str, int]:
+    """Restore native endings and dynamics omitted by MuseScore's exporter.
+
+    The editable MSCZ is authoritative for legacy CAP conversions. MuseScore
+    3 occasionally omits a terminal second ending or assigns two staff-level
+    dynamics to one MusicXML part. Add only native objects that are absent
+    from the secondary MusicXML; never infer new music from filenames or
+    score-specific measure numbers.
+    """
+    try:
+        tree = ET.parse(str(xml_path))
+        root = tree.getroot()
+    except (OSError, ET.XMLSyntaxError) as exc:
+        raise SemanticIntegrityError(
+            "Could not read exported CAP MusicXML for reconciliation") from exc
+    native = _native_snapshot(_load_native(Path(mscz)))
+    source = _source_snapshot(root)
+    changes = {"volta_spans": 0, "dynamics": 0}
+
+    parts = root.findall("part")
+
+    def measure_at(part, number: int):
+        measures = part.findall("measure")
+        return measures[number - 1] if 0 < number <= len(measures) else None
+
+    def barline(measure, location: str):
+        for candidate in measure.findall("barline"):
+            if candidate.get("location", "right") == location:
+                return candidate
+        candidate = ET.Element("barline", location=location)
+        if location == "left":
+            insert_at = 1 if len(measure) and ET.QName(measure[0]).localname == "attributes" else 0
+            measure.insert(insert_at, candidate)
+        else:
+            measure.append(candidate)
+        return candidate
+
+    # Endings are score-global in the native score but MusicXML repeats them
+    # in each part. Rebuild only a missing native span in every part.
+    for start, stop, number in sorted(native.volta_spans - source.volta_spans):
+        for part in parts:
+            start_measure = measure_at(part, start)
+            stop_measure = measure_at(part, stop)
+            if start_measure is None or stop_measure is None:
+                raise SemanticIntegrityError(
+                    f"Cannot reconcile volta {number} spanning {start}-{stop}")
+            start_barline = barline(start_measure, "left")
+            if not any(node.get("number", "") == number and
+                       node.get("type") == "start"
+                       for node in start_barline.findall("ending")):
+                ET.SubElement(start_barline, "ending", number=number,
+                              type="start").text = f"{number}."
+            stop_barline = barline(stop_measure, "right")
+            if not any(node.get("number", "") == number and
+                       node.get("type") in ("stop", "discontinue")
+                       for node in stop_barline.findall("ending")):
+                ET.SubElement(stop_barline, "ending", number=number, type="stop")
+        changes["volta_spans"] += 1
+
+    # Map native physical staff numbers to MusicXML part/staff lanes.
+    physical: dict[int, tuple[object, int, int]] = {}
+    index = 1
+    for part_index, part in enumerate(parts, 1):
+        count = _musicxml_staff_count(part)
+        for staff_number in range(1, count + 1):
+            physical[index] = (part, part_index, staff_number)
+            index += 1
+
+    for part_index, measure, voice, onset, subtype in sorted(
+            native.dynamics - source.dynamics):
+        lane = physical.get(part_index)
+        if lane is None:
+            raise SemanticIntegrityError(
+                f"Cannot reconcile dynamic on native staff {part_index}")
+        part, _xml_part, staff_number = lane
+        target = measure_at(part, measure)
+        if target is None:
+            raise SemanticIntegrityError(
+                f"Cannot reconcile dynamic at staff {part_index}, measure {measure}")
+        divisions = 1
+        for previous in part.findall("measure")[:measure]:
+            value = previous.findtext("attributes/divisions")
+            if value:
+                divisions = int(value)
+        direction = ET.Element("direction", placement="below")
+        direction_type = ET.SubElement(direction, "direction-type")
+        dynamics = ET.SubElement(direction_type, "dynamics")
+        ET.SubElement(dynamics, subtype)
+        if onset:
+            ET.SubElement(direction, "offset").text = str(
+                int(onset * divisions * 4))
+        ET.SubElement(direction, "voice").text = str(voice)
+        if _musicxml_staff_count(part) > 1:
+            ET.SubElement(direction, "staff").text = str(staff_number)
+        insert_at = 1 if len(target) and ET.QName(target[0]).localname == "attributes" else 0
+        target.insert(insert_at, direction)
+        changes["dynamics"] += 1
+
+    if any(changes.values()):
+        tree.write(str(xml_path), encoding="UTF-8", xml_declaration=True,
+                   pretty_print=True)
+    return changes
 
 
 def audit_cap_musicxml_export(source_xml: Path, mscz: Path) -> dict:
@@ -960,7 +1132,8 @@ def audit_cap_musicxml_export(source_xml: Path, mscz: Path) -> dict:
         # omit that print hint) without changing pitch or playback. The strict
         # CAPX source audit still checks source visibility exactly; this CAP
         # boundary verifies the sounding ledger only.
-        return (event.part, event.measure, event.pitches, event.grace)
+        return (event.part, event.measure, event.duration,
+                event.pitches, event.grace)
 
     source_chords = Counter(
         chord_fingerprint(event) for event in source_events
@@ -983,23 +1156,37 @@ def audit_cap_musicxml_export(source_xml: Path, mscz: Path) -> dict:
         event.hidden for event in native_events if event.kind == "chord"
     )
 
-    # These features affect playback or the audible/printed interpretation.
-    # A native import may contain an additional copy on a hidden rest-only
-    # staff, so only a loss is rejected here; exact identity is already used
-    # by the strict CAPX audit where a source ledger exists.
-    feature_counts = (
-        ("breaths", len(source.breaths), len(native.breaths)),
-        ("repeats", len(source.repeats), len(native.repeats)),
-        ("volta_starts", len(source.volta_starts), len(native.volta_starts)),
-        ("hairpins", len(source.hairpins), len(native.hairpins)),
-        ("tempos", len(source.tempos), len(native.tempos)),
-        ("dynamics", len(source.dynamics), len(native.dynamics)),
-    )
-    for label, source_count, native_count in feature_counts:
-        if native_count < source_count:
+    for label, source_value, native_value in (
+        ("breaths", source.breaths, native.breaths),
+        ("repeats", source.repeats, native.repeats),
+        ("volta starts", source.volta_starts, native.volta_starts),
+        ("volta spans", source.volta_spans, native.volta_spans),
+        ("hairpins", source.hairpins, native.hairpins),
+        ("dynamics", source.dynamics, native.dynamics),
+    ):
+        if source_value != native_value:
             raise SemanticIntegrityError(
-                f"CAP MusicXML export lost {label}: "
-                f"source={source_count} native={native_count}")
+                f"CAP MusicXML export changed {label}: "
+                f"source={sorted(source_value)} native={sorted(native_value)}")
+    source_tempos = {(measure, onset): value
+                     for _part, measure, _voice, onset, value in source.tempos}
+    native_tempos = {(measure, onset): value
+                     for _part, measure, _voice, onset, value in native.tempos}
+    if source_tempos != native_tempos:
+        raise SemanticIntegrityError(
+            f"CAP MusicXML export changed tempos: source={source_tempos} "
+            f"native={native_tempos}")
+    source_navigation = {(part, measure, kind)
+                         for part, measure, _voice, _onset, kind, _value
+                         in source.navigation}
+    native_navigation = {(part, measure, kind)
+                         for part, measure, _voice, _onset, kind, _value
+                         in native.navigation}
+    if source_navigation != native_navigation:
+        raise SemanticIntegrityError(
+            "CAP MusicXML export changed navigation: "
+            f"source={sorted(source_navigation)} "
+            f"native={sorted(native_navigation)}")
 
     source_marks = Counter(mark for event in source_events for mark in event.marks)
     native_marks = Counter(mark for event in native_events for mark in event.marks)

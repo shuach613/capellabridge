@@ -10,6 +10,7 @@ from app.semantic_audit import (
     _native_volta_spans,
     audit_cap_musicxml_export,
     audit_musicxml_against_mscz,
+    reconcile_cap_musicxml_export,
 )
 
 
@@ -99,6 +100,65 @@ def test_semantic_audit_rejects_unmatched_source_rest(tmp_path):
     # The additional source rest has no native counterpart; the audit must
     # remain strict rather than treating arbitrary silence as harmless.
     with pytest.raises(SemanticIntegrityError):
+        audit_musicxml_against_mscz(source, output)
+
+
+def test_semantic_audit_allows_only_hidden_padding_after_voice_end(tmp_path):
+    source = tmp_path / "source.musicxml"
+    source.write_text(SOURCE, encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    padded = native().replace(
+        '</voice><endRepeat/>',
+        '<Rest><duration>1/96</duration><durationType>128th</durationType>'
+        '<visible>0</visible></Rest></voice><endRepeat/>',
+    )
+    native_zip(output, padded)
+
+    result = audit_musicxml_against_mscz(source, output)
+
+    assert result["source_tail_padding"] == "1/96"
+
+    inserted = native().replace(
+        '<Chord><durationType>quarter</durationType><Articulation>'
+        '<subtype>articMarcatoAbove</subtype></Articulation>',
+        '<Rest><duration>1/96</duration><durationType>128th</durationType>'
+        '<visible>0</visible></Rest>'
+        '<Chord><durationType>quarter</durationType><Articulation>'
+        '<subtype>articMarcatoAbove</subtype></Articulation>',
+    )
+    native_zip(output, inserted)
+    with pytest.raises(SemanticIntegrityError, match="Musical event changed"):
+        audit_musicxml_against_mscz(source, output)
+
+
+def test_orphan_grace_tie_is_normalized_but_real_grace_tie_is_required(tmp_path):
+    source = tmp_path / "source.musicxml"
+    orphan = SOURCE.replace(
+        '<note><pitch><step>C</step><octave>5</octave></pitch>',
+        '<note><grace slash="yes"/><pitch><step>C</step><octave>5</octave>'
+        '</pitch><tie type="start"/>',
+        1,
+    ).replace('<duration>480</duration>', '', 1)
+    source.write_text(orphan, encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    native_grace = native().replace(
+        '<Chord><durationType>quarter</durationType>',
+        '<Chord><grace8/><durationType>eighth</durationType>',
+        1,
+    )
+    native_zip(output, native_grace)
+
+    result = audit_musicxml_against_mscz(source, output)
+
+    assert result["normalized_orphan_grace_ties"] == 1
+
+    real_tie = orphan.replace(
+        '<pitch><step>D</step><octave>5</octave></pitch>',
+        '<pitch><step>C</step><octave>5</octave></pitch><tie type="stop"/>',
+        1,
+    )
+    source.write_text(real_tie, encoding="utf-8")
+    with pytest.raises(SemanticIntegrityError, match="Musical event changed"):
         audit_musicxml_against_mscz(source, output)
 
 
@@ -452,3 +512,52 @@ def test_cap_export_audit_maps_multistaff_part_to_native_staffs(tmp_path):
     result = audit_cap_musicxml_export(source, output)
 
     assert result["source_chords"] == result["native_chords"] == 2
+
+
+def test_cap_export_reconciliation_restores_native_volta_and_staff_dynamic(tmp_path):
+    exported = tmp_path / "export.musicxml"
+    exported.write_text("""<?xml version="1.0"?>
+    <score-partwise version="4.0">
+      <part-list><score-part id="P1"><part-name>Ensemble</part-name></score-part></part-list>
+      <part id="P1">
+        <measure number="1"><attributes><divisions>1</divisions><staves>2</staves>
+          <time><beats>1</beats><beat-type>4</beat-type></time></attributes>
+          <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><staff>1</staff></note>
+          <backup><duration>1</duration></backup>
+          <note><pitch><step>E</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><staff>2</staff></note>
+        </measure>
+        <measure number="2">
+          <note><pitch><step>D</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><staff>1</staff></note>
+          <backup><duration>1</duration></backup>
+          <note><pitch><step>F</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><staff>2</staff></note>
+        </measure>
+      </part>
+    </score-partwise>""", encoding="utf-8")
+    output = tmp_path / "score.mscz"
+    native_zip(output, """<museScore version="3.02"><Score>
+      <Staff id="1">
+        <Measure len="1/4"><voice><TimeSig><sigN>1</sigN><sigD>4</sigD></TimeSig>
+          <Dynamic><subtype>f</subtype></Dynamic>
+          <Spanner type="Volta"><Volta><endings>2</endings></Volta>
+            <next><location><measures>2</measures></location></next></Spanner>
+          <Chord><durationType>quarter</durationType><Note><pitch>60</pitch></Note></Chord>
+        </voice></Measure>
+        <Measure len="1/4"><voice><Chord><durationType>quarter</durationType><Note><pitch>62</pitch></Note></Chord></voice></Measure>
+      </Staff>
+      <Staff id="2">
+        <Measure len="1/4"><voice><TimeSig><sigN>1</sigN><sigD>4</sigD></TimeSig>
+          <Dynamic><subtype>f</subtype></Dynamic>
+          <Spanner type="Volta"><Volta><endings>2</endings></Volta>
+            <next><location><measures>2</measures></location></next></Spanner>
+          <Chord><durationType>quarter</durationType><Note><pitch>64</pitch></Note></Chord>
+        </voice></Measure>
+        <Measure len="1/4"><voice><Chord><durationType>quarter</durationType><Note><pitch>65</pitch></Note></Chord></voice></Measure>
+      </Staff>
+    </Score></museScore>""")
+
+    changes = reconcile_cap_musicxml_export(exported, output)
+    result = audit_cap_musicxml_export(exported, output)
+
+    assert changes == {"volta_spans": 1, "dynamics": 2}
+    assert result["source_volta_starts"] == result["native_volta_starts"] == 1
+    assert result["source_dynamics"] == result["native_dynamics"] == 2
