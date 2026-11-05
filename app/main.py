@@ -34,11 +34,12 @@ from .score_validation import audit_mscz, ScoreIntegrityError
 from .semantic_audit import (
     audit_cap_musicxml_export,
     audit_musicxml_against_mscz,
+    reconcile_cap_musicxml_export,
     SemanticIntegrityError,
 )
 from .source_audit import audit_capx_against_musicxml
 
-VERSION='1.7.9'
+VERSION='1.8.0'
 BUILD_SHA=os.environ.get('CAPELLABRIDGE_BUILD_SHA','unknown')
 BASE=Path(os.environ.get('CAPELLABRIDGE_DATA','/data')).resolve()
 JOBS=BASE/'jobs'
@@ -222,6 +223,12 @@ def save_validated_mscz(source_xml: Path, final_mscz: Path,
             warnings.append(
                 'MuseScore added a silent trailing rounding rest of '
                 f"{semantic.get('source_tail_padding', '0')}; no playback time was added."
+            )
+        if semantic.get('normalized_orphan_grace_ties', 0):
+            warnings.append(
+                f"Normalized {semantic['normalized_orphan_grace_ties']} "
+                'one-sided grace-note tie endpoint(s) that had no source '
+                'destination; notes and playback were preserved.'
             )
         if errors:
             raise SemanticIntegrityError(' | '.join(errors))
@@ -456,6 +463,15 @@ def process_score(name,ext,raw,work,layout):
                 f'MusicXML export failed, but the native MuseScore file was retained: {exc}'
             )
         else:
+            try:
+                reconciled = reconcile_cap_musicxml_export(xml_path, mscz)
+            except SemanticIntegrityError as exc:
+                reconciled = {'error': str(exc)[:500]}
+                warnings.append(
+                    'Manual-review export: CAP MusicXML reconciliation failed: '
+                    + str(exc)[:400]
+                )
+            report['musicxml_reconciliation'] = reconciled
             if not audit_exported_cap_musicxml(xml_path, mscz, report, warnings):
                 verification = 'manual-review'
                 report['verification'] = verification
